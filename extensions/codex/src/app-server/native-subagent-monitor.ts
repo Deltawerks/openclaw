@@ -14,9 +14,11 @@ import {
 import { CodexNativeSubagentCompletionDelivery } from "./native-subagent-completion-delivery.js";
 import {
   CodexNativeSubagentDeliveryReceipts,
+  bindCodexNativeSubagentReceiptSampling,
   buildCodexNativeSubagentAgentPathKey as buildParentAgentPathKey,
   observeCodexNativeSubagentDeliveryReceipts,
   registerCodexNativeSubagentReceiptAlias,
+  releaseCodexNativeSubagentReceiptSampling,
   resolveCodexNativeSubagentReceiptOwner,
   restoreCodexNativeSubagentTaskReceipts,
 } from "./native-subagent-delivery-receipts.js";
@@ -88,6 +90,7 @@ const NATIVE_SUBAGENT_NOTIFICATION_METHODS = new Set([
   // App-server exposes no typed terminal subagent result. Keep this one raw
   // boundary until its protocol provides the child's terminal status and text.
   "rawResponseItem/completed",
+  "rawResponse/completed",
 ]);
 const RECOVERY_REVISION_NOTIFICATION_METHODS = new Set([
   "thread/started",
@@ -312,7 +315,7 @@ class Monitor {
     this.parentThreadRetentions.clear();
     for (const state of this.parentStates.values()) {
       state.owners.clear();
-      state.turnIds.clear();
+      state.turns.clear();
       this.childCloses.clear(state);
       this.completionDelivery.deliverDetached(state, this.childStates.values());
     }
@@ -337,6 +340,7 @@ class Monitor {
     historyOwner?: CodexNativeSubagentHistoryOwner;
     submissionStore?: ParentState["submissionStore"];
     agentId?: string;
+    isTurnYielded?: () => boolean;
     claimDirectChild?: (threadId: string) => (() => void) | undefined;
     rejectPendingDirectChild?: (threadId: string, reason: string) => void;
     onDirectChildAccepted?: () => void;
@@ -360,7 +364,7 @@ class Monitor {
       state = {
         parentThreadId,
         owners: new Map(),
-        turnIds: new Set(),
+        turns: new Map(),
         deliveryReceipts: new CodexNativeSubagentDeliveryReceipts(),
       };
       this.parentStates.set(parentThreadId, state);
@@ -372,6 +376,7 @@ class Monitor {
     state.agentId ??= params.agentId;
     const owner = Symbol("codex-native-subagent-owner");
     state.owners.set(owner, {
+      isTurnYielded: params.isTurnYielded,
       claimDirectChild: params.claimDirectChild,
       rejectPendingDirectChild: params.rejectPendingDirectChild,
       onDirectChildAccepted: params.onDirectChildAccepted,
@@ -411,7 +416,10 @@ class Monitor {
         }
         current.turnId = turnId;
         this.submissions.bind(registeredState, turnId);
-        registeredState.turnIds.add(turnId);
+        this.applyNativeReceipts(
+          registeredState,
+          bindCodexNativeSubagentReceiptSampling(registeredState, turnId, current),
+        );
         this.childCloses.bind(registeredState, turnId);
         this.drainPendingChildAdmissionEvidence(registeredState, current, turnId, true);
         this.clearUnconsumablePendingChildAdmissionEvidence();
@@ -426,15 +434,7 @@ class Monitor {
           const turnId = current.owners.get(owner)?.turnId;
           current.owners.delete(owner);
           this.childCloses.prune(current);
-          if (turnId) {
-            current.turnIds.delete(turnId);
-          }
-          if (current.owners.size === 0) {
-            current.turnIds.clear();
-            // In-flight recovery retains this run's receipts; a later run must
-            // not inherit them merely because it reuses an agent path.
-            current.deliveryReceipts = new CodexNativeSubagentDeliveryReceipts();
-          }
+          releaseCodexNativeSubagentReceiptSampling(current, turnId);
           this.clearUnconsumablePendingChildAdmissionEvidence();
           this.completionDelivery.deliverDetached(current, this.childStates.values());
           this.pruneParentIfUnused(current);
@@ -542,12 +542,6 @@ class Monitor {
       ? normalizeIdentifier(readString(params.status, "type"))
       : undefined;
     const parent = threadId ? this.parentStates.get(threadId) : undefined;
-    if (parent && parent.owners.size > 0 && notification.method === "turn/started") {
-      const turnId = isJsonObject(params?.turn) ? readString(params.turn, "id") : undefined;
-      if (turnId) {
-        parent.turnIds.add(turnId);
-      }
-    }
     const tracksRecoveryRevision = Boolean(threadId && this.recovery.hasRevision(threadId));
     if (
       RECOVERY_REVISION_NOTIFICATION_METHODS.has(notification.method) &&
@@ -600,13 +594,14 @@ class Monitor {
       childState.nativeCompletionDelivered = false;
       this.resumeChild(childState);
     }
-    if (parent && parent.turnIds.has(readString(params, "turnId") ?? "")) {
+    if (parent) {
       observeCodexNativeSubagentDeliveryReceipts({
         state: parent,
         notification,
         knownChildren: this.knownChildren.values(),
         candidates: this.recovery.allCandidates(),
         isRetiredParent: (state) => this.retiredParentStates.has(state),
+        resolveOwner: (turnId) => this.resolveParentOwner(parent, turnId),
         applyReceipts: (runIds) => this.applyNativeReceipts(parent, runIds),
       });
     }
@@ -2341,7 +2336,7 @@ class Monitor {
         state = {
           parentThreadId,
           owners: new Map(),
-          turnIds: new Set(),
+          turns: new Map(),
           deliveryReceipts:
             parentThreadId === candidate.parentState.parentThreadId
               ? candidate.deliveryReceipts

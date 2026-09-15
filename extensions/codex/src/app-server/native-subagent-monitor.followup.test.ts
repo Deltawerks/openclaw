@@ -15,6 +15,7 @@ import {
   registerParent,
   nativeHistoryOwner,
   notifyChildStarted,
+  parentSampled,
   nativeCompletionNotification,
   deliveredNativeCompletion,
   childTurnCompletedNotification,
@@ -376,6 +377,7 @@ describe("CodexNativeSubagentMonitor", () => {
             result: firstResult,
           }),
         );
+        await client.notify(parentSampled());
       }
       const first = structuredClone(records.get("codex-thread:child-thread"));
       const parentTurnId = freshOwner ? "next-parent-turn" : "parent-turn";
@@ -468,6 +470,7 @@ describe("CodexNativeSubagentMonitor", () => {
             result: `${consumed} result`,
           }),
         );
+        await client.notify(parentSampled());
       }
       await complete(resumed ? "resumed-turn" : "followup-turn", secondResult);
       if (resumed) {
@@ -904,6 +907,7 @@ describe("CodexNativeSubagentMonitor", () => {
         expect(executionEvents).toHaveLength(beforeLateProgress);
         if (received) {
           await client.notify(deliveredNativeCompletion());
+          await client.notify(parentSampled());
         }
         if (proof === "notification") {
           await client.notify(

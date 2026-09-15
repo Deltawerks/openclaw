@@ -10,6 +10,7 @@ import {
   createTaskScope,
   registerParent,
   notifyChildStarted,
+  parentSampled,
   deliveredNativeCompletion,
   closeAgentNotification,
   childTurnCompletedNotification,
@@ -249,6 +250,7 @@ describe("CodexNativeSubagentMonitor", () => {
         await eventActions[event]();
       }
       await client.notify(deliveredNativeCompletion());
+      await client.notify(parentSampled());
       const recovery = monitor.reconcileChildThread("child-thread");
       const history = threadRead({ turnId: "turn-c", result: "The build passed." });
       history.thread.turns!.unshift(
