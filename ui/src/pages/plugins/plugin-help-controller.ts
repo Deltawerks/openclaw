@@ -2,12 +2,13 @@ import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { ApplicationContext } from "../../app/context.ts";
 import { hasSensitiveConfigData } from "../../components/config-form.shared.ts";
 import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
+import type { PluginDiscoveryDetailResult, PluginListResult } from "../../lib/plugins/index.ts";
 import {
   publishPluginHelpContext,
   createPluginHelpRequest,
   type PluginHelpReference,
 } from "../custodian/plugin-help.ts";
-import type { PluginsPageViewModel } from "./plugins-page-view.ts";
+import type { InstalledPluginDetailTab } from "./detail-tabs.ts";
 import type { PluginSettingsField } from "./settings-editor.ts";
 
 /** The page publishes its loaded selection; the existing Ask store owns conversation state. */
@@ -24,7 +25,14 @@ export class PluginHelpController implements ReactiveController {
     return this.plugin !== undefined;
   }
 
-  update(model: PluginsPageViewModel): void {
+  update(model: {
+    context: ApplicationContext;
+    connected: boolean;
+    result: PluginListResult | null;
+    detail: { pluginId: string } | null;
+    catalogDetail: { result: PluginDiscoveryDetailResult | null } | null;
+    installedDetailTab: InstalledPluginDetailTab;
+  }): void {
     const context = model.context;
     if (context !== this.context) {
       this.release?.();
