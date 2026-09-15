@@ -102,7 +102,7 @@ describe("CustodianSessionStore", () => {
     expect(pendingPluginHelpDraft(context)).toBe(false);
   });
 
-  it("masks nested sensitive values, references and sentinels in setting drafts", async () => {
+  it("masks nested sensitive values, references, sentinels and URL credentials in setting drafts", async () => {
     const request = vi
       .fn()
       .mockResolvedValue({ sessionId: "plugin-help-session", reply: "Ready.", action: "none" });
@@ -116,8 +116,16 @@ describe("CustodianSessionStore", () => {
       { work: { opaque: "nested-secret" } },
       { source: "env", provider: "default", id: "PRIVATE_KEY" },
       { value: "__OPENCLAW_REDACTED__" },
+      "https://fixture-user:fixture-password@example.invalid/",
+      "https://example.invalid/?access_token=fixture-token&safe=keep",
+      { endpoints: ["https://example.invalid/#client_secret=fixture-secret"] },
+      { "https://fixture-user:fixture-password@example.invalid/": "route" },
+      "https://example.invalid/?next=https%3A%2F%2Fnested.invalid%2F%3Fapi_key%3Dfixture-key",
+      "https%3A%2F%2Ffixture-user%3Afixture-password%40example.invalid%2F",
+      `https://example.invalid/${"x".repeat(520)}?token=fixture-token`,
     ];
     for (const value of values) {
+      const original = structuredClone(value);
       store.setInput("");
       await createPluginHelpRequest(context, { id: "example", name: "Example" })({
         path,
@@ -128,7 +136,19 @@ describe("CustodianSessionStore", () => {
       expect(store.input).toBe(
         "Help me understand Accounts for Example.\n\nCurrent value: <redacted>",
       );
+      expect(value).toEqual(original);
     }
+    const value = { endpoints: ["https://example.invalid/?region=eu&discount=100%25"] };
+    const original = structuredClone(value);
+    store.setInput("");
+    await createPluginHelpRequest(context, { id: "example", name: "Example" })({
+      path,
+      label: "Accounts",
+      value,
+      sensitive: false,
+    });
+    expect(store.input).toContain(`Current value: ${JSON.stringify(original)}`);
+    expect(value).toEqual(original);
   });
 
   it("releases only its publication and clears plugin references and pending drafts on owner change", async () => {

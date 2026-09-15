@@ -33,6 +33,91 @@ const chatResponses = {
 };
 
 suite.define(() => {
+  it.each([390, 1440])(
+    "keeps credentials in a rejected URL edit out of Ask and Send at %s pixels",
+    async (width) => {
+      await suite.withPage({ viewport: { width, height: 1000 } }, async ({ page }) => {
+        const savedConfig = structuredClone(config);
+        Object.assign(savedConfig.plugins.entries.workboard.config, {
+          baseUrl: "https://example.invalid/",
+        });
+        const schema = structuredClone(configMocks["config.schema"]);
+        Object.assign(
+          schema.schema.properties.plugins.properties.entries.properties.workboard.properties.config
+            .properties,
+          { baseUrl: { type: "string", title: "Base URL" } },
+        );
+        const gateway = await installMockGateway(page, {
+          featureMethods,
+          methodResponses: {
+            ...pluginResponses(),
+            ...chatResponses,
+            "config.get": {
+              ...configMocks["config.get"],
+              config: savedConfig,
+              raw: JSON.stringify(savedConfig),
+            },
+            "config.schema": schema,
+          },
+          operatorScopes: ["operator.read", "operator.admin"],
+        });
+        await page.goto(`${suite.server.baseUrl}settings/plugins/workboard?view=settings`);
+        const row = page.locator('[data-setting="baseUrl"]');
+        const input = row.getByRole("textbox");
+        const editedUrl =
+          "https://fixture-user:fixture-password@example.invalid/?token=fixture-token";
+        await input.fill(editedUrl);
+        await gateway.deferNext("config.set");
+        await input.press("Tab");
+        const save = await gateway.waitForRequest("config.set");
+        expect(asRecord(save.params).raw).toContain(editedUrl);
+        await gateway.rejectDeferred("config.set", {
+          code: "INVALID_REQUEST",
+          message: "Fixture URL write rejected",
+        });
+        await page.getByRole("alert").filter({ hasText: "Fixture URL write rejected" }).waitFor();
+        expect(await input.inputValue()).toBe(editedUrl);
+
+        await row.getByRole("button", { name: "Actions for Base URL", exact: true }).click();
+        await row.locator('wa-dropdown-item[value="ask"]').click();
+        const panel = page.locator("openclaw-assistant-panel .assistant-panel");
+        const composer = panel.locator("textarea");
+        await expect.poll(() => composer.inputValue()).toContain("Help me understand Base URL");
+        const draft = await composer.inputValue();
+        await page.screenshot({
+          path: path.join(suite.artifactDir, `url-help-draft-${width}.png`),
+        });
+        const userRequests = async () =>
+          (await gateway.getRequests("openclaw.chat")).filter(
+            (request) => asRecord(request.params).message,
+          );
+        expect(await userRequests()).toHaveLength(0);
+        await composer.press("Enter");
+        await expect.poll(async () => (await userRequests()).length).toBe(1);
+        const [sent] = await userRequests();
+        assert.ok(sent);
+        expect(asRecord(sent.params).message).toBe(draft);
+        expect(draft).toContain("Current value: <redacted>");
+        expect(JSON.stringify(sent.params)).not.toContain("fixture-password");
+        expect(JSON.stringify(sent.params)).not.toContain("fixture-token");
+        expect(asRecord(sent.params)).toMatchObject({
+          sessionId,
+          context: {
+            plugin: {
+              id: "workboard",
+              setting: { path: ["plugins", "entries", "workboard", "config", "baseUrl"] },
+            },
+          },
+        });
+        if (width === 390) {
+          await panel.getByRole("button", { name: "Close assistant sidebar", exact: true }).click();
+        }
+        expect(await input.inputValue()).toBe(editedUrl);
+        expect(await gateway.getRequests("config.set")).toHaveLength(1);
+      });
+    },
+  );
+
   it("keeps the transcript flexible through plugin notices, pending help, and change history", async () => {
     await suite.withPage({ viewport: { width: 1440, height: 1000 } }, async ({ page }) => {
       const gateway = await installMockGateway(page, {

@@ -1,3 +1,4 @@
+import { redactSensitiveUrlLikeString } from "@openclaw/net-policy/redact-sensitive-url";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { isSecretRefObject } from "../../components/config-form.node.shared.ts";
 import { t } from "../../i18n/index.ts";
@@ -12,15 +13,24 @@ export function formatPluginHelpValue(value: unknown, sensitive: boolean): strin
   let scanned = 0;
   while (pending.length) {
     const entry = pending.pop();
-    if (++scanned > 1000 || entry === REDACTED_SENTINEL || isSecretRefObject(entry)) {
+    if (
+      ++scanned > 1000 ||
+      entry === REDACTED_SENTINEL ||
+      isSecretRefObject(entry) ||
+      (typeof entry === "string" && redactSensitiveUrlLikeString(entry) !== entry)
+    ) {
       return "<redacted>";
     }
     if (entry && typeof entry === "object") {
-      const entries = Object.values(entry);
-      if (entries.length + pending.length + scanned > 1000) {
+      const entries = Object.entries(entry);
+      // Map keys are also serialized into the draft; inspect them before truncation.
+      if (
+        entries.length + pending.length + scanned > 1000 ||
+        entries.some(([key]) => redactSensitiveUrlLikeString(key) !== key)
+      ) {
         return "<redacted>";
       }
-      pending.push(...entries);
+      pending.push(...entries.map(([, child]) => child));
     }
   }
   const text = typeof value === "string" ? value : JSON.stringify(value);
