@@ -2,7 +2,6 @@
 import { asOptionalObjectRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import { collectConfiguredAgentHarnessRuntimes } from "../agents/harness-runtimes.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { MissingPublicSurfaceError } from "../plugin-sdk/facade-loader.js";
 import type {
   OpenKeyedStoreOptions,
   PluginStateEntry,
@@ -21,9 +20,11 @@ import {
   loadBundledPluginPublicArtifactModuleSync,
   loadPluginPublicArtifactModuleSync,
 } from "../plugins/public-surface-loader.js";
+import { describePluginAvailabilityFailure } from "../plugins/runtime-degraded-state.js";
 import { collectConfiguredWorkerProviderIds } from "../plugins/worker-provider-config.js";
 import { listBundledWorkerProviderOwners } from "../plugins/worker-provider-manifest.js";
 import { getHealthCheck, registerHealthCheck } from "./health-check-registry.js";
+import type { HealthFinding } from "./health-checks.js";
 
 type EmbeddingProviderSetupInspectionResult =
   | Awaited<ReturnType<InspectEmbeddingProviderSetup>>
@@ -77,7 +78,10 @@ type BundledHealthCheckParams = {
 };
 
 function defineHealthCheckRegistration(
-  register: (params: BundledHealthCheckParams, registerCheck: typeof registerHealthCheck) => void,
+  register: (
+    params: BundledHealthCheckParams,
+    registerCheck: typeof registerHealthCheck,
+  ) => HealthFinding[] | void,
   updateReadiness?: "post-plugin",
 ) {
   // Owners retain callback and check identities when refreshing their registration state.
@@ -140,7 +144,8 @@ export function resolveBundledHealthCheckPluginStateMode(
 /** Registers bundled health checks that are explicitly enabled by config and owner policy. */
 export function registerBundledHealthChecks(
   params: BundledHealthCheckParams & { updateReadiness?: "post-plugin" },
-): void {
+): HealthFinding[] {
+  const findings: HealthFinding[] = [];
   for (const registration of HEALTH_CHECK_REGISTRATIONS) {
     if (
       params.updateReadiness !== undefined &&
@@ -148,8 +153,9 @@ export function registerBundledHealthChecks(
     ) {
       continue;
     }
-    registration.register(params);
+    findings.push(...(registration.register(params) ?? []));
   }
+  return findings;
 }
 
 function registerMemoryCoreHealthChecks(
@@ -186,7 +192,13 @@ function registerMemoryCoreHealthChecks(
 function registerCodexHealthChecks(
   params: BundledHealthCheckParams,
   registerCheck: typeof registerHealthCheck,
-): void {
+): HealthFinding[] {
+  const unavailable = (detail: string): HealthFinding[] => [
+    {
+      checkId: "core/doctor/codex-session-routes",
+      ...describePluginAvailabilityFailure("codex", detail),
+    },
+  ];
   const env = params.env ?? process.env;
   if (shouldRegisterCodexManagedHealth(params.cfg)) {
     const registry = loadPluginManifestRegistryForPluginRegistry({
@@ -198,23 +210,20 @@ function registerCodexHealthChecks(
     const owner = registry.plugins.find((plugin) => plugin.id === "codex");
     if (!owner) {
       // Implicit preferences may use OpenClaw while plugin provisioning is deferred.
-      // Authored runtime requirements still fail closed, matching harness selection.
       const requiredRuntimes = collectConfiguredAgentHarnessRuntimes(params.cfg, {
         includeImplicitRuntimePreferences: false,
       });
       if (!requiredRuntimes.includes("codex")) {
-        return;
+        return [];
       }
-    }
-    // Doctor must inspect the selected runtime's artifact, including official external installs.
-    // A bundled-first lookup can inspect a different version or bypass the selected owner's trust.
-    if (!owner) {
-      throw new MissingPublicSurfaceError(
+      return unavailable(
         "The configured Codex plugin was not found. Install it with openclaw plugins install @openclaw/codex.",
       );
     }
+    // Doctor must inspect the selected runtime's artifact, including official external installs.
+    // A bundled-first lookup can inspect a different version or bypass the selected owner's trust.
     if (owner.origin !== "bundled" && owner.trustedOfficialInstall !== true) {
-      throw new MissingPublicSurfaceError(
+      return unavailable(
         "The selected Codex plugin is not a bundled or verified official installation. Run openclaw plugins inspect codex --runtime --json to inspect its source; install the official plugin with openclaw plugins install @openclaw/codex.",
       );
     }
@@ -228,20 +237,14 @@ function registerCodexHealthChecks(
           artifactBasename: "api.js",
           origin: owner.origin === "bundled" ? "bundled" : "global",
         });
-      } catch (cause) {
-        throw new MissingPublicSurfaceError(
+      } catch {
+        return unavailable(
           "The selected Codex plugin declares Doctor health checks but its health API could not be loaded. Run openclaw plugins inspect codex --runtime --json for details, or openclaw triage for repair help.",
-          { cause },
         );
       }
       if (typeof api.registerCodexManagedAppServerDoctorChecks !== "function") {
-        throw new MissingPublicSurfaceError(
+        return unavailable(
           "The selected Codex plugin's Doctor health checks are incomplete. Run openclaw plugins inspect codex --runtime --json for details, or openclaw triage for repair help.",
-          {
-            cause: new TypeError(
-              "Codex health API must export registerCodexManagedAppServerDoctorChecks",
-            ),
-          },
         );
       }
       api.registerCodexManagedAppServerDoctorChecks({
@@ -250,6 +253,7 @@ function registerCodexHealthChecks(
       });
     }
   }
+  return [];
 }
 
 function registerPolicyHealthChecks(
