@@ -142,7 +142,7 @@ function expandReloadPolicies(policies: ReloadPolicy[]): ReloadRule[] {
 const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
   { prefixes: ["gateway.remote", "gateway.reload"], kind: "none" },
   {
-    prefixes: [...AUTH_CREDENTIAL_PATHS, "mcp.apps", "secrets.egressProxy"],
+    prefixes: [...AUTH_CREDENTIAL_PATHS, "mcp.apps", "secrets.egressProxy", "gateway.portals"],
     kind: "restart",
   },
   {
@@ -351,12 +351,14 @@ function getReloadPolicyCatalog() {
       return { prefixes: [prefix], kind: channels.length || hasService ? "hot" : "none", channels };
     }),
     ...channelPolicies,
-    ...channelPlugins.map((plugin): ReloadPolicy => ({
-      prefixes: [`plugins.entries.${plugin.id}`],
-      kind: "hot",
-      actions: ["reloadPlugins", "disposeMcpRuntimes"],
-      channels: [plugin],
-    })),
+    ...channelPlugins.map(
+      (plugin): ReloadPolicy => ({
+        prefixes: [`plugins.entries.${plugin.id}`],
+        kind: "hot",
+        actions: ["reloadPlugins", "disposeMcpRuntimes"],
+        channels: [plugin],
+      }),
+    ),
     { prefixes: ["session.scope", "session.store"], kind: "hot", actions: ["refreshHooksPolicy"] },
     ...DEFAULT_RELOAD_POLICIES,
   ];
@@ -366,11 +368,13 @@ function getReloadPolicyCatalog() {
     // Narrow service declarations retain existing owner actions, including
     // channel account targeting, while supplying their own hot classification.
     ...servicePolicies.flatMap(({ prefixes }) =>
-      prefixes.map((prefix): ReloadRule => ({
-        ...ownedRules.find((owner) => matchesReloadPrefix(prefix, owner.prefix)),
-        kind: "hot",
-        prefix,
-      })),
+      prefixes.map(
+        (prefix): ReloadRule => ({
+          ...ownedRules.find((owner) => matchesReloadPrefix(prefix, owner.prefix)),
+          kind: "hot",
+          prefix,
+        }),
+      ),
     ),
   ];
   for (const rule of rules) {

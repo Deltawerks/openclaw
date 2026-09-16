@@ -18,7 +18,7 @@ import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { probePortalReachable, type PortalReachability } from "./portal-reachability.ts";
-import { resolvePortalUrl } from "./portal-url.ts";
+import { portalNeedsRemoteIngress } from "./portal-url.ts";
 import "./portals.css";
 
 const PORTAL_FRAME_SANDBOX =
@@ -26,7 +26,7 @@ const PORTAL_FRAME_SANDBOX =
 
 type PortalProbeState = {
   key: string;
-  status: "probing" | PortalReachability;
+  status: "probing" | "ingress-required" | PortalReachability;
 };
 
 class PortalsPage extends OpenClawLightDomElement {
@@ -113,24 +113,20 @@ class PortalsPage extends OpenClawLightDomElement {
     }
   }
 
-  private portalUrl(portal: PortalSummary, tokenQuery: string): string {
-    return resolvePortalUrl(
-      { ...portal, tokenQuery },
-      this.context.gateway.connection.gatewayUrl,
-      window.location.origin,
-    );
-  }
-
   private ensurePortalProbe(portal: PortalSummary, force = false) {
-    const tokenQuery = portal.tokenQuery;
-    if (!tokenQuery) {
+    if (!portal.tokenQuery || !portal.url) {
       this.portalProbeGeneration += 1;
       this.portalProbeState = null;
       return;
     }
-    const url = this.portalUrl(portal, tokenQuery);
+    const url = portal.url;
     const key = `${portal.id}\u0000${url}`;
     if (!force && this.portalProbeState?.key === key) {
+      return;
+    }
+    if (portalNeedsRemoteIngress(url, this.context.gateway.connection.gatewayUrl)) {
+      this.portalProbeGeneration += 1;
+      this.portalProbeState = { key, status: "ingress-required" };
       return;
     }
     const cached = force ? undefined : this.portalProbeCache.get(key);
@@ -142,8 +138,8 @@ class PortalsPage extends OpenClawLightDomElement {
     const generation = ++this.portalProbeGeneration;
     this.portalProbeState = { key, status: "probing" };
     void probePortalReachable(url).then((reachability) => {
-      this.portalProbeCache.set(key, reachability);
       if (generation === this.portalProbeGeneration && this.portalProbeState?.key === key) {
+        this.portalProbeCache.set(key, reachability);
         this.portalProbeState = { key, status: reachability };
       }
     });
@@ -226,30 +222,26 @@ class PortalsPage extends OpenClawLightDomElement {
     const unsupported = !this.portalListSupported;
     return html`
       <section class="portals-empty" role="status" aria-live="polite">
-        ${
-          this.loading && !this.loaded
-            ? html`<div class="portals-empty__title">${t("portalsPage.loading")}</div>`
-            : html`
-                <div class="portals-empty__title">${t("portalsPage.emptyHint")}</div>
-                <div class="portals-empty__prompts">
-                  <span>${t("portalsPage.promptShow")}</span>
-                  <span>${t("portalsPage.promptStart")}</span>
-                  <span>${t("portalsPage.promptMakeAvailable")}</span>
-                </div>
-              `
-        }
-        ${
-          unsupported
-            ? html`<div class="portals-empty__note">${t("portalsPage.unsupported")}</div>`
-            : nothing
-        }
+        ${this.loading && !this.loaded
+          ? html`<div class="portals-empty__title">${t("portalsPage.loading")}</div>`
+          : html`
+              <div class="portals-empty__title">${t("portalsPage.emptyHint")}</div>
+              <div class="portals-empty__prompts">
+                <span>${t("portalsPage.promptShow")}</span>
+                <span>${t("portalsPage.promptStart")}</span>
+                <span>${t("portalsPage.promptMakeAvailable")}</span>
+              </div>
+            `}
+        ${unsupported
+          ? html`<div class="portals-empty__note">${t("portalsPage.unsupported")}</div>`
+          : nothing}
         ${this.error ? html`<div class="callout danger">${this.error}</div>` : nothing}
       </section>
     `;
   }
 
   private renderPortal(portal: PortalSummary) {
-    if (!portal.tokenQuery) {
+    if (!portal.tokenQuery || !portal.url) {
       return html`
         <section class="portals-preview">
           <div class="portals-preview__notice" role="status">
@@ -261,7 +253,7 @@ class PortalsPage extends OpenClawLightDomElement {
         </section>
       `;
     }
-    const portalUrl = this.portalUrl(portal, portal.tokenQuery);
+    const portalUrl = portal.url;
     const frameKey = `${portal.id}\u0000${portalUrl}`;
     const probeStatus =
       this.portalProbeState?.key === frameKey ? this.portalProbeState.status : "probing";
@@ -290,56 +282,62 @@ class PortalsPage extends OpenClawLightDomElement {
             ${icon("x")}
           </button>
         </header>
-        ${
-          this.error
-            ? html`<div class="callout danger portals-preview__error">${this.error}</div>`
-            : nothing
-        }
-        ${
-          probeStatus === "probing"
+        ${this.error
+          ? html`<div class="callout danger portals-preview__error">${this.error}</div>`
+          : nothing}
+        ${probeStatus === "probing"
+          ? html`
+              <div class="portals-empty portals-preview__state" role="status" aria-live="polite">
+                <div class="portals-empty__title">${t("portalsPage.loading")}</div>
+              </div>
+            `
+          : probeStatus === "unreachable" || probeStatus === "ingress-required"
             ? html`
-                <div class="portals-empty portals-preview__state" role="status" aria-live="polite">
-                  <div class="portals-empty__title">${t("portalsPage.loading")}</div>
+                <div class="portals-preview__notice" role="status">
+                  <div class="portals-preview__notice-title">
+                    ${t(
+                      probeStatus === "ingress-required"
+                        ? "portalsPage.ingressRequiredTitle"
+                        : "portalsPage.unreachableTitle",
+                    )}
+                  </div>
+                  <p>
+                    ${t(
+                      probeStatus === "ingress-required"
+                        ? "portalsPage.ingressRequiredBody"
+                        : "portalsPage.unreachableBody",
+                    )}
+                  </p>
+                  <a
+                    class="portals-preview__notice-url"
+                    href=${portalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >${portalUrl}</a
+                  >
+                  <button
+                    class="btn"
+                    type="button"
+                    @click=${() => this.ensurePortalProbe(portal, true)}
+                  >
+                    ${t("portalsPage.retry")}
+                  </button>
                 </div>
               `
-            : probeStatus === "unreachable"
-              ? html`
-                  <div class="portals-preview__notice" role="status">
-                    <div class="portals-preview__notice-title">
-                      ${t("portalsPage.unreachableTitle")}
-                    </div>
-                    <p>${t("portalsPage.unreachableBody")}</p>
-                    <a
-                      class="portals-preview__notice-url"
-                      href=${portalUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      >${portalUrl}</a
-                    >
-                    <button
-                      class="btn"
-                      type="button"
-                      @click=${() => this.ensurePortalProbe(portal, true)}
-                    >
-                      ${t("portalsPage.retry")}
-                    </button>
-                  </div>
-                `
-              : keyed(
-                  frameKey,
-                  html`<iframe
-                    ${ref((element) => {
-                      if (element instanceof HTMLIFrameElement && !element.hasAttribute("src")) {
-                        element.setAttribute("src", portalUrl);
-                      }
-                    })}
-                    class="portals-preview__frame"
-                    title=${t("portalsPage.previewTitle", { title: portal.title })}
-                    referrerpolicy="no-referrer"
-                    sandbox=${PORTAL_FRAME_SANDBOX}
-                  ></iframe>`,
-                )
-        }
+            : keyed(
+                frameKey,
+                html`<iframe
+                  ${ref((element) => {
+                    if (element instanceof HTMLIFrameElement && !element.hasAttribute("src")) {
+                      element.setAttribute("src", portalUrl);
+                    }
+                  })}
+                  class="portals-preview__frame"
+                  title=${t("portalsPage.previewTitle", { title: portal.title })}
+                  referrerpolicy="no-referrer"
+                  sandbox=${PORTAL_FRAME_SANDBOX}
+                ></iframe>`,
+              )}
       </section>
     `;
   }
@@ -353,39 +351,33 @@ class PortalsPage extends OpenClawLightDomElement {
           <div class="page-title">${titleForRoute("portals")}</div>
         </div>
       </section>
-      ${
-        selectedPortal
-          ? html`
-              <section class="portals-layout">
-                <aside class="portals-rail" aria-label=${t("portalsPage.listLabel")}>
-                  ${this.portals.map(
-                    (portal) => html`
-                      <button
-                        class="portals-rail__item ${portal.id === selectedPortal.id ? "active" : ""}"
-                        type="button"
-                        aria-current=${portal.id === selectedPortal.id ? "true" : nothing}
-                        @click=${() => this.selectPortal(portal)}
+      ${selectedPortal
+        ? html`
+            <section class="portals-layout">
+              <aside class="portals-rail" aria-label=${t("portalsPage.listLabel")}>
+                ${this.portals.map(
+                  (portal) => html`
+                    <button
+                      class="portals-rail__item ${portal.id === selectedPortal.id ? "active" : ""}"
+                      type="button"
+                      aria-current=${portal.id === selectedPortal.id ? "true" : nothing}
+                      @click=${() => this.selectPortal(portal)}
+                    >
+                      <span class="portals-rail__title">${portal.title}</span>
+                      <span class="portals-rail__port"
+                        >${t("portalsPage.portLabel", { port: String(portal.port) })}</span
                       >
-                        <span class="portals-rail__title">${portal.title}</span>
-                        <span class="portals-rail__port"
-                          >${t("portalsPage.portLabel", { port: String(portal.port) })}</span
-                        >
-                        ${
-                          portal.description
-                            ? html`<span class="portals-rail__description"
-                                >${portal.description}</span
-                              >`
-                            : nothing
-                        }
-                      </button>
-                    `,
-                  )}
-                </aside>
-                ${this.renderPortal(selectedPortal)}
-              </section>
-            `
-          : this.renderEmptyState()
-      }
+                      ${portal.description
+                        ? html`<span class="portals-rail__description">${portal.description}</span>`
+                        : nothing}
+                    </button>
+                  `,
+                )}
+              </aside>
+              ${this.renderPortal(selectedPortal)}
+            </section>
+          `
+        : this.renderEmptyState()}
     `;
   }
 }
