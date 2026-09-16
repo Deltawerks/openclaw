@@ -18,9 +18,9 @@ describe("plugin install progress correlation", () => {
       },
       request: (_method: string, _params: unknown, options?: GatewayProtocolRequestOptions) => {
         options?.onSent?.(`request-${pending.length}`);
-        return new Promise<PluginMutationResult>((resolve, reject) =>
-          pending.push({ resolve, reject }),
-        );
+        return new Promise<PluginMutationResult>((resolve, reject) => {
+          pending.push({ resolve, reject });
+        });
       },
     } as unknown as GatewayBrowserClient;
     const first = vi.fn();

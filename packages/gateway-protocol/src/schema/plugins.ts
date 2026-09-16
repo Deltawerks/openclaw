@@ -6,6 +6,13 @@ import { PluginCredentialDescriptorSchema } from "./plugin-credentials.js";
 import type { PluginDeclaredSurfaceGroup } from "./plugin-declared-surface-groups.js";
 import { NonEmptyString } from "./primitives.js";
 
+export {
+  PluginInstallActivitySchema,
+  PluginsInstallProgressEventSchema,
+  type PluginInstallActivity,
+  type PluginsInstallProgressEvent,
+} from "./plugin-install-progress.js";
+
 /**
  * Plugin control-surface protocol schemas.
  *
@@ -684,26 +691,6 @@ export const PluginRuntimeApplicationSchema = closedObject({
   pluginIds: Type.Array(NonEmptyString),
   sourceDigests: Type.Optional(Type.Record(NonEmptyString, NonEmptyString)),
 });
-
-/** Request-scoped installer facts; no package output or local paths cross this boundary. */
-export const PluginInstallActivitySchema = closedObject({
-  activityId: NonEmptyString,
-  stage: Type.Union([
-    Type.Literal("resolve"),
-    Type.Literal("download"),
-    Type.Literal("extract"),
-    Type.Literal("files"),
-    Type.Literal("dependencies"),
-    Type.Literal("runtime"),
-  ]),
-  status: Type.Union([Type.Literal("started"), Type.Literal("completed"), Type.Literal("failed")]),
-});
-export const PluginsInstallProgressEventSchema = closedObject({
-  ...PluginInstallActivitySchema.properties,
-  requestId: NonEmptyString,
-});
-export type PluginInstallActivity = Static<typeof PluginInstallActivitySchema>;
-export type PluginsInstallProgressEvent = Static<typeof PluginsInstallProgressEventSchema>;
 
 export const PluginsChangedEventSchema = closedObject({
   generation: Type.Integer({ minimum: 0 }),

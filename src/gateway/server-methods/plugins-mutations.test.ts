@@ -111,7 +111,7 @@ describe("plugin management Gateway mutation handlers", () => {
       const broadcastToConnIds = vi.fn();
       const respond = vi.fn();
       const applying = createDeferred<PluginRuntimeApplication>();
-      const enteredRuntime = createDeferred<void>();
+      const enteredRuntime = createDeferred();
       const activity = {
         activityId: "dependency-install",
         stage: "dependencies",
