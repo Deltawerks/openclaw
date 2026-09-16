@@ -785,7 +785,6 @@ describe("system agent operations", () => {
     expect(runConfigSet).toHaveBeenCalledOnce();
   });
 
-
   it("installs plugins only after approval and audits the write", async () => {
     useOperationStateDir("openclaw-plugin-install-");
     const { runtime, lines } = createSystemAgentTestRuntime();
