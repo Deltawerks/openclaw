@@ -35,8 +35,13 @@ import {
   createContractsVitestConfig,
   pluginContractPatterns,
 } from "./vitest/vitest.contracts-shared.ts";
+import {
+  databaseWorkerExtensionTestFiles,
+  databaseWorkerExtensionTestRoots,
+} from "./vitest/vitest.extension-database-workers-paths.mjs";
 import { createExtensionDatabaseWorkersVitestConfig } from "./vitest/vitest.extension-database-workers.config.ts";
 import { createExtensionImessageVitestConfig } from "./vitest/vitest.extension-imessage.config.ts";
+import { createExtensionSlackVitestConfig } from "./vitest/vitest.extension-slack.config.ts";
 import { createExtensionsVitestConfig } from "./vitest/vitest.extensions.config.ts";
 import { createGatewayMethodsIsolatedVitestConfig } from "./vitest/vitest.gateway-methods-isolated.config.ts";
 import { createGatewayMethodsVitestConfig } from "./vitest/vitest.gateway-methods.config.ts";
@@ -51,7 +56,9 @@ import {
   createGatewayProjectShardVitestConfig,
   createGatewayVitestConfig,
 } from "./vitest/vitest.gateway.config.ts";
+import { createInfraVitestConfig } from "./vitest/vitest.infra.config.ts";
 import { createPluginSdkLightVitestConfig } from "./vitest/vitest.plugin-sdk-light.config.ts";
+import { createProjectShardVitestConfig } from "./vitest/vitest.project-shard-config.ts";
 import {
   repoRoot,
   resolveSharedVitestWorkerConfig,
@@ -102,6 +109,28 @@ afterEach(() => {
 });
 
 describe("projects vitest config", () => {
+  it("pins an explicit full-suite project worker limit", () => {
+    const previous = process.env.OPENCLAW_VITEST_MAX_WORKERS;
+    try {
+      process.env.OPENCLAW_VITEST_MAX_WORKERS = "8";
+      const testConfig = requireTestConfig(
+        createProjectShardVitestConfig(["test/vitest/vitest.tooling.config.ts"], {
+          maxWorkers: 1,
+        }),
+      );
+
+      expect(testConfig.maxWorkers).toBe(1);
+      expect(testConfig.fileParallelism).toBe(false);
+      expect(process.env.OPENCLAW_VITEST_MAX_WORKERS).toBe("1");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENCLAW_VITEST_MAX_WORKERS;
+      } else {
+        process.env.OPENCLAW_VITEST_MAX_WORKERS = previous;
+      }
+    }
+  });
+
   it("resolves the complete root watch project graph", () => {
     const result = spawnNodeEvalSync(
       `
@@ -116,9 +145,10 @@ describe("projects vitest config", () => {
         timeout: DEFAULT_VITEST_TEST_TIMEOUT_MS,
       },
     );
-    expect(result.error, result.stderr).toBeUndefined();
-    expect(result.signal, result.stderr).toBeNull();
-    expect(result.status, result.stderr).toBe(0);
+    const output = JSON.stringify({ stdout: result.stdout, stderr: result.stderr });
+    expect(result.error, output).toBeUndefined();
+    expect(result.signal, output).toBeNull();
+    expect(result.status, output).toBe(0);
     const report = result.stdout
       .split("\n")
       .find((line) => line.startsWith("ROOT_PROJECT_RESOLUTION "));
@@ -652,7 +682,32 @@ describe("projects vitest config", () => {
     expect(testConfig.sequence).toMatchObject({ groupOrder: 1 });
   });
 
-  it.each(["logbook", "team-reports", "workboard"])(
+  it.each([
+    "src/wizard/setup.inference-recovery.integration.test.ts",
+    "src/plugins/loader.trust-diagnostics.test.ts",
+  ])("routes host-owned SQLite caller %s through the infra process", (file) => {
+    const project = "test/vitest/vitest.infra.config.ts";
+    const testConfig = requireTestConfig(createInfraVitestConfig({}));
+    expect(buildVitestRunPlans([file]).map((plan) => plan.config)).toEqual([project]);
+    expect(testConfig.include).toContain(file);
+    expect(testConfig.pool).toBe("forks");
+    expect(rootVitestProjects).toContain(project);
+    expect(fullSuiteVitestShards.flatMap((shard) => shard.projects ?? [])).toContain(project);
+  });
+
+  it("keeps Slack's real cooldown store in its forked project", () => {
+    const project = "test/vitest/vitest.extension-slack.config.ts";
+    expect(requireTestConfig(createExtensionSlackVitestConfig({})).pool).toBe("forks");
+    expect(
+      buildVitestRunPlans(["extensions/slack/src/monitor/presence-cooldown-store.test.ts"]).map(
+        (plan) => plan.config,
+      ),
+    ).toEqual([project]);
+    expect(resolveExtensionTestConfig("extensions/slack")).toBe(project);
+    expect(rootVitestProjects).toContain(project);
+  });
+
+  it.each(["logbook", "memory-core", "team-reports", "workboard"])(
     "runs %s database owners in main-thread hosts across focused and full suites",
     (pluginId) => {
       const project = "test/vitest/vitest.extension-database-workers.config.ts";
@@ -670,15 +725,26 @@ describe("projects vitest config", () => {
       expect(testConfig.pool).toBe("forks");
       expect(testConfig.isolate).toBe(true);
       expect(testConfig.include).toEqual([
-        "logbook/**/*.test.ts",
-        "team-reports/**/*.test.ts",
-        "workboard/**/*.test.ts",
-        "imessage/src/approval-reactions.persistence.test.ts",
-        "imessage/src/send.sqlite.test.ts",
+        ...databaseWorkerExtensionTestRoots.map(
+          (root) => `${root.replace(/^extensions\//u, "")}/**/*.test.ts`,
+        ),
+        ...databaseWorkerExtensionTestFiles.map((file) => file.replace(/^extensions\//u, "")),
       ]);
       expect(requireTestConfig(createExtensionsVitestConfig({})).exclude).toContain(
         `${pluginId}/**`,
       );
+    },
+  );
+
+  it.each(databaseWorkerExtensionTestFiles)(
+    "routes real extension database consumer %s to its fork owner",
+    (file) => {
+      const project = "test/vitest/vitest.extension-database-workers.config.ts";
+      const config = requireTestConfig(createExtensionDatabaseWorkersVitestConfig({}));
+      expect(buildVitestRunPlans([file]).map((plan) => plan.config)).toEqual([project]);
+      expect(config.include).toContain(file.replace(/^extensions\//u, ""));
+      expect(config.pool).toBe("forks");
+      expect(config.isolate).toBe(true);
     },
   );
 

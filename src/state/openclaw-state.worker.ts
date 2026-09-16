@@ -4,6 +4,9 @@ import {
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
 import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
+import { executeCronStoreSaveCommand } from "../cron/store/save.worker.js";
+import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
+import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -15,6 +18,9 @@ import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
+import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
+import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import { readPluginMetadataStateRowSync } from "../plugins/installed-plugin-index-row.js";
 import {
   ensureProjectRegistrySchema,
@@ -46,6 +52,7 @@ import {
   summarizeTaskRecordsForFlowInDatabase,
 } from "../tasks/task-registry.store.kernel.js";
 import { readTaskRegistryStatusSnapshot } from "../tasks/task-registry.store.status.js";
+import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
 import {
   openClawStateDatabaseCache,
   retainOpenClawStateDatabase,
@@ -139,12 +146,28 @@ function createSharedStateWorkerBackend(
           ? withArtifactPreservingStateReads(read)
           : read();
       }
+      if (command.type === "modelCatalog.remote.read") {
+        const read = () =>
+          readRemoteModelCatalog({
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+          });
+        return command.input.artifactPreservingReadOnly
+          ? withArtifactPreservingStateReads(read)
+          : read();
+      }
       if (command.type === "plugins.metadata.read") {
         return readPluginMetadataStateRowSync(
           command.input.selector,
           { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
           command.input.artifactPreservingReadOnly,
         );
+      }
+      if (command.type === "plugins.deferredMigrations.read") {
+        return readDeferredPluginMigrations({
+          path: context.databasePath,
+          env: getSqliteWorkerStateContext().environment,
+        });
       }
       if (command.type === "claws.install-schema-versions") {
         return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
@@ -264,6 +287,17 @@ function createSharedStateWorkerBackend(
           };
         }
       }
+      if (isPluginStateWorkerCommand(command)) {
+        return executePluginStateCommand(
+          command,
+          {
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+          },
+          open,
+          nativeDatabase?.db.isOpen === true,
+        );
+      }
       if (command.type === "config.health.read") {
         const read = command.input.artifactPreserving
           ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly
@@ -278,6 +312,12 @@ function createSharedStateWorkerBackend(
       const database = open();
       if (command.type === "cron.loadMutable") {
         return loadMutableCronStoreInWorker(database, command.input.storeKey);
+      }
+      if (command.type === "cron.save" || command.type === "cron.saveChanges") {
+        return executeCronStoreSaveCommand(command, database);
+      }
+      if (command.type === "deliveryQueue.countFailed") {
+        return countFailedDeliveryQueueEntriesInDatabase(database);
       }
       if (
         command.type === "sessionDelivery.enqueue" ||
@@ -301,6 +341,12 @@ function createSharedStateWorkerBackend(
         path: context.databasePath,
         env: getSqliteWorkerStateContext().environment,
       };
+      if (command.type === "backup.recordOutcome") {
+        return runOpenClawStateWriteTransaction(
+          ({ db }) => recordBackupRunInDatabase(db, command.input),
+          writeOptions,
+        );
+      }
       if (command.type === "projects.findRoot") {
         ensureProjectRegistrySchema(writeOptions);
         return resolveRecordedProjectRootInDatabase(database.db, command.input.repoRoot);

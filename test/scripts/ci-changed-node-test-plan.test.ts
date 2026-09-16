@@ -1336,7 +1336,7 @@ describe("CI changed Node test plan", () => {
     ).toEqual([
       {
         checkName: "checks-node-changed-extensions-config",
-        configs: ["test/vitest/vitest.extension-memory.config.ts"],
+        configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
         planConcurrency: 1,
         predictedSeconds: expect.any(Number),
         requiresDist: false,
@@ -1471,7 +1471,7 @@ describe("CI changed Node test plan", () => {
     expect(shards).not.toBeNull();
     expect(shards).toContainEqual({
       checkName: "checks-node-changed-extensions-config",
-      configs: ["test/vitest/vitest.extension-memory.config.ts"],
+      configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
       planConcurrency: 1,
       predictedSeconds: expect.any(Number),
       requiresDist: false,

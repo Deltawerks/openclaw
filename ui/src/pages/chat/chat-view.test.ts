@@ -592,6 +592,7 @@ function createChatModelControlsProps(state: ChatHeaderTestState): ChatModelCont
   );
   return {
     activeRunId: state.chatRunId,
+    activeRunSessionKey: state.chatRunId ? state.sessionKey : undefined,
     connected: state.connected,
     gatewayAvailable: Boolean(state.client),
     loading: state.chatLoading,
@@ -1557,6 +1558,9 @@ describe("chat history pagination", () => {
       "earlier history action",
     ) as HTMLButtonElement;
     expect(button.textContent).toContain("Show earlier");
+    expect(button.getAttribute("aria-label")).toBe("Show earlier");
+    expect(button.getAttribute("aria-busy")).toBe("false");
+    expect(button.disabled).toBe(false);
     expect(button.closest(".chat-thread")).not.toBeNull();
     button.click();
     expect(onShowEarlier).toHaveBeenCalledOnce();
@@ -1569,10 +1573,13 @@ describe("chat history pagination", () => {
       ".chat-history-boundary__action",
       "loading earlier history action",
     ) as HTMLButtonElement;
-    expect(loadingButton.textContent).toContain("Loading earlier history");
+    expect(loadingButton.textContent?.trim()).toBe("Loading earlier…");
+    expect(loadingButton.getAttribute("aria-label")).toBe("Loading earlier…");
     expect(loadingButton.getAttribute("aria-busy")).toBe("true");
     expect(loadingButton.disabled).toBe(true);
     expect(loadingButton.closest(".chat-history-boundary--loading")).not.toBeNull();
+    loadingButton.click();
+    expect(onShowEarlier).toHaveBeenCalledOnce();
 
     renderChatInto(container, {
       historyPagination: { hasMore: true, loading: false, onShowEarlier },
@@ -1582,6 +1589,9 @@ describe("chat history pagination", () => {
       ".chat-history-boundary__action",
       "retry earlier history action",
     ) as HTMLButtonElement;
+    expect(retryButton.textContent?.trim()).toBe("Show earlier");
+    expect(retryButton.getAttribute("aria-label")).toBe("Show earlier");
+    expect(retryButton.getAttribute("aria-busy")).toBe("false");
     expect(retryButton.disabled).toBe(false);
     retryButton.click();
     expect(onShowEarlier).toHaveBeenCalledTimes(2);
@@ -7558,6 +7568,20 @@ describe("chat model controls", () => {
     expect(modelSelect.getAttribute("aria-disabled")).toBe("true");
   });
 
+  it("shows the selected model for an idle session with stale running status", () => {
+    const { state } = createChatHeaderState({
+      model: "primary",
+      modelProvider: "example",
+      models: [{ id: "primary", name: "Primary", provider: "example" }],
+    });
+    const session = expectDefined(state.sessionsResult?.sessions[0], "selected session");
+    Object.assign(session, { status: "running", hasActiveRun: false });
+    const trigger = getChatModelSelect(renderModelControls(state));
+    expect(trigger.textContent).toContain("Primary");
+    expect(trigger.textContent).not.toContain("Model pending");
+    expect(trigger.dataset.chatSelectValue).toBe("example/primary");
+  });
+
   it("shows the session's active fallback model without changing its selected preference", () => {
     const { state } = createChatHeaderState({
       model: "gpt-5.5",
@@ -7584,6 +7608,104 @@ describe("chat model controls", () => {
         .querySelector('[data-chat-model-option="codex/gpt-5.5"]')
         ?.getAttribute("aria-selected"),
     ).toBe("true");
+  });
+
+  it("tracks the current run's primary and fallback model without changing its selection", () => {
+    const { state } = createChatHeaderState({
+      model: "primary",
+      modelProvider: "example",
+      models: [
+        { id: "primary", name: "Primary", provider: "example" },
+        { id: "fallback", name: "Fallback", provider: "example" },
+      ],
+    });
+    state.chatRunId = "current-run";
+    const session = expectDefined(state.sessionsResult?.sessions[0], "selected session");
+    Object.assign(session, {
+      hasActiveRun: true,
+      activeRunIds: ["current-run"],
+      activeModel: "primary",
+      activeModelProvider: "example",
+    });
+    const container = renderModelControls(state);
+    expect(getChatModelSelect(container).textContent).toContain("Primary");
+
+    session.activeModel = "fallback";
+    renderModelControls(state, {}, container);
+    expect(getChatModelSelect(container).textContent).toContain("Fallback");
+    expect(getChatModelSelect(container).dataset.chatSelectValue).toBe("example/primary");
+    expect(
+      container
+        .querySelector('[data-chat-model-option="example/primary"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  it("preserves the executing provider when its model id exists in another provider's catalog", () => {
+    const { state } = createChatHeaderState({
+      model: "shared",
+      modelProvider: "example",
+      models: [{ id: "shared", name: "Configured model", provider: "example" }],
+    });
+    state.chatRunId = "current-run";
+    Object.assign(expectDefined(state.sessionsResult?.sessions[0], "selected session"), {
+      hasActiveRun: true,
+      activeRunIds: ["current-run"],
+      activeModel: "shared",
+      activeModelProvider: "fallback-provider",
+    });
+    const trigger = getChatModelSelect(renderModelControls(state));
+    expect(trigger.textContent).toContain("fallback-provider/shared");
+    expect(trigger.dataset.chatSelectValue).toBe("example/shared");
+  });
+
+  it.each([
+    {
+      name: "previous idle fallback",
+      hasActiveRun: false,
+      activeRunIds: [],
+      activeModel: "fallback",
+    },
+    {
+      name: "previous run",
+      hasActiveRun: true,
+      activeRunIds: ["previous-run"],
+      activeModel: "fallback",
+    },
+    {
+      name: "previous run without exact identities",
+      hasActiveRun: true,
+      activeRunIds: undefined,
+      activeModel: "fallback",
+    },
+    {
+      name: "unreported executing model",
+      hasActiveRun: true,
+      activeRunIds: ["current-run"],
+      activeModel: undefined,
+    },
+  ])("shows a pending model instead of the $name during a new run", (row) => {
+    const { state } = createChatHeaderState({
+      model: "primary",
+      modelProvider: "example",
+      models: [
+        { id: "primary", name: "Primary", provider: "example" },
+        { id: "fallback", name: "Fallback", provider: "example" },
+      ],
+    });
+    state.chatRunId = "current-run";
+    const session = expectDefined(state.sessionsResult?.sessions[0], "selected session");
+    Object.assign(session, {
+      hasActiveRun: row.hasActiveRun,
+      activeRunIds: row.activeRunIds,
+      activeModel: row.activeModel,
+      activeModelProvider: row.activeModel ? "example" : undefined,
+    });
+    const trigger = getChatModelSelect(renderModelControls(state));
+    expect(trigger.getAttribute("aria-label")).toBe("Chat model: Model pending");
+    expect(trigger.textContent).not.toContain("Primary");
+    expect(trigger.textContent).not.toContain("Fallback");
+    expect(trigger.dataset.chatSelectValue).toBe("example/primary");
   });
 
   it("does not borrow selected-model metadata for an unknown active fallback", () => {
