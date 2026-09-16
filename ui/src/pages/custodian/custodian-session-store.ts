@@ -416,7 +416,7 @@ export class CustodianSessionStore {
   }
 
   private emit(): void {
-    this.inputDrafts.reconcile(this.inferenceState === "ready", this);
+    this.inputDrafts.reconcile(this);
     this.transcript.settleRecovery(
       this.transcriptBlocked,
       () => void this.refreshTranscriptIfIdle(),
@@ -580,7 +580,7 @@ export class CustodianSessionStore {
       }
       return;
     }
-    this.clearConversation();
+    this.clearConversation(true);
     this.startSession(client, true);
   }
 
@@ -631,7 +631,7 @@ export class CustodianSessionStore {
     return true;
   }
 
-  private clearConversation(): void {
+  private clearConversation(preserveDraft = false): void {
     this.messages = [];
     this.dismissedQuestions = new Set();
     this.answeredQuestions = new Set();
@@ -639,7 +639,10 @@ export class CustodianSessionStore {
     this.error = null;
     this.transcript.reset();
     this.inferenceState = "unverified";
-    this.inputDrafts.ordinary = { value: "" };
+    // Initial metadata may arrive after a local draft; only replacement owners clear it.
+    if (!preserveDraft) {
+      this.inputDrafts.ordinary = { value: "" };
+    }
     this.inputDrafts.resetPrompt(this, false);
     this.wizardInputPending = this.questionReplyUncertain = false;
     this.earlierBoundaryAfterId = null;

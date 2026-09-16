@@ -112,7 +112,16 @@ export const pluginMutationHandlers: GatewayRequestHandlers = {
           "Local plugin artifacts require a connection from the Gateway host. Run `openclaw plugins install` on that host.",
         );
       }
-      return installManagedPlugin({ request: params, ...lifecycle });
+      return installManagedPlugin({
+        request: params,
+        ...lifecycle,
+        // The admin's install request accepts this staged surface, not new grants.
+        // The artifact owner rechecks it before commit; no second request is needed.
+        onCapabilityConsent: async (review) => {
+          lifecycle.beforePersistentApply();
+          return { reviewToken: review.reviewToken };
+        },
+      });
     },
   ),
   "plugins.uninstall": lifecycleHandler(

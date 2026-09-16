@@ -529,6 +529,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
         session = {
           engine,
           welcome,
+          optionalWelcome: params.welcomeVariant === undefined && !persistWelcome,
           ...(welcomeQuestion ? { welcomeQuestion } : {}),
           ...(greetingAuditSequence !== undefined
             ? { welcomeAuditSequence: greetingAuditSequence }
@@ -543,6 +544,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
             {
               sessionId,
               reply: session.welcome,
+              optionalWelcome: session.optionalWelcome,
               action: "none",
               ...(session.welcomeQuestion ? { question: session.welcomeQuestion } : {}),
             },
@@ -564,6 +566,7 @@ export const systemAgentHandlers: GatewayRequestHandlers = {
           buildSystemAgentRejoinResult({
             sessionId,
             welcome: session.welcome,
+            optionalWelcome: session.optionalWelcome,
             ...(session.welcomeQuestion ? { welcomeQuestion: session.welcomeQuestion } : {}),
             engine: session.engine,
           }),

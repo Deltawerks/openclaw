@@ -19313,6 +19313,7 @@ public struct SystemAgentChatParams: Codable, Sendable {
 public struct SystemAgentChatResult: Codable, Sendable {
     public let sessionid: String
     public let reply: String
+    public let optionalwelcome: Bool?
     public let sensitive: Bool?
     public let wizardinputpending: Bool?
     public let action: AnyCodable
@@ -19327,6 +19328,7 @@ public struct SystemAgentChatResult: Codable, Sendable {
     public init(
         sessionid: String,
         reply: String,
+        optionalwelcome: Bool? = nil,
         sensitive: Bool? = nil,
         wizardinputpending: Bool? = nil,
         action: AnyCodable,
@@ -19340,6 +19342,7 @@ public struct SystemAgentChatResult: Codable, Sendable {
     {
         self.sessionid = sessionid
         self.reply = reply
+        self.optionalwelcome = optionalwelcome
         self.sensitive = sensitive
         self.wizardinputpending = wizardinputpending
         self.action = action
@@ -19355,6 +19358,7 @@ public struct SystemAgentChatResult: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case sessionid = "sessionId"
         case reply
+        case optionalwelcome = "optionalWelcome"
         case sensitive
         case wizardinputpending = "wizardInputPending"
         case action

@@ -472,6 +472,9 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
                 }
               }}
             ></textarea>
+            <span class="agent-chat__composer-placeholder" aria-hidden="true"
+              >${animatedPlaceholder}</span
+            >
             <span
               id=${menuAnnouncementId}
               class="sr-only"

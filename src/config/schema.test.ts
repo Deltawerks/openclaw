@@ -1301,6 +1301,21 @@ describe("config schema", () => {
     expect(schema?.properties).toBeUndefined();
   });
 
+  it("preserves wildcard field metadata when plugin tiers become concrete", () => {
+    const merged = buildConfigSchemaCore({
+      plugins: [{ id: "setup-fixture", configSchema: { type: "object", properties: {} } }],
+      cache: false,
+    });
+    for (const suffix of ["hooks.timeoutMs", "hooks.timeouts.*", "hooks.allowPromptInjection"]) {
+      expect(merged.uiHints[`plugins.entries.setup-fixture.${suffix}`]).toEqual(
+        baseSchema.uiHints[`plugins.entries.*.${suffix}`],
+      );
+    }
+    expect(merged.uiHints["plugins.entries.setup-fixture.hooks.timeoutMs"]?.placeholder).toBe(
+      "Automatic (per hook)",
+    );
+  });
+
   it("materializes resolved common and advanced tiers in schema hints", () => {
     expect(baseSchema.uiHints["gateway.port"]?.advanced).toBe(false);
     expect(baseSchema.uiHints["gateway.reload.mode"]?.advanced).toBe(true);

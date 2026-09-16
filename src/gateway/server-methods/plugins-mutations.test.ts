@@ -6,13 +6,16 @@ import {
   readCapabilityConsentErrorDetails,
   type CapabilityConsentErrorDetails,
 } from "../../../packages/gateway-protocol/src/capability-consent-error-details.js";
+import { buildPluginCapabilityConsentReview } from "../../plugins/capability-summary.js";
 import {
   PluginInstallPersistedError,
   PluginRuntimeApplicationError,
   type PluginLifecycleRuntimeApply,
 } from "../../plugins/lifecycle.js";
 import { ManagedPluginLifecycleError } from "../../plugins/management-lifecycle-error.js";
+import type { installManagedPlugin } from "../../plugins/management-mutations.js";
 import { OpenClawStateLeaseError } from "../../state/openclaw-state-lease.js";
+import type { GatewayRequestHandler } from "./types.js";
 
 const managementMocks = vi.hoisted(() => ({
   install: vi.fn(),
@@ -41,6 +44,10 @@ async function callHandler(
   runtimeConfig: Record<string, unknown> = {},
   applyRuntime: PluginLifecycleRuntimeApply = async () => application,
   localClient = false,
+  authority: Pick<
+    Parameters<GatewayRequestHandler>[0],
+    "signal" | "sessionMutationCommitGuard"
+  > = {},
 ) {
   let ok: boolean | null = null;
   let response: unknown;
@@ -49,6 +56,7 @@ async function callHandler(
     pluginMutationHandlers[method],
     "pluginMutationHandlers[method] test invariant",
   )({
+    ...authority,
     params,
     req: {} as never,
     // Minimal transport fixture: only the host-attested ingress marker is read here.
@@ -128,6 +136,66 @@ describe("plugin management Gateway mutation handlers", () => {
       expect.objectContaining({ request }),
     );
   });
+
+  it.each(["current", "cancelled", "revoked"] as const)(
+    "binds initial installation acceptance to the staged surface and a %s request",
+    async (state) => {
+      const config = {
+        plugins: { entries: { workboard: { hooks: { allowPromptInjection: false } } } },
+      };
+      const originalConfig = structuredClone(config);
+      const review = buildPluginCapabilityConsentReview({
+        pluginId: "workboard",
+        manifest: { contracts: { tools: ["workboard_read"] } },
+        record: { source: "clawhub", clawhubPackage: "community/workboard" },
+        config,
+      });
+      const abort = new AbortController();
+      let owned = true;
+      managementMocks.install.mockImplementation(
+        async (options: Parameters<typeof installManagedPlugin>[0]) => {
+          if (state === "cancelled") {
+            abort.abort(new Error("Install request cancelled"));
+          }
+          owned = state !== "revoked";
+          const acknowledge = expectDefined(
+            options.onCapabilityConsent,
+            "staged install acceptance",
+          );
+          expect(await acknowledge(review)).toEqual({ reviewToken: review.reviewToken });
+          return { plugin: workboard, application };
+        },
+      );
+      const result = await callHandler(
+        "plugins.install",
+        { source: "clawhub", packageName: "community/workboard" },
+        config,
+        undefined,
+        false,
+        {
+          signal: abort.signal,
+          sessionMutationCommitGuard: () => {
+            if (!owned) {
+              throw new Error("Install request owner changed");
+            }
+          },
+        },
+      );
+      expect(result.ok).toBe(state === "current");
+      if (state !== "current") {
+        expect(result.error).toHaveProperty(
+          "message",
+          state === "cancelled" ? "Install request cancelled" : "Install request owner changed",
+        );
+      }
+      expect(managementMocks.install).toHaveBeenCalledOnce();
+      expect(config).toEqual(originalConfig);
+      expect(review.grants.hooks).toEqual({
+        allowPromptInjection: { configured: false, effective: false },
+        allowConversationAccess: { effective: false },
+      });
+    },
+  );
 
   it.each([undefined, ["Plugin cleanup did not finish; inspect the Gateway log."]])(
     "returns the completed runtime application and cleanup warnings %j from refresh",
