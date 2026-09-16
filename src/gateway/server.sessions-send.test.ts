@@ -179,6 +179,8 @@ afterAll(() =>
   runQaGatewayFixture(
     () => continuations.settle(),
     async () => {
+      // Required-close failure retains the Gateway fixture and fences successors.
+      // Restore its selectors and continuation observer only after a verified close.
       await server.close();
       envSnapshot.restore();
       continuations.restore();
