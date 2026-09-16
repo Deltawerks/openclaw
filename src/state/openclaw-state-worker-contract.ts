@@ -11,6 +11,7 @@ import type { CronStoreWorkerOperations } from "../cron/store/load-worker.types.
 import type { CronStoreSaveWorkerOperations } from "../cron/store/save-worker.types.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
+import type { DeviceIdentity } from "../infra/device-identity-store.js";
 import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-queue.worker-contract.js";
 import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
@@ -59,6 +60,11 @@ type TaskFlowReadQuery = {
   token?: string;
 };
 
+export type OpenClawStateWorkerOpenPreparation = {
+  type: "deviceIdentity";
+  identityKey: string;
+};
+
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
 export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations &
   HostedCatalogSnapshotWorkerOperations &
@@ -68,6 +74,8 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
   CronStoreSaveWorkerOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations & {
+    "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
+    "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
     "doctor.databaseBloat": {
       input: undefined;
       output: ReturnType<typeof readSqliteDatabaseBloat>;

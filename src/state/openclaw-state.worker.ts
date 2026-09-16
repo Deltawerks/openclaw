@@ -14,6 +14,10 @@ import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
 import { executeCronStoreSaveCommand } from "../cron/store/save.worker.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
+import {
+  loadDeviceIdentityIfPresent,
+  loadOrCreateDeviceIdentity,
+} from "../infra/device-identity.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -94,6 +98,7 @@ import { assertOpenClawStateLeaseWorkerOwnedInTransaction } from "./openclaw-sta
 import type {
   OpenClawStateWorkerOperations,
   OpenClawStateWorkerInspectionOperations,
+  OpenClawStateWorkerOpenPreparation,
 } from "./openclaw-state-worker-contract.js";
 import { executeUserPreferenceCommand } from "./user-preferences.worker.js";
 
@@ -104,8 +109,15 @@ type ManagedFlowWriteResult =
 
 export function createSqliteWorkerBackend(
   _input: undefined,
-  context: { databasePath: string },
+  context: { databasePath: string; preparation?: OpenClawStateWorkerOpenPreparation },
 ): SqliteWorkerBackend<OpenClawStateWorkerOperations & OpenClawStateWorkerInspectionOperations> {
+  if (context.preparation?.type === "deviceIdentity") {
+    loadOrCreateDeviceIdentity({
+      path: context.databasePath,
+      env: getSqliteWorkerStateContext().environment,
+      identityKey: context.preparation.identityKey,
+    });
+  }
   const database = openOpenClawStateDatabase({
     path: context.databasePath,
     env: getSqliteWorkerStateContext().environment,
@@ -157,6 +169,31 @@ function createSharedStateWorkerBackend(
     execute(command) {
       if (closed) {
         throw new Error("Shared-state worker is closed");
+      }
+      if (command.type === "deviceIdentity.read") {
+        return loadDeviceIdentityIfPresent({
+          path: context.databasePath,
+          identityKey: command.input.identityKey,
+          env: getSqliteWorkerStateContext().environment,
+        });
+      }
+      if (command.type === "deviceIdentity.load") {
+        try {
+          return loadOrCreateDeviceIdentity({
+            path: context.databasePath,
+            identityKey: command.input.identityKey,
+            env: getSqliteWorkerStateContext().environment,
+          });
+        } finally {
+          // An existing-only actor may acquire its first writable handle through this owner.
+          const database = openClawStateDatabaseCache.getCachedOpenClawStateDatabase(
+            context.databasePath,
+          );
+          if (!nativeDatabase && database) {
+            borrow = retainOpenClawStateDatabase(database);
+            nativeDatabase = database;
+          }
+        }
       }
       if (command.type === "doctor.databaseBloat") {
         return readSqliteDatabaseBloat({
