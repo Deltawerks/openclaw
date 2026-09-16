@@ -146,8 +146,12 @@ suite.define(() => {
     await expect
       .poll(async () => (await tabs.boundingBox())?.y ?? -1)
       .toBeGreaterThanOrEqual(toolbar.y + toolbar.height);
-    const titleBox = (await header.locator(".page-title").boundingBox())!;
-    const tabsBox = (await tabs.boundingBox())!;
+    // Both elements move together while the sidebar collapses; separate browser
+    // reads can compare different animation frames and report false misalignment.
+    const { titleBox, tabsBox } = await header.evaluate((element) => ({
+      titleBox: element.querySelector(".page-title")!.getBoundingClientRect().toJSON(),
+      tabsBox: element.querySelector(".hub-page-header__tabs")!.getBoundingClientRect().toJSON(),
+    }));
     expect(titleBox.height).toBeGreaterThan(1);
     expect(titleBox.y).toBeGreaterThanOrEqual(tabsBox.y + tabsBox.height);
     expect(Math.abs(titleBox.x - tabsBox.x)).toBeLessThanOrEqual(1);

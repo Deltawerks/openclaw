@@ -45,7 +45,7 @@ export const filePreviewModalStyles = css`
     background: transparent;
     border: none;
     border-radius: var(--radius-md);
-    cursor: pointer;
+    cursor: var(--cursor-action);
   }
   .close-button:hover {
     color: var(--text-strong);
