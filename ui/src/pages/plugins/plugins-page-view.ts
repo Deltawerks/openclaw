@@ -18,7 +18,11 @@ import { renderPluginConsentDialog } from "./consent-dialog.ts";
 import type { InstalledPluginDetailTab } from "./detail-tabs.ts";
 import type { PluginDiscoveryController } from "./plugin-discovery-controller.ts";
 import type { PluginHelpController } from "./plugin-help-controller.ts";
-import { pluginRowKey, renderPluginRowMessage, type PluginRowMessage } from "./plugin-row-message.ts";
+import {
+  pluginRowKey,
+  renderPluginRowMessage,
+  type PluginRowMessage,
+} from "./plugin-row-message.ts";
 import type { PluginsConsentController } from "./plugins-consent-controller.ts";
 import { renderPluginsHubHeader } from "./plugins-hub-header.ts";
 import { PLUGINS_HUB_PANEL_ID, type PluginsHubTab } from "./plugins-hub.ts";
