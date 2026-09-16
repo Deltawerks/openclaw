@@ -7,6 +7,7 @@ import type { SystemAgentApprovalRequestPayload } from "../../infra/system-agent
 import { ExecApprovalManager } from "../exec-approval-manager.js";
 import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
 import * as operatorApprovalStore from "../operator-approval-store.async.js";
+import * as nativeOperatorApprovalStore from "../operator-approval-store.js";
 import { createApprovalHandlers } from "./approval.js";
 import { createClient, createContext, invoke } from "./approval.test-support.js";
 
@@ -23,6 +24,52 @@ function createFixture() {
     systemAgentApprovalManager: managers.systemAgent,
   });
   return { managers, handlers };
+}
+
+function createPendingFixture() {
+  const { managers, handlers } = createFixture();
+  const record = managers.exec.create({ command: "echo fixture" }, 60_000, "refused-lookup");
+  let stored: nativeOperatorApprovalStore.OperatorApprovalRecord | undefined;
+  vi.spyOn(nativeOperatorApprovalStore, "insertOperatorApproval").mockImplementation(
+    ({ approval }) => {
+      stored = {
+        ...approval,
+        resolutionRef: "fixture:refused-lookup",
+        status: "pending",
+        requester: { deviceId: null, clientId: null, deviceTokenAuth: false },
+        reviewerDeviceIds: [],
+        source: {
+          agentId: null,
+          sessionKey: null,
+          sessionId: null,
+          runId: null,
+          toolCallId: null,
+          toolName: null,
+        },
+        audienceSessionKeys: [],
+        updatedAtMs: approval.createdAtMs,
+        decision: null,
+        terminalReason: null,
+        resolvedAtMs: null,
+        resolver: null,
+        consumedAtMs: null,
+        consumedBy: null,
+      };
+      return { outcome: "inserted", record: stored };
+    },
+  );
+  const deny = vi
+    .spyOn(nativeOperatorApprovalStore, "forceDenyOperatorApproval")
+    .mockReturnValue({ outcome: "not-found" });
+  const decision = managers.exec.register(record, 60_000);
+  return {
+    managers,
+    handlers,
+    record,
+    stored: expectDefined(stored, "registered fixture"),
+    deny,
+    decision,
+  };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -75,27 +122,101 @@ it.each([
   },
 );
 
-it("keeps an unknown worker lookup outcome out of corruption reconciliation", async () => {
-  const { managers, handlers } = createFixture();
-  vi.spyOn(operatorApprovalStore, "getOperatorApprovalDetailed").mockRejectedValue(
-    new AggregateError([new SqliteWorkerError("controlled unknown lookup", "outcome-unknown")]),
-  );
-  const reconciliations = [managers.exec, managers.plugin, managers.systemAgent].map((manager) =>
-    vi.spyOn(manager, "reconcileDurableLookup"),
-  );
-  const response = await invoke({
-    handlers,
-    method: "approval.get",
-    body: { id: "unknown-lookup" },
-    client: createClient({ deviceId: "reviewer" }),
-  });
-  expect(response).toMatchObject({ ok: false, error: { code: "UNAVAILABLE" } });
-  for (const reconcile of reconciliations) {
-    expect(reconcile).not.toHaveBeenCalled();
-  }
-});
+it.each(["closed", "overloaded", "unavailable", "outcome-unknown"] as const)(
+  "preserves a pending approval after a %s worker lookup refusal",
+  async (code) => {
+    const { managers, handlers, record, stored, deny, decision } = createPendingFixture();
+    try {
+      let decided = false;
+      void decision.then(() => {
+        decided = true;
+      });
+      const lookup = vi
+        .spyOn(operatorApprovalStore, "getOperatorApprovalDetailed")
+        .mockRejectedValueOnce(
+          new AggregateError([new SqliteWorkerError("controlled worker refusal", code)]),
+        )
+        .mockResolvedValue({
+          outcome: "found",
+          record: stored,
+        });
+      const client = createClient({ deviceId: "reviewer" });
+      expect(
+        await invoke({ handlers, method: "approval.get", body: { id: record.id }, client }),
+      ).toMatchObject({ ok: false, error: { code: "UNAVAILABLE" } });
+      expect(record.resolvedAtMs).toBeUndefined();
+      expect(record.terminalReason).toBeUndefined();
+      expect(decided).toBe(false);
+      expect(managers.exec.getLiveSnapshot(record.id)).toBe(record);
+      expect(
+        await invoke({ handlers, method: "approval.get", body: { id: record.id }, client }),
+      ).toMatchObject({ ok: true, result: { approval: { status: "pending" } } });
+      expect(lookup).toHaveBeenCalledTimes(2);
+      expect(deny).not.toHaveBeenCalled();
+      expect(decided).toBe(false);
+    } finally {
+      await Promise.all(Object.values(managers).map((manager) => manager.drain()));
+    }
+  },
+);
 
-it.each(["scope", "invalidated", "aborted"] as const)(
+it.each(["approval.get", "approval.history"] as const)(
+  "continues accepted %s work after a transport disconnect",
+  async (method) => {
+    const { managers, handlers, record, stored, deny } = createPendingFixture();
+    const started = createDeferred();
+    const lookup =
+      createDeferred<
+        Awaited<ReturnType<typeof operatorApprovalStore.getOperatorApprovalDetailed>>
+      >();
+    const history =
+      createDeferred<
+        Awaited<ReturnType<typeof operatorApprovalStore.listTerminalOperatorApprovals>>
+      >();
+    let assertCurrent: (() => void) | undefined;
+    vi.spyOn(operatorApprovalStore, "getOperatorApprovalDetailed").mockImplementation((params) => {
+      assertCurrent = params.assertCurrent;
+      started.resolve();
+      return lookup.promise;
+    });
+    vi.spyOn(operatorApprovalStore, "listTerminalOperatorApprovals").mockImplementation(() => {
+      started.resolve();
+      return history.promise;
+    });
+    const controller = new AbortController();
+    const client = expectDefined(createClient({ deviceId: "reviewer" }), "fixture client");
+    client.connectionSignal = controller.signal;
+    const pending = invoke({
+      handlers,
+      method,
+      body: method === "approval.get" ? { id: record.id } : {},
+      client,
+    });
+    try {
+      await started.promise;
+      controller.abort();
+      if (method === "approval.get") {
+        expect(expectDefined(assertCurrent, "lookup admission")).not.toThrow();
+      }
+      lookup.resolve({ outcome: "found", record: stored });
+      history.resolve({ records: [] });
+      expect(await pending).toMatchObject({
+        ok: true,
+        result: method === "approval.get" ? { approval: { status: "pending" } } : { items: [] },
+      });
+      expect(managers.exec.getLiveSnapshot(record.id)).toBe(record);
+      expect(record.resolvedAtMs).toBeUndefined();
+      expect(deny).not.toHaveBeenCalled();
+    } finally {
+      lookup.resolve({ outcome: "found", record: stored });
+      history.resolve({ records: [] });
+      await pending;
+      await Promise.all(Object.values(managers).map((manager) => manager.drain()));
+    }
+  },
+);
+
+it.each(["scope", "invalidated"] as const)(
   "does not publish history after %s revocation during its storage wait",
   async (change) => {
     const { handlers } = createFixture();
@@ -112,16 +233,12 @@ it.each(["scope", "invalidated", "aborted"] as const)(
     if (!client) {
       throw new Error("expected fixture client");
     }
-    const controller = new AbortController();
-    client.connectionSignal = controller.signal;
     const pending = invoke({ handlers, method: "approval.history", body: {}, client });
     await started.promise;
     if (change === "scope") {
       client.connect.scopes = [];
-    } else if (change === "invalidated") {
-      client.invalidated = true;
     } else {
-      controller.abort();
+      client.invalidated = true;
     }
     history.resolve({ records: [] });
     expect(await pending).toMatchObject({ ok: false, error: { message: "approval not found" } });

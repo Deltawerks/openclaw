@@ -144,7 +144,6 @@ async function loadVisibleApproval(params: {
   // every durable read and no unauthorized lookup may reach the bridge.
   const isAuthorized = () =>
     !params.client?.invalidated &&
-    !params.client?.connectionSignal?.aborted &&
     (params.allowApprovalRuntime
       ? canResolveOperatorApproval(params.client)
       : canReviewOperatorApproval(params.client));
@@ -234,9 +233,15 @@ async function loadVisibleApproval(params: {
       return null;
     }
     if (
-      collectNestedErrorCandidates(error).some(
-        (cause) => extractErrorCode(cause) === "outcome-unknown",
-      )
+      collectNestedErrorCandidates(error).some((cause) => {
+        const code = extractErrorCode(cause);
+        return (
+          code === "closed" ||
+          code === "overloaded" ||
+          code === "unavailable" ||
+          code === "outcome-unknown"
+        );
+      })
     ) {
       throw error;
     }
@@ -366,7 +371,6 @@ export function createApprovalHandlers(
       }
       const canReadHistory = () =>
         !client?.invalidated &&
-        !client?.connectionSignal?.aborted &&
         authorizeOperatorScopesForMethod("approval.history", client?.connect.scopes ?? []).allowed;
       if (!canReadHistory()) {
         respondApprovalNotFound(respond);
