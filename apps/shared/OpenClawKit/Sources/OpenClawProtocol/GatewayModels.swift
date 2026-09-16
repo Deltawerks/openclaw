@@ -10346,6 +10346,28 @@ public struct PluginInspectSource: Codable, Sendable {
     }
 }
 
+public struct PluginInstallActivity: Codable, Sendable {
+    public let activityid: String
+    public let stage: AnyCodable
+    public let status: AnyCodable
+
+    public init(
+        activityid: String,
+        stage: AnyCodable,
+        status: AnyCodable)
+    {
+        self.activityid = activityid
+        self.stage = stage
+        self.status = status
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case activityid = "activityId"
+        case stage
+        case status
+    }
+}
+
 public struct PluginInstallTrust: Codable, Sendable {
     public let disposition: AnyCodable
     public let reasons: [String]?
@@ -10785,6 +10807,32 @@ public struct PluginsInspectResult: Codable, Sendable {
         case grants
         case trust
         case catalog
+    }
+}
+
+public struct PluginsInstallProgressEvent: Codable, Sendable {
+    public let activityid: String
+    public let stage: AnyCodable
+    public let status: AnyCodable
+    public let requestid: String
+
+    public init(
+        activityid: String,
+        stage: AnyCodable,
+        status: AnyCodable,
+        requestid: String)
+    {
+        self.activityid = activityid
+        self.stage = stage
+        self.status = status
+        self.requestid = requestid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case activityid = "activityId"
+        case stage
+        case status
+        case requestid = "requestId"
     }
 }
 

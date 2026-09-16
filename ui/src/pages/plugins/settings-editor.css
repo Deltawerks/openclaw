@@ -133,10 +133,6 @@ openclaw-plugin-settings-editor {
 .plugin-editor__control .cfg-block {
   margin: 0;
 }
-.plugin-editor__permission-details {
-  border-top: 1px solid var(--border);
-  padding: 20px;
-}
 .plugin-editor__control .settings-subrows {
   margin: 0;
   padding: 0;

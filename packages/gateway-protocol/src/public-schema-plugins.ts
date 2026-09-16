@@ -29,6 +29,8 @@ export {
   PluginRuntimeApplicationSchema,
   PluginRuntimeStatusSchema,
   PluginsChangedEventSchema,
+  PluginInstallActivitySchema,
+  PluginsInstallProgressEventSchema,
   PluginsSearchParamsSchema,
   PluginsSearchResultSchema,
   PluginsCatalogBrowseParamsSchema,

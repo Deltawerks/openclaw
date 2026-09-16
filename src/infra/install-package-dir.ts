@@ -9,6 +9,7 @@ import { isRecord as isObjectRecord } from "@openclaw/normalization-core/record-
 import { runCommandWithTimeout } from "../process/exec.js";
 import { hasErrnoCode } from "./errno.js";
 import { FsSafeError, pathExists } from "./fs-safe.js";
+import { withInstallActivity, type InstallActivityObserver } from "./install-progress.js";
 import { assertCanonicalPathWithinBase } from "./install-safe-path.js";
 import { formatNpmCommandFailureOutput } from "./install-source-utils.js";
 import { tryReadJson, writeJson } from "./json-files.js";
@@ -244,7 +245,10 @@ export async function installPackageDir<
   targetDir: string;
   mode: "install" | "update";
   timeoutMs: number;
-  logger?: { info?: (message: string) => void; warn?: (message: string) => void };
+  logger?: InstallActivityObserver & {
+    info?: (message: string) => void;
+    warn?: (message: string) => void;
+  };
   copyErrorPrefix: string;
   hasDeps: boolean;
   sourceHardlinks?: InstallSourceHardlinks;
@@ -439,13 +443,15 @@ export async function installPackageDir<
     });
     stageDir = await fs.mkdtemp(path.join(installBaseRealPath, ".openclaw-install-stage-"));
     if (params.sourceDir !== undefined) {
-      await fs.cp(params.sourceDir, stageDir, {
-        recursive: true,
-        // Keep relative symlinks relative to the staged copy. Node's default
-        // rewrites them toward the source tree, which makes valid vendored
-        // package links look like install-root escapes during post-copy scans.
-        verbatimSymlinks: true,
-      });
+      await withInstallActivity(params.logger, "files", () =>
+        fs.cp(params.sourceDir!, stageDir!, {
+          recursive: true,
+          // Keep relative symlinks relative to the staged copy. Node's default
+          // rewrites them toward the source tree, which makes valid vendored
+          // package links look like install-root escapes during post-copy scans.
+          verbatimSymlinks: true,
+        }),
+      );
     }
   } catch (err) {
     return await fail(`${params.copyErrorPrefix}: ${String(err)}`, err);
@@ -458,29 +464,35 @@ export async function installPackageDir<
   }
 
   if (params.hasDeps) {
+    const dependencyDir = stageDir;
     try {
       await sanitizeManifestForNpmInstall(stageDir);
       const hiddenProjectNpmConfig = await hideProjectNpmConfigForInstall(stageDir);
       params.logger?.info?.(params.depsLogMessage);
-      const npmRes = await (async () => {
-        try {
-          return await runCommandWithTimeout(
-            // Plugins install into isolated directories, so omitting peer deps can strip
-            // runtime requirements that npm would otherwise materialize for the package.
-            // Verified on Blacksmith Ubuntu/Node 24/npm 11: `--silent` can make npm fail
-            // with empty stdout/stderr for bad specs like `workspace:^`; `--loglevel=error`
-            // stays quiet on success while preserving the actionable npm failure text.
-            ["npm", ...createSafeNpmInstallArgs({ omitDev: true, loglevel: "error" })],
-            {
-              timeoutMs: Math.max(params.timeoutMs, 300_000),
-              cwd: stageDir,
-              env: createSafeNpmInstallEnv(process.env, { npmConfigCwd: stageDir }),
-            },
-          );
-        } finally {
-          await restoreProjectNpmConfigAfterInstall(hiddenProjectNpmConfig);
-        }
-      })();
+      const npmRes = await withInstallActivity(
+        params.logger,
+        "dependencies",
+        async () => {
+          try {
+            return await runCommandWithTimeout(
+              // Plugins install into isolated directories, so omitting peer deps can strip
+              // runtime requirements that npm would otherwise materialize for the package.
+              // Verified on Blacksmith Ubuntu/Node 24/npm 11: `--silent` can make npm fail
+              // with empty stdout/stderr for bad specs like `workspace:^`; `--loglevel=error`
+              // stays quiet on success while preserving the actionable npm failure text.
+              ["npm", ...createSafeNpmInstallArgs({ omitDev: true, loglevel: "error" })],
+              {
+                timeoutMs: Math.max(params.timeoutMs, 300_000),
+                cwd: dependencyDir,
+                env: createSafeNpmInstallEnv(process.env, { npmConfigCwd: dependencyDir }),
+              },
+            );
+          } finally {
+            await restoreProjectNpmConfigAfterInstall(hiddenProjectNpmConfig);
+          }
+        },
+        (result) => result.code === 0,
+      );
       if (npmRes.code !== 0) {
         return await fail(`npm install failed: ${formatNpmCommandFailureOutput(npmRes)}`);
       }

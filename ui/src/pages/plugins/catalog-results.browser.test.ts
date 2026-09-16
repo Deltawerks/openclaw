@@ -76,7 +76,10 @@ it.each([263, 362])(
     };
     for (const busy of [false, true]) {
       render(
-        renderPluginCatalogResults({ ...props, busy: { "install:long-title": busy } }),
+        renderPluginCatalogResults({
+          ...props,
+          busy: busy ? { "install:long-title": "install" } : {},
+        }),
         container,
       );
       const grid = container.querySelector<HTMLElement>(".plugin-catalog-grid")!;

@@ -10,6 +10,7 @@ import {
   resolvePackedRootDir,
 } from "./archive.js";
 import { pathExists } from "./fs-safe.js";
+import { withInstallActivity, type InstallActivityObserver } from "./install-progress.js";
 import { withInstallWorkspace } from "./install-source-utils.js";
 
 // Install-flow helpers validate local install paths and unpack archives inside
@@ -42,7 +43,7 @@ export async function withExtractedArchiveRoot<TResult extends { ok: boolean }>(
   archivePath: string;
   tempDirPrefix: string;
   timeoutMs: number;
-  logger?: ArchiveLogger;
+  logger?: ArchiveLogger & InstallActivityObserver;
   limits?: ArchiveExtractLimits;
   rootMarkers?: readonly string[];
   onExtracted: (rootDir: string) => Promise<TResult>;
@@ -53,14 +54,16 @@ export async function withExtractedArchiveRoot<TResult extends { ok: boolean }>(
 
     params.logger?.info?.(`Extracting ${params.archivePath}…`);
     try {
-      await extractArchive({
-        archivePath: params.archivePath,
-        destDir: extractDir,
-        timeoutMs: params.timeoutMs,
-        logger: params.logger,
-        limits: params.limits,
-        durable: false,
-      });
+      await withInstallActivity(params.logger, "extract", () =>
+        extractArchive({
+          archivePath: params.archivePath,
+          destDir: extractDir,
+          timeoutMs: params.timeoutMs,
+          logger: params.logger,
+          limits: params.limits,
+          durable: false,
+        }),
+      );
     } catch (err) {
       return { ok: false, error: `failed to extract archive: ${String(err)}` };
     }
