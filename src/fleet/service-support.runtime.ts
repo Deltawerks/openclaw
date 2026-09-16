@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createServer } from "node:net";
 import path from "node:path";
 import JSON5 from "json5";
 import { FsSafeError, root as fsSafeRoot } from "../infra/fs-safe.js";
@@ -245,6 +246,21 @@ export function assertManagedInspection(
   return inspection;
 }
 
+export async function probeLoopbackPort(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const server = createServer();
+    server.once("error", (error: NodeJS.ErrnoException) => {
+      // The probe exists only to catch the one legible failure early (address in
+      // use). Anything else - e.g. EACCES on a privileged port an unprivileged CLI
+      // cannot bind but a rootful daemon can - defers to the authoritative runtime bind.
+      resolve(error.code !== "EADDRINUSE");
+    });
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
 export async function probeCellHealth(params: {
   port: number;
   fetchImpl: typeof fetch;
@@ -277,6 +293,25 @@ export async function probeCellHealth(params: {
   } finally {
     clearTimeout(timeout);
     await response?.body?.cancel().catch(() => undefined);
+  }
+}
+
+export async function canonicalizeForContainment(targetPath: string): Promise<string> {
+  const resolved = path.resolve(targetPath);
+  const suffix: string[] = [];
+  let probe = resolved;
+  for (;;) {
+    try {
+      const real = await fs.realpath(probe);
+      return path.join(real, ...suffix.toReversed());
+    } catch {
+      const parent = path.dirname(probe);
+      if (parent === probe) {
+        return resolved;
+      }
+      suffix.push(path.basename(probe));
+      probe = parent;
+    }
   }
 }
 

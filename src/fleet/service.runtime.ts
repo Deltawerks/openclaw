@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import { createServer } from "node:net";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { backupFleetCell, restoreFleetCell } from "./backup.runtime.js";
@@ -49,6 +48,7 @@ import {
   prepareCellConfig,
   prepareCellDirectories,
   probeCellHealth,
+  probeLoopbackPort,
   readHostIdentity,
   requireInspectedAttemptId,
   requireInspectedGatewayToken,
@@ -67,21 +67,6 @@ const OFFICIAL_IMAGE_GID = 1_000;
 // restore without rolling back slow-booting cells prematurely.
 const CELL_VERIFY_TIMEOUT_MS = 60_000;
 const CELL_VERIFY_POLL_MS = 1_000;
-
-async function probeLoopbackPort(port: number): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    const server = createServer();
-    server.once("error", (error: NodeJS.ErrnoException) => {
-      // The probe exists only to catch the one legible failure early (address in
-      // use). Anything else - e.g. EACCES on a privileged port an unprivileged CLI
-      // cannot bind but a rootful daemon can - defers to the authoritative runtime bind.
-      resolve(error.code !== "EADDRINUSE");
-    });
-    server.listen(port, "127.0.0.1", () => {
-      server.close(() => resolve(true));
-    });
-  });
-}
 
 export type FleetCreateOptions = {
   tenant: string;

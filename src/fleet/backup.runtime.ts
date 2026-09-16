@@ -33,6 +33,7 @@ import {
   assertManagedInspection,
   assertManagedNetwork,
   buildProfileBaseFromInspection,
+  canonicalizeForContainment,
   prepareCellConfig,
   prepareCellDirectories,
   requireInspectedAttemptId,
@@ -103,25 +104,6 @@ async function resolveOutputPath(out: string | undefined, basename: string): Pro
     return (await fs.stat(resolved)).isDirectory() ? path.join(resolved, basename) : resolved;
   } catch {
     return resolved;
-  }
-}
-
-async function canonicalizeForContainment(targetPath: string): Promise<string> {
-  const resolved = path.resolve(targetPath);
-  const suffix: string[] = [];
-  let probe = resolved;
-  for (;;) {
-    try {
-      const real = await fs.realpath(probe);
-      return path.join(real, ...suffix.toReversed());
-    } catch {
-      const parent = path.dirname(probe);
-      if (parent === probe) {
-        return resolved;
-      }
-      suffix.push(path.basename(probe));
-      probe = parent;
-    }
   }
 }
 
