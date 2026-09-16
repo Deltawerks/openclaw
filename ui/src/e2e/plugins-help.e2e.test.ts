@@ -320,7 +320,10 @@ suite.define(() => {
         .locator(".plugin-catalog-detail__actions")
         .getByRole("link", { name: "Settings", exact: true })
         .click();
-      await page.getByRole("heading", { name: "Workboard settings", exact: true }).waitFor();
+      await page
+        .locator(".plugin-editor")
+        .getByRole("searchbox", { name: "Search settings", exact: true })
+        .waitFor();
       expect(await panel.isVisible()).toBe(false);
       await page
         .getByRole("button", { name: "Actions for Refresh interval (minutes)", exact: true })
