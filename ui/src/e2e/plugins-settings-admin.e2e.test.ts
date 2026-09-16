@@ -694,6 +694,7 @@ suite.define(() => {
         await gateway.resolveDeferred("plugins.inspect");
         await expect.poll(() => permission.isVisible()).toBe(true);
         expect(await permission.isChecked()).toBe(true);
+        expect(await search.inputValue()).toBe("Allow prompt changes");
         expect(JSON.parse(String(asRecord(permissionSave.params).raw))).toEqual({
           ...disabledConfig,
           plugins: {
@@ -716,10 +717,6 @@ suite.define(() => {
         await page.getByRole("link", { name: "Workboard", exact: true }).click();
         await page.getByRole("button", { name: /(?:Remove|Uninstall) Workboard/iu }).click();
         await page.getByRole("dialog").waitFor();
-        await gateway.setMethodResponse("plugins.list", {
-          ...inventory,
-          plugins: inventory.plugins.filter((plugin) => plugin.id !== workboard.id),
-        });
         await page
           .locator(".exec-approval-actions")
           .getByRole("button", { name: "Remove", exact: true })
@@ -730,7 +727,10 @@ suite.define(() => {
           plugins: inventory.plugins.filter((plugin) => plugin.id !== workboard.id),
         });
         await gateway.resolveDeferred("plugins.uninstall");
-        await waitForControlUiRoute(page, { pathname: "/settings/plugins", routeId: "plugin-settings" });
+        await waitForControlUiRoute(page, {
+          pathname: "/settings/plugins",
+          routeId: "plugin-settings",
+        });
         await page.locator('[data-plugin-id="calendar"]').waitFor();
         expect(await page.locator('[data-plugin-id="workboard"]').count()).toBe(0);
         expect(await page.locator(".plugins-row-message").count()).toBe(0);
