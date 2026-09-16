@@ -403,19 +403,19 @@ describe("board and progress event session ownership", () => {
           ordinaryUpdate,
           otherAgentUpdate,
         }).toEqual({
-          rawUpdate: [[rawSession, changed("work", 1)], [], []],
-          rawPut: [[rawSession, changed("work", 2, "status")], [], []],
+          rawUpdate: [[changed("work", 1), rawSession], [], []],
+          rawPut: [[changed("work", 2, "status"), rawSession], [], []],
           rawGrant: [[changed("work", 3)], [], []],
           emptyUpdate: [[], [], []],
           ordinaryUpdate: [
             [],
-            [sessionChanged("agent:work:global", "work", "ordinary-owner"), changed("work", 1)],
+            [changed("work", 1), sessionChanged("agent:work:global", "work", "ordinary-owner")],
             [],
           ],
           otherAgentUpdate: [
             [],
             [],
-            [sessionChanged("global", "main", "other-agent-owner"), changed("main", 1)],
+            [changed("main", 1), sessionChanged("global", "main", "other-agent-owner")],
           ],
         });
       });
