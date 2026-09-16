@@ -177,7 +177,7 @@ async function withRecoveryRuntime(
       });
     } finally {
       await sidecar.current?.stop();
-      flushPendingSessionsChangedEvents(context);
+      await flushPendingSessionsChangedEvents(context);
       vi.useRealTimers();
     }
   });
@@ -200,7 +200,7 @@ describe("worker placement recovery session events", () => {
         catalogChanged("other-profile");
         expect(readSessionsMutationVersion(context)).toBe(initialVersion);
         catalogChanged("development");
-        flushPendingSessionsChangedEvents(context);
+        await flushPendingSessionsChangedEvents(context);
         expect(context.broadcastToConnIds).toHaveBeenCalledExactlyOnceWith(
           "sessions.changed",
           expect.objectContaining({ reason: "placement", sessionKey: placement.sessionKey }),

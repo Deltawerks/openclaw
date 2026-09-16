@@ -8,6 +8,10 @@ import type {
 } from "../config/io.health-state.types.js";
 import type { CronStoreWorkerOperations } from "../cron/store/load-worker.types.js";
 import type { CronStoreSaveWorkerOperations } from "../cron/store/save-worker.types.js";
+import type {
+  WorkerPlacementConflictBinding,
+  readWorkerSessionPlacementProjectionInDatabase,
+} from "../gateway/worker-environments/placement-read-projection.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-queue.worker-contract.js";
@@ -67,6 +71,13 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
   CronStoreSaveWorkerOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations & {
+    "workers.placementProjection": {
+      input: {
+        sessionIds: readonly string[];
+        conflictBindings: readonly WorkerPlacementConflictBinding[];
+      };
+      output: ReturnType<typeof readWorkerSessionPlacementProjectionInDatabase>;
+    };
     "subagents.sessionList": {
       input: undefined;
       output: Map<string, SubagentRunReadRecord> | undefined;

@@ -304,7 +304,7 @@ describe("board and progress event session ownership", () => {
             respond,
             context,
           });
-          flushPendingSessionsChangedEvents(context);
+          await flushPendingSessionsChangedEvents(context);
           expect(respond.mock.calls[0]?.[0]).toBe(true);
           return peers.map(({ socket }) => {
             const frames = socket.send.mock.calls.map(([frame]) => JSON.parse(String(frame)));
