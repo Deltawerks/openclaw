@@ -27,7 +27,7 @@ import { resolveControlUiWebPushUrl } from "./control-ui-shared.js";
 import type { ExecApprovalRecord } from "./exec-approval-manager.js";
 import { APPROVALS_SCOPE } from "./method-scopes.js";
 import { canAccessOperatorApproval } from "./operator-approval-authorization.js";
-import { getOperatorApprovalDetailed } from "./operator-approval-store.async.js";
+import { getOperatorApprovalDetailedAsync } from "./operator-approval-store.async.js";
 import { READ_SCOPE } from "./operator-scopes.js";
 import {
   canAccessApprovalSession,
@@ -237,7 +237,7 @@ export function createApprovalWebPushDelivery(params: {
         requestDelivery?.sender ?? (await prepareWebPushNotificationSender(params.stateDir));
       const durableLookup = requestDelivery
         ? null
-        : await getOperatorApprovalDetailed({
+        : await getOperatorApprovalDetailedAsync({
             id: approval.id,
             databaseOptions: params.stateDir
               ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }

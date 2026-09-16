@@ -40,8 +40,8 @@ import {
 } from "../operator-approval-authorization.js";
 import { projectOperatorApprovalSnapshot } from "../operator-approval-snapshot.js";
 import {
-  getOperatorApprovalDetailed,
-  listTerminalOperatorApprovals,
+  getOperatorApprovalDetailedAsync,
+  listTerminalOperatorApprovalsAsync,
   OperatorApprovalHistoryCursorError,
 } from "../operator-approval-store.async.js";
 import type {
@@ -216,9 +216,9 @@ async function loadVisibleApproval(params: {
           })))
     );
   };
-  let lookup: Awaited<ReturnType<typeof getOperatorApprovalDetailed>>;
+  let lookup: Awaited<ReturnType<typeof getOperatorApprovalDetailedAsync>>;
   try {
-    lookup = await getOperatorApprovalDetailed({
+    lookup = await getOperatorApprovalDetailedAsync({
       id: params.id,
       allowTransportRef: params.allowTransportRef,
       assertCurrent: () => {
@@ -377,9 +377,9 @@ export function createApprovalHandlers(
         return;
       }
       const historyParams = rawParams as ApprovalHistoryParams;
-      let history: Awaited<ReturnType<typeof listTerminalOperatorApprovals>>;
+      let history: Awaited<ReturnType<typeof listTerminalOperatorApprovalsAsync>>;
       try {
-        history = await listTerminalOperatorApprovals({
+        history = await listTerminalOperatorApprovalsAsync({
           cursor: historyParams.cursor,
           limit: historyParams.limit,
           kind: historyParams.kind,

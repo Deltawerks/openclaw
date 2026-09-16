@@ -9,7 +9,7 @@ import {
   type listTerminalOperatorApprovals as listTerminalOperatorApprovalsInKernel,
 } from "./operator-approval-store.js";
 
-export async function getOperatorApprovalDetailed(
+export async function getOperatorApprovalDetailedAsync(
   params: Parameters<typeof getOperatorApprovalDetailedInKernel>[0] & {
     assertCurrent?: () => void;
   },
@@ -46,7 +46,7 @@ export async function getOperatorApprovalDetailed(
   );
 }
 
-export async function listTerminalOperatorApprovals(
+export async function listTerminalOperatorApprovalsAsync(
   params: NonNullable<Parameters<typeof listTerminalOperatorApprovalsInKernel>[0]> = {},
 ): Promise<ReturnType<typeof listTerminalOperatorApprovalsInKernel>> {
   const { databaseOptions, ...input } = params;

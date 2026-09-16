@@ -66,7 +66,7 @@ vi.mock("./operator-approval-store.async.js", async () => {
   const actual = await vi.importActual<typeof import("./operator-approval-store.async.js")>(
     "./operator-approval-store.async.js",
   );
-  return { ...actual, getOperatorApprovalDetailed: getOperatorApprovalDetailedMock };
+  return { ...actual, getOperatorApprovalDetailedAsync: getOperatorApprovalDetailedMock };
 });
 
 function pairedOperator(deviceId: string, scopes: string[]) {

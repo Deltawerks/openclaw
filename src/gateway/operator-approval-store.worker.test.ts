@@ -2,8 +2,8 @@ import { expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
-  getOperatorApprovalDetailed,
-  listTerminalOperatorApprovals,
+  getOperatorApprovalDetailedAsync,
+  listTerminalOperatorApprovalsAsync,
   OperatorApprovalHistoryCursorError,
 } from "./operator-approval-store.async.js";
 import { insertOperatorApproval } from "./operator-approval-store.js";
@@ -54,18 +54,18 @@ it("expires approvals and returns retained history without host SQLite calls", a
         counters.forEach((counter) => counter.mockClear());
       }
       await expect(
-        getOperatorApprovalDetailed({ id: "approval-worker", nowMs: 2_001, databaseOptions }),
+        getOperatorApprovalDetailedAsync({ id: "approval-worker", nowMs: 2_001, databaseOptions }),
       ).resolves.toMatchObject({
         outcome: "found",
         record: { id: "approval-worker", status: "expired", terminalReason: "timeout" },
       });
       await expect(
-        listTerminalOperatorApprovals({ nowMs: 2_002, databaseOptions }),
+        listTerminalOperatorApprovalsAsync({ nowMs: 2_002, databaseOptions }),
       ).resolves.toMatchObject({
         records: [{ id: "approval-worker", status: "expired" }],
       });
       await expect(
-        listTerminalOperatorApprovals({ cursor: "invalid", databaseOptions }),
+        listTerminalOperatorApprovalsAsync({ cursor: "invalid", databaseOptions }),
       ).rejects.toBeInstanceOf(OperatorApprovalHistoryCursorError);
       expect(counters.map((counter) => counter.mock.calls.length)).toEqual([0, 0, 0, 0, 0, 0]);
     } finally {

@@ -86,9 +86,9 @@ it.each([
     const started = createDeferred();
     const lookup =
       createDeferred<
-        Awaited<ReturnType<typeof operatorApprovalStore.getOperatorApprovalDetailed>>
+        Awaited<ReturnType<typeof operatorApprovalStore.getOperatorApprovalDetailedAsync>>
       >();
-    vi.spyOn(operatorApprovalStore, "getOperatorApprovalDetailed").mockImplementation(() => {
+    vi.spyOn(operatorApprovalStore, "getOperatorApprovalDetailedAsync").mockImplementation(() => {
       started.resolve();
       return lookup.promise;
     });
@@ -132,7 +132,7 @@ it.each(["closed", "overloaded", "unavailable", "outcome-unknown"] as const)(
         decided = true;
       });
       const lookup = vi
-        .spyOn(operatorApprovalStore, "getOperatorApprovalDetailed")
+        .spyOn(operatorApprovalStore, "getOperatorApprovalDetailedAsync")
         .mockRejectedValueOnce(
           new AggregateError([new SqliteWorkerError("controlled worker refusal", code)]),
         )
@@ -167,19 +167,21 @@ it.each(["approval.get", "approval.history"] as const)(
     const started = createDeferred();
     const lookup =
       createDeferred<
-        Awaited<ReturnType<typeof operatorApprovalStore.getOperatorApprovalDetailed>>
+        Awaited<ReturnType<typeof operatorApprovalStore.getOperatorApprovalDetailedAsync>>
       >();
     const history =
       createDeferred<
-        Awaited<ReturnType<typeof operatorApprovalStore.listTerminalOperatorApprovals>>
+        Awaited<ReturnType<typeof operatorApprovalStore.listTerminalOperatorApprovalsAsync>>
       >();
     let assertCurrent: (() => void) | undefined;
-    vi.spyOn(operatorApprovalStore, "getOperatorApprovalDetailed").mockImplementation((params) => {
-      assertCurrent = params.assertCurrent;
-      started.resolve();
-      return lookup.promise;
-    });
-    vi.spyOn(operatorApprovalStore, "listTerminalOperatorApprovals").mockImplementation(() => {
+    vi.spyOn(operatorApprovalStore, "getOperatorApprovalDetailedAsync").mockImplementation(
+      (params) => {
+        assertCurrent = params.assertCurrent;
+        started.resolve();
+        return lookup.promise;
+      },
+    );
+    vi.spyOn(operatorApprovalStore, "listTerminalOperatorApprovalsAsync").mockImplementation(() => {
       started.resolve();
       return history.promise;
     });
@@ -223,9 +225,9 @@ it.each(["scope", "invalidated"] as const)(
     const started = createDeferred();
     const history =
       createDeferred<
-        Awaited<ReturnType<typeof operatorApprovalStore.listTerminalOperatorApprovals>>
+        Awaited<ReturnType<typeof operatorApprovalStore.listTerminalOperatorApprovalsAsync>>
       >();
-    vi.spyOn(operatorApprovalStore, "listTerminalOperatorApprovals").mockImplementation(() => {
+    vi.spyOn(operatorApprovalStore, "listTerminalOperatorApprovalsAsync").mockImplementation(() => {
       started.resolve();
       return history.promise;
     });
@@ -247,7 +249,7 @@ it.each(["scope", "invalidated"] as const)(
 
 it("preserves history access for approval-scoped clients without a device", async () => {
   const { handlers } = createFixture();
-  vi.spyOn(operatorApprovalStore, "listTerminalOperatorApprovals").mockResolvedValue({
+  vi.spyOn(operatorApprovalStore, "listTerminalOperatorApprovalsAsync").mockResolvedValue({
     records: [],
   });
   const response = await invoke({
@@ -274,12 +276,14 @@ it.each(["access", "reviewer", "source", "binding", "profile", "config"] as cons
     const started = createDeferred<() => void>();
     const lookup =
       createDeferred<
-        Awaited<ReturnType<typeof operatorApprovalStore.getOperatorApprovalDetailed>>
+        Awaited<ReturnType<typeof operatorApprovalStore.getOperatorApprovalDetailedAsync>>
       >();
-    vi.spyOn(operatorApprovalStore, "getOperatorApprovalDetailed").mockImplementation((params) => {
-      started.resolve(expectDefined(params.assertCurrent, "lookup admission guard"));
-      return lookup.promise;
-    });
+    vi.spyOn(operatorApprovalStore, "getOperatorApprovalDetailedAsync").mockImplementation(
+      (params) => {
+        started.resolve(expectDefined(params.assertCurrent, "lookup admission guard"));
+        return lookup.promise;
+      },
+    );
     const client = expectDefined(createClient({ deviceId: "reviewer" }), "fixture client");
     const context = createContext();
     const pending = invoke({
