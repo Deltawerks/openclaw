@@ -235,6 +235,15 @@ export function createApprovalWebPushDelivery(params: {
       const requestDelivery = deliveryState ? await deliveryState.requestPushPromise : null;
       const sender =
         requestDelivery?.sender ?? (await prepareWebPushNotificationSender(params.stateDir));
+      const durableLookup = requestDelivery
+        ? null
+        : await getOperatorApprovalDetailed({
+            id: approval.id,
+            databaseOptions: params.stateDir
+              ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
+              : undefined,
+          });
+      const durableRecord = durableLookup?.outcome === "found" ? durableLookup.record : null;
       const cfg = params.getRuntimeConfig();
       const currentTargets = listCurrentWebPushTargets({
         cfg,
@@ -253,15 +262,6 @@ export function createApprovalWebPushDelivery(params: {
       if (subscriptions.length === 0) {
         return;
       }
-      const durableLookup = requestDelivery
-        ? null
-        : await getOperatorApprovalDetailed({
-            id: approval.id,
-            databaseOptions: params.stateDir
-              ? { env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir } }
-              : undefined,
-          });
-      const durableRecord = durableLookup?.outcome === "found" ? durableLookup.record : null;
       const terminalGroups = new Map<
         string,
         {
