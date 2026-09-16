@@ -114,10 +114,24 @@ portal closures and Gateway restarts.
 
 Without configured wildcard ingress or managed Tailscale ingress, the returned
 URL describes the actual direct listener and its HTTP or TLS scheme. Direct
-listeners use the Gateway's bind interfaces. A loopback URL works on the Gateway
-host, not on an unrelated remote browser. Wildcard binds do not declare a public
-hostname. For remote HTTPS access, configure one of the ingress paths above
-rather than changing the displayed URL or exposing random ports manually.
+listeners use the Gateway's bind interfaces. Wildcard listeners advertise the
+Gateway's discovered private LAN IPv4 address when available, so browsers on that
+LAN can use the returned URL without configuring ingress. The published address
+stays fixed for the portal's lifetime; reopen the portal after a network change.
+If no private LAN address is available, wildcard listeners publish a loopback URL.
+A loopback URL works on the Gateway host, not on an unrelated remote browser.
+Discovery does not establish reachability through firewalls, container port
+mappings, or remote proxies. Wildcard binds do not declare a public hostname. For
+remote HTTPS access, configure one of the ingress paths above rather than changing
+the displayed URL or exposing random ports manually.
+
+HTTPS portals use secure partitioned cookies so their authentication also works
+when the Control UI is on another site. A direct HTTP portal can embed when the
+Control UI uses the same scheme and hostname; different ports are supported.
+Otherwise, the Portals page offers a new-tab launch instead of an embedded preview
+whose authentication cookies may be blocked. The link keeps the service-published
+URL unchanged. Applications that explicitly restrict their own cookies with
+`SameSite=Strict` or `SameSite=Lax` retain that policy.
 
 ## Declare development servers
 

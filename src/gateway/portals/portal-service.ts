@@ -13,6 +13,7 @@ import {
   portalIngressConflictsWithOrigin,
 } from "../../config/gateway-portal-ingress.js";
 import type { GatewayPortalIngressConfig } from "../../config/types.gateway.js";
+import { resolveAdvertisedLanHostCore } from "../../infra/advertised-lan-host.js";
 import { sha256HexPrefixCore } from "../../infra/crypto-digest.js";
 import { claimTailscaleServePort, type TailscaleRouteClaim } from "../../infra/tailscale.js";
 import { listenGatewayHttpServer } from "../server/http-listen.js";
@@ -100,8 +101,14 @@ async function closeServers(servers: readonly HttpServer[]): Promise<void> {
   );
 }
 
-function formatPortalHost(host: string): string {
-  const openableHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host;
+async function formatPortalHost(host: string): Promise<string> {
+  // Wildcard listeners already accept LAN connections. Publish their actual LAN
+  // address here rather than asking clients to reconstruct it from the Gateway URL.
+  const lanHost =
+    host === "0.0.0.0" || host === "::"
+      ? await resolveAdvertisedLanHostCore().catch(() => null)
+      : null;
+  const openableHost = lanHost ?? (host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host);
   return openableHost.includes(":") ? `[${openableHost}]` : openableHost;
 }
 
@@ -327,7 +334,8 @@ export function createGatewayPortalService(params: {
             listenPort: 0,
             createdAtMs: Date.now(),
             publicOrigin: "",
-            partitionedCookies: Boolean(ingress),
+            // Every HTTPS portal can be embedded from another site, not only wildcard ingress.
+            partitionedCookies: Boolean(ingress || managed || tlsOptions),
           };
           const upgradedSockets = new Set<Duplex>();
           const responses = new Set<import("node:http").ServerResponse>();
@@ -450,7 +458,7 @@ export function createGatewayPortalService(params: {
                 }
                 portal.publicOrigin = gatewayUrl.origin;
               } else {
-                portal.publicOrigin = `${tlsOptions ? "https" : "http"}://${formatPortalHost(primaryHost)}:${portal.listenPort}`;
+                portal.publicOrigin = `${tlsOptions ? "https" : "http"}://${await formatPortalHost(primaryHost)}:${portal.listenPort}`;
               }
             }
             if (closed) {

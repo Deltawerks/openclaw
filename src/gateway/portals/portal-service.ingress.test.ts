@@ -1,6 +1,7 @@
 import { request, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import * as advertisedLanHost from "../../infra/advertised-lan-host.js";
 import { claimTailscaleServePort, type TailscaleRouteClaim } from "../../infra/tailscale.js";
 import { withServer } from "../../plugin-sdk/test-helpers/http-test-server.js";
 import * as httpListen from "../server/http-listen.js";
@@ -95,8 +96,10 @@ describe("operator-managed private wildcard portal ingress", () => {
       },
       async (targetUrl) => {
         const { service, httpServers } = makeService({
+          httpBindHosts: ["0.0.0.0"],
           ingress: { domain: "previews.example.net", port: 0 },
         });
+        const resolveHost = vi.spyOn(advertisedLanHost, "resolveAdvertisedLanHostCore");
         const targetPort = Number(new URL(targetUrl).port);
         const first = await service.open({ targetPort, path: "/nested/start?theme=dark" });
         expect(first.publicUrl).toMatch(
@@ -144,6 +147,7 @@ describe("operator-managed private wildcard portal ingress", () => {
         expect(new URL(reopened.url).hostname).not.toBe(new URL(first.url).hostname);
         expect((await ingressRequest(first.listenPort, first.url)).status).toBe(404);
         expect(claimTailscaleServePort).not.toHaveBeenCalled();
+        expect(resolveHost).not.toHaveBeenCalled();
       },
     );
   });
@@ -224,9 +228,33 @@ describe("operator-managed private wildcard portal ingress", () => {
 });
 
 describe("managed private Serve portal ingress", () => {
+  it("partitions authentication and default app cookies for cross-site HTTPS embedding", async () => {
+    await withServer(
+      (_, res) => {
+        res.setHeader("Set-Cookie", "session=ok; Path=/");
+        res.end("app");
+      },
+      async (targetUrl) => {
+        publishManaged();
+        const { claim } = fakeClaim();
+        vi.mocked(claimTailscaleServePort).mockResolvedValue(claim);
+        const { service } = makeService({ managedTailscale: true });
+        const portal = await service.open({ targetPort: Number(new URL(targetUrl).port) });
+        const response = await ingressRequest(portal.listenPort, portal.url);
+        expect(response.status).toBe(200);
+        expect(response.cookie).toHaveLength(2);
+        for (const cookie of response.cookie) {
+          expect(cookie).toContain("SameSite=None");
+          expect(cookie).toContain("Secure");
+          expect(cookie).toContain("Partitioned");
+        }
+      },
+    );
+  });
   it.each(["serve", "funnel"] as const)(
     "uses a separate private Serve claim even for a %s Gateway",
     async (mode) => {
+      const resolveHost = vi.spyOn(advertisedLanHost, "resolveAdvertisedLanHostCore");
       publishManaged(mode);
       const { claim } = fakeClaim();
       vi.mocked(claimTailscaleServePort).mockResolvedValue(claim);
@@ -247,6 +275,7 @@ describe("managed private Serve portal ingress", () => {
       await service.close(portal.id);
       expect(claim.stop).toHaveBeenCalledOnce();
       expect(service.list()).toEqual([]);
+      expect(resolveHost).not.toHaveBeenCalled();
     },
   );
 

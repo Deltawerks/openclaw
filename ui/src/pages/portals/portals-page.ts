@@ -18,7 +18,7 @@ import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import { probePortalReachable, type PortalReachability } from "./portal-reachability.ts";
-import { portalNeedsRemoteIngress } from "./portal-url.ts";
+import { portalNeedsNewTab, portalNeedsRemoteIngress } from "./portal-url.ts";
 import "./portals.css";
 
 const PORTAL_FRAME_SANDBOX =
@@ -26,7 +26,7 @@ const PORTAL_FRAME_SANDBOX =
 
 type PortalProbeState = {
   key: string;
-  status: "probing" | "ingress-required" | PortalReachability;
+  status: "probing" | "ingress-required" | "new-tab-required" | PortalReachability;
 };
 
 class PortalsPage extends OpenClawLightDomElement {
@@ -127,6 +127,11 @@ class PortalsPage extends OpenClawLightDomElement {
     if (portalNeedsRemoteIngress(url, this.context.gateway.connection.gatewayUrl)) {
       this.portalProbeGeneration += 1;
       this.portalProbeState = { key, status: "ingress-required" };
+      return;
+    }
+    if (portalNeedsNewTab(url, location.href)) {
+      this.portalProbeGeneration += 1;
+      this.portalProbeState = { key, status: "new-tab-required" };
       return;
     }
     const cached = force ? undefined : this.portalProbeCache.get(key);
@@ -291,21 +296,27 @@ class PortalsPage extends OpenClawLightDomElement {
                 <div class="portals-empty__title">${t("portalsPage.loading")}</div>
               </div>
             `
-          : probeStatus === "unreachable" || probeStatus === "ingress-required"
+          : probeStatus === "unreachable" ||
+              probeStatus === "ingress-required" ||
+              probeStatus === "new-tab-required"
             ? html`
                 <div class="portals-preview__notice" role="status">
                   <div class="portals-preview__notice-title">
                     ${t(
-                      probeStatus === "ingress-required"
-                        ? "portalsPage.ingressRequiredTitle"
-                        : "portalsPage.unreachableTitle",
+                      probeStatus === "new-tab-required"
+                        ? "portalsPage.newTabRequiredTitle"
+                        : probeStatus === "ingress-required"
+                          ? "portalsPage.ingressRequiredTitle"
+                          : "portalsPage.unreachableTitle",
                     )}
                   </div>
                   <p>
                     ${t(
-                      probeStatus === "ingress-required"
-                        ? "portalsPage.ingressRequiredBody"
-                        : "portalsPage.unreachableBody",
+                      probeStatus === "new-tab-required"
+                        ? "portalsPage.newTabRequiredBody"
+                        : probeStatus === "ingress-required"
+                          ? "portalsPage.ingressRequiredBody"
+                          : "portalsPage.unreachableBody",
                     )}
                   </p>
                   <a
