@@ -24,7 +24,7 @@ import {
 } from "../../infra/plugin-approvals.js";
 import type { SystemAgentApprovalRequestPayload } from "../../infra/system-agent-approvals.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseByPath } from "../../state/openclaw-state-db-cache.js";
+import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -50,6 +50,7 @@ import {
   cancelWorkerTurnClaimBoundApprovals,
 } from "./approval-run-cancellation.js";
 import { createApprovalHandlers } from "./approval.js";
+import { createClient, createContext, invoke } from "./approval.test-support.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const prepareApprovalChannelCustodyMock = vi.hoisted(() => vi.fn());
@@ -219,68 +220,6 @@ function registerSystemAgent(
   return { record, decision };
 }
 
-function createClient(params: {
-  scopes?: string[];
-  deviceId?: string;
-  internal?: boolean;
-  connId?: string;
-}): GatewayRequestHandlerOptions["client"] {
-  return {
-    connId: params.connId ?? (params.deviceId ? `conn-${params.deviceId}` : "conn-no-device"),
-    connect: {
-      client: { id: "approval-test", displayName: "Approval Test" },
-      scopes: params.scopes ?? ["operator.approvals"],
-      ...(params.deviceId ? { device: { id: params.deviceId } } : {}),
-    },
-    ...(params.internal ? { internal: { approvalRuntime: true } } : {}),
-  } as unknown as GatewayRequestHandlerOptions["client"];
-}
-
-function createContext(
-  controlUiBasePath?: string,
-  approvalWebPushDelivery?: GatewayRequestHandlerOptions["context"]["approvalWebPushDelivery"],
-) {
-  return {
-    broadcast: vi.fn(),
-    broadcastToConnIds: vi.fn(),
-    approvalEvents: {
-      publishRequested: vi.fn(() => 0),
-      publishResolved: vi.fn(),
-    },
-    getApprovalClientConnIds: vi.fn(() => new Set(["approval-client"])),
-    getRuntimeConfig: () => ({ gateway: { controlUi: { basePath: controlUiBasePath } } }),
-    approvalWebPushDelivery,
-    logGateway: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
-  } as unknown as GatewayRequestHandlerOptions["context"];
-}
-
-async function invoke(params: {
-  handlers: ReturnType<typeof createApprovalHandlers>;
-  method: "approval.get" | "approval.history" | "approval.resolve";
-  body: Record<string, unknown>;
-  client: GatewayRequestHandlerOptions["client"];
-  context?: GatewayRequestHandlerOptions["context"];
-}) {
-  const respond = vi.fn();
-  const context = params.context ?? createContext();
-  await expectDefined(
-    params.handlers[params.method],
-    "params.handlers[params.method] test invariant",
-  )({
-    req: { id: "req-1", type: "req", method: params.method, params: params.body },
-    params: params.body,
-    client: params.client,
-    context,
-    isWebchatConnect: () => false,
-    respond,
-  });
-  const response = respond.mock.calls[0];
-  if (!response) {
-    throw new Error("approval handler did not respond");
-  }
-  return { ok: response[0], result: response[1], error: response[2], context };
-}
-
 function approvalFromResult(result: unknown) {
   if (!result || typeof result !== "object" || !("approval" in result)) {
     throw new Error("missing approval response");
@@ -289,7 +228,7 @@ function approvalFromResult(result: unknown) {
 }
 
 describe("unified approval handlers", () => {
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
     for (const manager of managersForCleanup.splice(0)) {
       for (const record of manager.listPendingRecords()) {
@@ -298,8 +237,10 @@ describe("unified approval handlers", () => {
     }
     closeOpenClawAgentDatabasesForTest();
     for (const dir of tempDirs.splice(0)) {
-      closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: dir }));
-      closeOpenClawStateDatabaseByPath(path.join(dir, "state.sqlite"));
+      await closeOpenClawStateDatabaseByPathAsync(
+        resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: dir }),
+      );
+      await closeOpenClawStateDatabaseByPathAsync(path.join(dir, "state.sqlite"));
       fs.rmSync(dir, { force: true, recursive: true });
     }
   });

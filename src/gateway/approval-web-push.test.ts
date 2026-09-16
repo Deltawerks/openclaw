@@ -61,8 +61,8 @@ vi.mock("./server-methods/approval-record-lookup.js", () => ({
   isApprovalRecordVisibleToClient: isApprovalRecordVisibleToClientMock,
 }));
 
-vi.mock("./operator-approval-store.js", async () => {
-  const actual = await vi.importActual<typeof import("./operator-approval-store.js")>(
+vi.mock("./operator-approval-store.async.js", async () => {
+  const actual = await vi.importActual<typeof import("./operator-approval-store.async.js")>(
     "./operator-approval-store.js",
   );
   return { ...actual, getOperatorApprovalDetailed: getOperatorApprovalDetailedMock };
