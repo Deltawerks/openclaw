@@ -234,9 +234,6 @@ openclaw-plugin-settings-editor {
   color: var(--text);
   background: var(--bg-hover);
 }
-.plugin-editor__control input[type="number"] {
-  text-align: right;
-}
 .plugin-editor__control .settings-segmented {
   margin-left: auto;
 }
