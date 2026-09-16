@@ -3,11 +3,19 @@ import {
   type SystemAgentPluginReference,
 } from "@openclaw/gateway-protocol/system-agent-context";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import type { ApplicationContext } from "../../app/context.ts";
 import { CUSTODIAN_PANEL_TOGGLE_EVENT } from "../../components/panel-toggle-contract.ts";
 import { t } from "../../i18n/index.ts";
+import { registerPluginManagementEnglish } from "../../i18n/locales/en-plugin-management.ts";
 import { showToast } from "../../lib/toast.ts";
-import { CustodianSessionOwner } from "./custodian-session-identity.ts";
+import {
+  pluginHelpState,
+  pluginHelpPathname,
+  notifyPluginHelp,
+  type PluginHelpContext,
+  type Publication,
+} from "./plugin-help-state.ts";
+
+registerPluginManagementEnglish();
 
 export type PluginHelpReference = Pick<SystemAgentPluginReference, "id" | "name">;
 export type PluginHelpSetting = {
@@ -19,85 +27,6 @@ export type PluginHelpSetting = {
   sensitive: boolean;
 };
 
-type PluginHelpContext = Pick<ApplicationContext, "gateway" | "router">;
-
-type Publication = {
-  owner: object;
-  reference: SystemAgentPluginReference;
-  pathname: string;
-  overview: boolean;
-  installed: boolean;
-};
-type HelpState = {
-  identity: CustodianSessionOwner;
-  scope: string;
-  publication?: Publication;
-  pendingDraft: string;
-  focusRequest: number;
-  selectionEpoch: number;
-  seenGateways: Set<string>;
-  listeners: Set<() => void>;
-};
-const states = new WeakMap<PluginHelpContext, HelpState>();
-
-function stateFor(context: PluginHelpContext): HelpState {
-  let state = states.get(context);
-  if (!state) {
-    const identity = new CustodianSessionOwner();
-    state = {
-      identity,
-      scope: identity.key(context.gateway),
-      pendingDraft: "",
-      focusRequest: 0,
-      selectionEpoch: 0,
-      seenGateways: new Set(),
-      listeners: new Set(),
-    };
-    states.set(context, state);
-    const owned = state;
-    context.gateway.subscribe(() => {
-      synchronize(context, owned);
-      notify(owned);
-    });
-    context.router.subscribe(() => {
-      if (owned.publication && owned.publication.pathname !== pathname(context)) {
-        owned.publication = undefined;
-        owned.selectionEpoch += 1;
-        notify(owned);
-      }
-    });
-  }
-  synchronize(context, state);
-  return state;
-}
-
-function pathname(context: PluginHelpContext): string {
-  return context.router.getState().location?.pathname ?? window.location.pathname;
-}
-
-function synchronize(context: PluginHelpContext, state: HelpState): void {
-  const scope = state.identity.key(context.gateway);
-  if (state.scope !== scope) {
-    state.scope = scope;
-    state.publication = undefined;
-    state.selectionEpoch += 1;
-    state.pendingDraft = "";
-    state.focusRequest = 0;
-  }
-}
-
-function notify(state: HelpState): void {
-  for (const listener of state.listeners) {
-    listener();
-  }
-}
-
-export function subscribePluginHelp(context: PluginHelpContext, listener: () => void): () => void {
-  const state = stateFor(context);
-  state.listeners.add(listener);
-  return () => state.listeners.delete(listener);
-}
-
 /** Publish only the current loaded detail; the returned release owns this exact publication. */
 export function publishPluginHelpContext(
   context: PluginHelpContext,
@@ -105,7 +34,7 @@ export function publishPluginHelpContext(
   plugin: PluginHelpReference,
   options: { overview: boolean; installed: boolean },
 ): () => void {
-  const state = stateFor(context);
+  const state = pluginHelpState(context);
   const reference = normalizeSystemAgentPluginReference({
     ...plugin,
     installed: options.installed,
@@ -119,7 +48,12 @@ export function publishPluginHelpContext(
   if (previous?.reference.id === reference.id) {
     reference.setting = previous.reference.setting;
   }
-  const publication: Publication = { owner, reference, pathname: pathname(context), ...options };
+  const publication: Publication = {
+    owner,
+    reference,
+    pathname: pluginHelpPathname(context),
+    ...options,
+  };
   state.publication = publication;
   const changedSelection =
     previous?.owner !== owner ||
@@ -134,60 +68,36 @@ export function publishPluginHelpContext(
     previous?.installed !== options.installed ||
     JSON.stringify(previous?.reference) !== JSON.stringify(reference)
   ) {
-    notify(state);
+    notifyPluginHelp(state);
   }
   return () => {
     if (state.publication === publication) {
       state.publication = undefined;
       state.selectionEpoch += 1;
-      notify(state);
+      notifyPluginHelp(state);
     }
   };
 }
 
 function clearPluginHelpContext(context: PluginHelpContext, owner: object): void {
-  const state = stateFor(context);
+  const state = pluginHelpState(context);
   if (state.publication?.owner === owner) {
     state.publication = undefined;
     state.selectionEpoch += 1;
-    notify(state);
+    notifyPluginHelp(state);
   }
-}
-
-export function currentPluginHelpReference(
-  context: PluginHelpContext,
-): SystemAgentPluginReference | undefined {
-  const state = stateFor(context);
-  return state.publication?.pathname === pathname(context)
-    ? state.publication.reference
-    : undefined;
-}
-
-/** The dock owns availability/width and calls this only when it can actually open. */
-export function consumePluginHelpAutoOpen(context: PluginHelpContext): boolean {
-  const state = stateFor(context);
-  const url = context.gateway.connection.gatewayUrl;
-  if (!state.publication?.overview || !state.publication.installed || state.seenGateways.has(url)) {
-    return false;
-  }
-  state.seenGateways.add(url);
-  return true;
-}
-
-export function dismissPluginHelpAutoOpen(context: PluginHelpContext): void {
-  stateFor(context).seenGateways.add(context.gateway.connection.gatewayUrl);
 }
 
 export function createPluginHelpRequest(
   context: PluginHelpContext,
   plugin: PluginHelpReference,
 ): (setting?: PluginHelpSetting) => Promise<void> {
-  const state = stateFor(context);
+  const state = pluginHelpState(context);
   const scope = state.scope;
   const selectionEpoch = state.selectionEpoch;
   // Capture the rendered selection before an action can outlive its page or Gateway.
   return async (setting) => {
-    if (stateFor(context).scope !== scope || state.selectionEpoch !== selectionEpoch) {
+    if (pluginHelpState(context).scope !== scope || state.selectionEpoch !== selectionEpoch) {
       return;
     }
     window.dispatchEvent(new CustomEvent(CUSTODIAN_PANEL_TOGGLE_EVENT, { detail: { open: true } }));
@@ -198,12 +108,12 @@ export function createPluginHelpRequest(
       try {
         ({ formatPluginHelpValue } = await import("./plugin-help-value.ts"));
       } catch {
-        if (stateFor(context).scope === scope && state.selectionEpoch === selectionEpoch) {
+        if (pluginHelpState(context).scope === scope && state.selectionEpoch === selectionEpoch) {
           showToast({ message: t("custodian.pluginHelpFailed") });
         }
         return;
       }
-      if (stateFor(context).scope !== scope || state.selectionEpoch !== selectionEpoch) {
+      if (pluginHelpState(context).scope !== scope || state.selectionEpoch !== selectionEpoch) {
         return;
       }
       const value = formatPluginHelpValue(setting.value, setting.sensitive);
@@ -226,21 +136,30 @@ export function createPluginHelpRequest(
       }
     }
     state.focusRequest += 1;
-    notify(state);
+    notifyPluginHelp(state);
   };
 }
 
+export function currentPluginHelpReference(
+  context: PluginHelpContext,
+): SystemAgentPluginReference | undefined {
+  const state = pluginHelpState(context);
+  return state.publication?.pathname === pluginHelpPathname(context)
+    ? state.publication.reference
+    : undefined;
+}
+
 export function pendingPluginHelpDraft(context: PluginHelpContext): boolean {
-  return Boolean(stateFor(context).pendingDraft);
+  return Boolean(pluginHelpState(context).pendingDraft);
 }
 
 export function takePluginHelpDraft(context: PluginHelpContext): string {
-  const state = stateFor(context);
+  const state = pluginHelpState(context);
   const draft = state.pendingDraft;
   state.pendingDraft = "";
   return draft;
 }
 
 export function pluginHelpFocusRequest(context: PluginHelpContext): number {
-  return stateFor(context).focusRequest;
+  return pluginHelpState(context).focusRequest;
 }

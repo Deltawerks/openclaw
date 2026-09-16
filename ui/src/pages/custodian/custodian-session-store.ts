@@ -9,10 +9,10 @@ import { performCustodianAgentHandoff } from "./custodian-navigation.ts";
 import * as nudgeActions from "./custodian-nudge-actions.ts";
 import {
   createCustodianSessionId,
-  CustodianSessionOwner,
   loadCustodianSessionId,
   persistCustodianSessionId,
 } from "./custodian-session-identity.ts";
+import { CustodianSessionOwner } from "./custodian-session-owner.ts";
 import {
   resolveCustodianConfiguredInferenceState,
   type CustodianConfiguredInferenceState,

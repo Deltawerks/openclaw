@@ -1,9 +1,6 @@
 import type { ApplicationContext } from "../../app/context.ts";
-import {
-  currentPluginHelpReference,
-  subscribePluginHelp,
-  takePluginHelpDraft,
-} from "./plugin-help.ts";
+import { subscribePluginHelp } from "./plugin-help-state.ts";
+import { currentPluginHelpReference, takePluginHelpDraft } from "./plugin-help.ts";
 
 /** Ordinary questions survive prompt replacement; hosted secrets use a separate draft. */
 export class CustodianInputDrafts {

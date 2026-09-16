@@ -35,7 +35,7 @@ import {
   consumePluginHelpAutoOpen,
   dismissPluginHelpAutoOpen,
   subscribePluginHelp,
-} from "../pages/custodian/plugin-help.ts";
+} from "../pages/custodian/plugin-help-state.ts";
 import { renderAssistantPanelLoading } from "./assistant-panel-loading.ts";
 import { DockLayoutController } from "./dock-layout-controller.ts";
 import { assistantPanelLayout, type DockPanelSide } from "./dock-panel-layout.ts";
