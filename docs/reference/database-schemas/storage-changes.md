@@ -586,6 +586,10 @@ commit. Approval RPC readers recheck access after storage settles before publish
 or reconciling a local waiter. History retains its cursor, ordering, and retention
 rules. Registration, decision resolution, one-use consumption, pending replay, and
 receipt projection retain their native owners pending their separate lifecycle cut.
+Native state-lifecycle lock acquisition services retained worker admission for the
+same data path, so a synchronous decision can wait behind a worker lookup without
+preventing its host grant. Acquisition retries share the existing busy timeout;
+worker authority checks, mutations, and settlement are not replayed.
 
 ### Preserve the data and concurrency contracts
 
