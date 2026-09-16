@@ -83,7 +83,9 @@ function committedMutationMessage(
         ...(result.runtime ? { generation: String(result.runtime.generation) } : {}),
       }),
       warning?.text,
-    ].filter(Boolean).join("\n"),
+    ]
+      .filter(Boolean)
+      .join("\n"),
   };
 }
 
