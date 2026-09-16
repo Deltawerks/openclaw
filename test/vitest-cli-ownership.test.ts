@@ -55,6 +55,23 @@ function selectedByFilters(file: string, filters: string[]): boolean {
 }
 
 it.each([
+  "src/gateway/link-understanding.product.test.ts",
+  "src/gateway/server-methods/chat.abort-live-proof.test.ts",
+  "src/gateway/server-methods/models-auth-api-key.integration.test.ts",
+  "src/gateway/server-methods/models-auth-login.catalog.integration.test.ts",
+  "src/gateway/server-methods/models-auth-refresh.catalog.integration.test.ts",
+  "src/gateway/server-methods/models-auth-refresh.integration.test.ts",
+  "src/gateway/server-methods/models-connect-publication.integration.test.ts",
+  "src/gateway/server-methods/models-list.discovery-lifecycle.integration.test.ts",
+  "src/gateway/server-methods/models-manual-policy.integration.test.ts",
+])("keeps real Gateway startup on the host-broker project: %s", (file) => {
+  const owners = Object.entries(gatewayProjectFiles([file]))
+    .filter(([, files]) => files.includes(file))
+    .map(([name]) => name);
+  expect(owners).toEqual(["gateway-database-workers"]);
+});
+
+it.each([
   {
     target: "src/gateway/config-reload.telegram-policy.test.ts",
     ownership: { config: "test/vitest/vitest.gateway.config.ts" },
