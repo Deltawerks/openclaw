@@ -227,6 +227,7 @@ it("blocks repeat install when saved-state reads fail, then reconciles aliases a
     expect(page.consentController.installProgress.has(otherIdentity)).toBe(true);
   });
   expect(page.consentController.installProgress.get(alias)?.finishedAt).toBeTypeOf("number");
+  expect(page.consentController.installProgress.get(alias)?.canRetry).toBe(false);
   inventoryFails = false;
   await page.refreshCatalog();
   expect(page.consentController.installProgress.has(alias)).toBe(false);
@@ -245,6 +246,7 @@ it("blocks repeat install when saved-state reads fail, then reconciles aliases a
   otherInstall.reject(new Error("Another registry is unavailable"));
   await installingOther;
   expect(page.messages[otherIdentity]?.text).toContain("Another registry is unavailable");
+  expect(page.consentController.installProgress.get(otherIdentity)?.canRetry).toBe(false);
   expect(page.consentController.installProgress.get(otherIdentity)?.finishedAt).toBeTypeOf(
     "number",
   );

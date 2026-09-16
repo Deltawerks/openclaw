@@ -152,6 +152,9 @@ describeControlUiE2e("plugin install button progress", () => {
                 : outcome === "runtime-failure"
                   ? "Plugin service failed to start."
                   : "Installed catalog refresh failed.",
+            ...(outcome === "failure"
+              ? {}
+              : { details: { persistence: { operation: "install", pluginId: installed.id } } }),
           });
           await page
             .getByText(
@@ -166,13 +169,41 @@ describeControlUiE2e("plugin install button progress", () => {
           expect(await card.locator(".plugin-install-progress__activity--completed").count()).toBe(
             outcome === "failure" ? 4 : outcome === "runtime-failure" ? 5 : 6,
           );
-          expect(await button.textContent()).toContain("Install failed");
+          expect((await button.textContent())?.trim()).toBe(
+            outcome === "failure" ? "Install" : "Install failed",
+          );
           expect(await button.locator(".btn__spinner").count()).toBe(0);
           const stoppedAt = await timer.textContent();
           await page.waitForTimeout(1100);
           expect(await timer.textContent()).toBe(stoppedAt);
           expect(await page.getByRole("button", { name: "Retry", exact: true }).count()).toBe(0);
           await page.screenshot({ path: `${evidence}/after.png` });
+          if (outcome === "failure") {
+            await gateway.deferNext("plugins.install");
+            await button.click();
+            await gateway.waitForRequest("plugins.install", { after: 1 });
+            expect(await button.textContent()).toContain("Installing");
+            expect(await card.locator(".plugin-install-progress__activity").count()).toBe(0);
+            await gateway.setMethodResponse("plugins.list", inventory([installed], 1));
+            await gateway.setMethodResponse("plugins.inspect", {
+              ...calendarInspection,
+              plugin: installed,
+            });
+            await gateway.resolveDeferred("plugins.install", {
+              ok: true,
+              plugin: installed,
+              restartRequired: false,
+            });
+            await page
+              .getByRole("button", { name: "Disable Calendar Plus", exact: true })
+              .waitFor();
+            expect(await page.locator(".plugin-install-progress").count()).toBe(0);
+            expect((await gateway.getRequests("plugins.install")).length).toBe(2);
+            await page.screenshot({ path: `${evidence}/retry-success.png` });
+          } else {
+            await button.click();
+            expect((await gateway.getRequests("plugins.install")).length).toBe(1);
+          }
         } else {
           expect(await card.locator(".plugin-install-progress__activity--started").count()).toBe(0);
           expect(await button.textContent()).toContain("Installing");

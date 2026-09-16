@@ -1,3 +1,4 @@
+import { isGatewayProtocolResponseError } from "@openclaw/gateway-client/browser";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { CapabilityConsentErrorDetails } from "../../../../packages/gateway-protocol/src/capability-consent-error-details.js";
 import type { PluginsSetEnabledParams } from "../../../../packages/gateway-protocol/src/schema/plugins.js";
@@ -309,38 +310,29 @@ export class PluginsConsentController {
           scope &&
           this.host.gateway.isCurrent(scope) &&
           this.installProgress.get(installIdentity) === progress;
-        try {
-          const result = await installPlugin(client, request, (activity) => {
-            if (!current()) {
-              return;
-            }
-            const index = progress.activities.findIndex(
-              (row) => row.activityId === activity.activityId,
-            );
-            progress = {
-              ...progress,
-              activities:
-                index < 0
-                  ? [...progress.activities, activity]
-                  : progress.activities.map((row, at) => (at === index ? activity : row)),
-            };
-            this.installProgress.set(installIdentity, progress);
-            this.host.requestUpdate();
-          });
-          if (current()) {
-            // The final RPC result settles installation before optional config/catalog refreshes.
-            this.installProgress.delete(installIdentity);
-            this.host.applyMutationResult(result);
+        const result = await installPlugin(client, request, (activity) => {
+          if (!current()) {
+            return;
           }
-          return result;
-        } catch (error) {
-          if (current()) {
-            progress = { ...progress, finishedAt: Date.now() };
-            this.installProgress.set(installIdentity, progress);
-            this.host.requestUpdate();
-          }
-          throw error;
+          const index = progress.activities.findIndex(
+            (row) => row.activityId === activity.activityId,
+          );
+          progress = {
+            ...progress,
+            activities:
+              index < 0
+                ? [...progress.activities, activity]
+                : progress.activities.map((row, at) => (at === index ? activity : row)),
+          };
+          this.installProgress.set(installIdentity, progress);
+          this.host.requestUpdate();
+        });
+        if (current()) {
+          // The final RPC result settles installation before optional config/catalog refreshes.
+          this.installProgress.delete(installIdentity);
+          this.host.applyMutationResult(result);
         }
+        return result;
       },
       async (result, refreshError, client) => {
         const installedPluginKey = pluginRowKey(result.plugin.id);
@@ -358,6 +350,18 @@ export class PluginsConsentController {
         const details =
           error instanceof GatewayRequestError ? asOptionalRecord(error.details) : undefined;
         const persistence = asOptionalRecord(details?.persistence);
+        const policyWarning = readPluginInstallPolicyWarning(error);
+        const progress = this.installProgress.get(installIdentity);
+        if (progress) {
+          // Only a correlated final rejection proves an unsaved attempt can restart.
+          // Transport loss and saved installs retain their recovery state instead.
+          this.installProgress.set(installIdentity, {
+            ...progress,
+            finishedAt: Date.now(),
+            canRetry: isGatewayProtocolResponseError(error) && !persistence && !policyWarning,
+          });
+          this.host.requestUpdate();
+        }
         if (
           persistence?.operation === "install" &&
           typeof persistence.pluginId === "string" &&
@@ -397,7 +401,6 @@ export class PluginsConsentController {
           );
           return;
         }
-        const policyWarning = readPluginInstallPolicyWarning(error);
         if (policyWarning) {
           this.installPolicyScopes.set(installIdentity, scope);
           this.host.setMessage(installIdentity, {

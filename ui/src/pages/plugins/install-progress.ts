@@ -4,4 +4,5 @@ export type PluginInstallProgress = {
   startedAt: number;
   activities: readonly PluginInstallActivity[];
   finishedAt?: number;
+  canRetry?: boolean;
 };

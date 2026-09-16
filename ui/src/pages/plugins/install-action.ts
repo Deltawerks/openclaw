@@ -7,12 +7,12 @@ import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { registerPluginManagementEnglish } from "../../i18n/locales/en-plugin-management.ts";
 import { formatUnit } from "../../lib/format.ts";
+import { generateUUID } from "../../lib/uuid.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import type { PluginInstallProgress } from "./install-progress.ts";
 import "./install-action.css";
 
 registerPluginManagementEnglish();
-let nextProgressId = 0;
 
 export class PluginInstallAction extends OpenClawLightDomElement {
   @property({ attribute: false }) progress?: PluginInstallProgress;
@@ -27,7 +27,7 @@ export class PluginInstallAction extends OpenClawLightDomElement {
   private pinned = false;
   private hovering = false;
   private timer?: ReturnType<typeof setInterval>;
-  private readonly progressId = `plugin-install-progress-${++nextProgressId}`;
+  private readonly progressId = `plugin-install-progress-${generateUUID()}`;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -81,6 +81,7 @@ export class PluginInstallAction extends OpenClawLightDomElement {
     const progress = this.progress;
     const failed = progress?.finishedAt !== undefined;
     const active = Boolean(progress) || this.busy;
+    const canInstall = !active || (progress?.canRetry === true && !this.busy);
     const duration = progress
       ? Math.max(0, Math.floor(((progress.finishedAt ?? this.now) - progress.startedAt) / 1000))
       : 0;
@@ -112,24 +113,26 @@ export class PluginInstallAction extends OpenClawLightDomElement {
       <button
         type="button"
         class=${`${this.buttonClass} plugin-install-action__button ${this.primary && !failed ? "primary oc-action-primary" : "oc-action-secondary"} ${failed ? "plugin-install-action__button--failed" : ""}`}
-        ?disabled=${this.disabled && !active}
-        aria-label=${active ? nothing : this.label || nothing}
+        ?disabled=${this.disabled && canInstall}
+        aria-label=${canInstall ? this.label || nothing : nothing}
         aria-busy=${active && !failed ? "true" : nothing}
         aria-expanded=${progress ? String(this.open) : nothing}
         aria-controls=${progress ? this.progressId : nothing}
         @click=${(event: MouseEvent) => {
           event.preventDefault();
           event.stopPropagation();
-          if (active) {
+          if (canInstall) {
+            if (!this.disabled) {
+              this.onInstall();
+            }
+          } else {
             this.pinned = !this.pinned;
             this.open = this.pinned;
-          } else if (!this.disabled) {
-            this.onInstall();
           }
         }}
       >
         ${active && !failed ? html`<span class="btn__spinner" aria-hidden="true"></span>` : nothing}
-        ${t(failed ? "pluginsPage.installProgress.failed" : active ? "pluginsPage.installing" : "pluginsPage.install")}
+        ${t(canInstall ? "pluginsPage.install" : failed ? "pluginsPage.installProgress.failed" : "pluginsPage.installing")}
         ${progress ? icons.chevronDown : nothing}
       </button>
       ${
