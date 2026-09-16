@@ -9,6 +9,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../state/openclaw-state-read.worker",
     distWorkerPath: "state/openclaw-state-read.worker.js",
   },
+  cronStreamMatcher: {
+    currentModuleUrl,
+    sourceWorkerName: "../gateway/cron-stream-matcher.worker",
+    distWorkerPath: "gateway/cron-stream-matcher.worker.js",
+  },
   nativeHookRelayClient: {
     currentModuleUrl,
     sourceWorkerName: "../agents/harness/native-hook-relay-client.worker",

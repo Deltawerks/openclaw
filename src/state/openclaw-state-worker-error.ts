@@ -6,6 +6,11 @@ import { StateDatabaseCoordinatorContentionError } from "../infra/state-database
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
+  isOpenClawStateLeaseErrorCode,
+  OpenClawStateLeaseError,
+  type OpenClawStateLeaseErrorCode,
+} from "./openclaw-state-lease-error.js";
+import {
   OpenClawStateExternalOwnershipError,
   OpenClawStateOwnershipError,
   OpenClawStateOwnershipMetadataError,
@@ -27,6 +32,7 @@ type ErrorIdentity =
   | { type: "coordinator-contention"; family: CoordinatorFamily }
   | { type: "ownership-metadata"; databasePath: string }
   | { type: "external-ownership"; databasePath: string; managerId: string }
+  | { type: "state-lease"; leaseCode: OpenClawStateLeaseErrorCode }
   | { type: "maintenance"; kind: MaintenanceKind }
   | { type: "state-migration"; kind: StateMigrationKind; pathname: string }
   | { type: "agent-media-migration"; pathname: string; schemaVersion: number };
@@ -55,6 +61,9 @@ function identifyError(error: Error): ErrorIdentity {
   }
   if (error instanceof SqliteCoordinatorError) {
     return { type: "coordinator" };
+  }
+  if (error instanceof OpenClawStateLeaseError) {
+    return { type: "state-lease", leaseCode: error.code };
   }
   if (error instanceof OpenClawStateOwnershipMetadataError) {
     return { type: "ownership-metadata", databasePath: error.databasePath };
@@ -187,6 +196,10 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
       return typeof node.databasePath === "string" && typeof node.managerId === "string"
         ? { type: node.type, databasePath: node.databasePath, managerId: node.managerId }
         : undefined;
+    case "state-lease":
+      return isOpenClawStateLeaseErrorCode(node.leaseCode) && node.code === node.leaseCode
+        ? { type: node.type, leaseCode: node.leaseCode }
+        : undefined;
     case "maintenance":
       return isMaintenanceKind(node.kind) ? { type: node.type, kind: node.kind } : undefined;
     case "state-migration":
@@ -297,6 +310,8 @@ function createError(node: ErrorNode): Error {
       return new OpenClawStateExternalOwnershipError(node.databasePath, node.managerId);
     case "newer-schema":
       return new SqliteSchemaVersionError(node.message);
+    case "state-lease":
+      return new OpenClawStateLeaseError(node.message, { code: node.leaseCode });
     case "maintenance":
       return new StartupMaintenanceRequiredError(node.kind, node.message);
     case "state-migration":

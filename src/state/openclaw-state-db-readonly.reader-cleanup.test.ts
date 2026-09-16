@@ -11,10 +11,6 @@ vi.mock("./openclaw-state-db-read-connection.js", () => ({
     close: mocks.close,
   }),
 }));
-vi.mock("./openclaw-state-db-dangling-workshop-index.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./openclaw-state-db-dangling-workshop-index.js")>()),
-  openDanglingWorkshopIndexReadAdmission: () => mocks.admit,
-}));
 vi.mock("./openclaw-state-db-schema-version.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./openclaw-state-db-schema-version.js")>()),
   assertSupportedStateSchemaVersion: mocks.schema,
@@ -28,31 +24,49 @@ beforeEach(() => {
   mocks.schema.mockReset();
 });
 
-it.each(["read", "schema"])("preserves the %s failure before reader cleanup failures", (stage) => {
-  const primary = new Error(`${stage} failed`);
-  const cleanup = new Error("reader close failed");
-  mocks.close.mockImplementation(() => {
-    throw cleanup;
-  });
-  if (stage === "schema") {
-    mocks.schema.mockImplementation(() => {
-      throw primary;
+it.each([
+  { stage: "read", schemaAdmission: false },
+  { stage: "schema", schemaAdmission: false },
+  { stage: "read", schemaAdmission: true },
+  { stage: "schema", schemaAdmission: true },
+])(
+  "preserves the $stage failure with schema admission $schemaAdmission",
+  ({ stage, schemaAdmission }) => {
+    const primary = new Error(`${stage} failed`);
+    const admissionCleanup = new Error("schema admission cleanup failed");
+    const cleanup = new Error("reader close failed");
+    mocks.admit.mockImplementation(() => {
+      throw admissionCleanup;
     });
-  }
-  let failure: unknown;
-  try {
-    withOpenClawStateReadOnlyLocation(
-      () => {
+    mocks.close.mockImplementation(() => {
+      throw cleanup;
+    });
+    if (stage === "schema") {
+      mocks.schema.mockImplementation(() => {
         throw primary;
-      },
-      "/fixture/state.sqlite",
-      "/fixture/private.sqlite",
-    );
-  } catch (error) {
-    failure = error;
-  }
-  expect(failure).toBeInstanceOf(AggregateError);
-  expect(failure).toMatchObject({ cause: primary, errors: [primary, cleanup] });
-  expect(mocks.admit).toHaveBeenCalledOnce();
-  expect(mocks.close).toHaveBeenCalledOnce();
-});
+      });
+    }
+    let failure: unknown;
+    try {
+      withOpenClawStateReadOnlyLocation(
+        () => {
+          throw primary;
+        },
+        "/fixture/state.sqlite",
+        "/fixture/private.sqlite",
+        schemaAdmission ? () => mocks.admit : undefined,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      cause: primary,
+      errors: [primary, ...(schemaAdmission ? [admissionCleanup] : []), cleanup],
+    });
+    if (schemaAdmission) {
+      expect(mocks.admit).toHaveBeenCalledOnce();
+    }
+    expect(mocks.close).toHaveBeenCalledOnce();
+  },
+);
