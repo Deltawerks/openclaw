@@ -10,6 +10,7 @@ import {
   validateApprovalHistoryResult,
   validateApprovalResolveResult,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
@@ -37,20 +38,22 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { ExecApprovalManager } from "../exec-approval-manager.js";
 import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
 import type { ExecApprovalManagerOptions } from "../exec-approval-manager.types.js";
-import { getOperatorApprovalDetailed, insertOperatorApproval } from "../operator-approval-store.js";
-
-function getOperatorApproval(params: Parameters<typeof getOperatorApprovalDetailed>[0]) {
-  const result = getOperatorApprovalDetailed(params);
-  return result.outcome === "found" ? result.record : null;
-}
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { insertOperatorApproval } from "../operator-approval-store.js";
 import {
   cancelAgentRuntimeBoundApprovals,
   cancelUnboundRunApprovals,
   cancelWorkerTurnClaimBoundApprovals,
 } from "./approval-run-cancellation.js";
 import { createApprovalHandlers } from "./approval.js";
-import { createClient, createContext, invoke } from "./approval.test-support.js";
+import {
+  approvalFromResult,
+  createClient,
+  createContext,
+  expectSuccessfulApprovalResponses,
+  getOperatorApproval,
+  invoke,
+  mockApprovalLookupTime,
+} from "./approval.test-support.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 const prepareApprovalChannelCustodyMock = vi.hoisted(() => vi.fn());
@@ -164,8 +167,7 @@ function registerExec(
   if (params.expiresAtMs !== undefined) {
     record.expiresAtMs = params.expiresAtMs;
   }
-  const decision = manager.register(record, 600_000);
-  return { record, decision };
+  return { record, decision: manager.register(record, 600_000) };
 }
 
 function registerPlugin(
@@ -218,13 +220,6 @@ function registerSystemAgent(
   );
   const decision = manager.register(record, 600_000);
   return { record, decision };
-}
-
-function approvalFromResult(result: unknown) {
-  if (!result || typeof result !== "object" || !("approval" in result)) {
-    throw new Error("missing approval response");
-  }
-  return (result as { approval: Record<string, unknown> }).approval;
 }
 
 describe("unified approval handlers", () => {
@@ -1092,6 +1087,7 @@ describe("unified approval handlers", () => {
       databaseOptions,
     });
     now.mockReturnValue(2_000);
+    mockApprovalLookupTime(2_000);
 
     const response = await invoke({
       handlers,
@@ -1605,6 +1601,7 @@ describe("unified approval handlers", () => {
         context,
       }),
     ]);
+    expectSuccessfulApprovalResponses([first, second], context);
     expect([first.result, second.result]).toEqual([
       expect.objectContaining({
         applied: true,
@@ -1827,9 +1824,9 @@ describe("unified approval handlers", () => {
       pluginApprovalManager: managers.plugin,
       databaseOptions,
     });
-    // The lookup observes pending immediately before the deadline; force-deny's
-    // store transaction reaches the exact deadline and must reconcile expiry.
-    now.mockReturnValueOnce(1_999).mockReturnValue(2_000);
+    // The worker lookup observes pending before the native verdict reaches the deadline.
+    mockApprovalLookupTime(1_999);
+    now.mockReturnValue(2_000);
 
     const response = await invoke({
       handlers,

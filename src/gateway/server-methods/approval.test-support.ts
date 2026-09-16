@@ -1,7 +1,39 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
+import * as asyncApprovalStore from "../operator-approval-store.async.js";
+import { getOperatorApprovalDetailed } from "../operator-approval-store.js";
 import type { createApprovalHandlers } from "./approval.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
+
+export function getOperatorApproval(params: Parameters<typeof getOperatorApprovalDetailed>[0]) {
+  const result = getOperatorApprovalDetailed(params);
+  return result.outcome === "found" ? result.record : null;
+}
+
+export function approvalFromResult(result: unknown) {
+  if (!result || typeof result !== "object" || !("approval" in result)) {
+    throw new Error("missing approval response");
+  }
+  return (result as { approval: Record<string, unknown> }).approval;
+}
+
+/** A host Date spy does not change the physical worker's clock. */
+export function mockApprovalLookupTime(nowMs: number): void {
+  const lookup = asyncApprovalStore.getOperatorApprovalDetailedAsync;
+  vi.spyOn(asyncApprovalStore, "getOperatorApprovalDetailedAsync").mockImplementation((params) =>
+    lookup({ ...params, nowMs }),
+  );
+}
+
+export function expectSuccessfulApprovalResponses(
+  responses: Awaited<ReturnType<typeof invoke>>[],
+  context: GatewayRequestHandlerOptions["context"],
+): void {
+  expect(
+    responses.map(({ ok, result, error }) => ({ ok, result, error })),
+    JSON.stringify(vi.mocked(context.logGateway.error).mock.calls),
+  ).toMatchObject(responses.map(() => ({ ok: true, error: undefined })));
+}
 
 export function createClient(params: {
   scopes?: string[];
