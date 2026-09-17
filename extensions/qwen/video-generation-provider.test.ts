@@ -235,36 +235,42 @@ describe("qwen video generation provider", () => {
   });
 
   it("submits async Wan generation, polls task status, and downloads the resulting video", async () => {
-    mockSuccessfulDashscopeVideoTask({ postJsonRequestMock, fetchWithTimeoutMock });
+    // Keep the exact default-budget assertion independent of request construction time.
+    vi.useFakeTimers();
+    try {
+      mockSuccessfulDashscopeVideoTask({ postJsonRequestMock, fetchWithTimeoutMock });
 
-    const provider = qwenVideoGenerationProvider;
-    const result = await provider.generateVideo({
-      provider: "qwen",
-      model: "wan2.6-r2v-flash",
-      prompt: "animate this shot",
-      cfg: {},
-      inputImages: [{ url: "https://example.com/ref.png" }],
-      durationSeconds: 6,
-      audio: true,
-    });
-
-    expect(postJsonRequestMock).toHaveBeenCalledTimes(1);
-    expectPostJsonRequest(postJsonRequestMock.mock.calls[0]?.[0], {
-      url: "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis",
-      body: {
+      const provider = qwenVideoGenerationProvider;
+      const result = await provider.generateVideo({
+        provider: "qwen",
         model: "wan2.6-r2v-flash",
-        input: {
-          prompt: "animate this shot",
-          reference_urls: ["https://example.com/ref.png"],
+        prompt: "animate this shot",
+        cfg: {},
+        inputImages: [{ url: "https://example.com/ref.png" }],
+        durationSeconds: 6,
+        audio: true,
+      });
+
+      expect(postJsonRequestMock).toHaveBeenCalledTimes(1);
+      expectPostJsonRequest(postJsonRequestMock.mock.calls[0]?.[0], {
+        url: "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/video-generation/video-synthesis",
+        body: {
+          model: "wan2.6-r2v-flash",
+          input: {
+            prompt: "animate this shot",
+            reference_urls: ["https://example.com/ref.png"],
+          },
+          parameters: {
+            duration: 6,
+            audio: true,
+          },
         },
-        parameters: {
-          duration: 6,
-          audio: true,
-        },
-      },
-    });
-    expectDashscopeVideoTaskPoll(fetchWithTimeoutMock);
-    expectSuccessfulDashscopeVideoResult(result);
+      });
+      expectDashscopeVideoTaskPoll(fetchWithTimeoutMock);
+      expectSuccessfulDashscopeVideoResult(result);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("applies configured request policy to DashScope video requests", async () => {
