@@ -603,6 +603,7 @@ suite.define(() => {
           await page.setViewportSize({ width: 1440, height: 1000 });
         }
         const catalogRequests = (await gateway.getRequests("plugins.list")).length;
+        const workspaceInspections = (await gateway.getRequests("plugins.inspect")).length;
         await workspace.fill("Release planning");
         expect(await gateway.getRequests("config.set")).toHaveLength(0);
         await workspace.press("Tab");
@@ -622,6 +623,8 @@ suite.define(() => {
           await page.getByRole("button", { name: "Save configuration", exact: true }).count(),
         ).toBe(0);
 
+        await gateway.waitForRequest("plugins.inspect", { after: workspaceInspections });
+        const checkboxInspections = (await gateway.getRequests("plugins.inspect")).length;
         await page.locator('[data-setting="notifications"] .plugin-editor__title').click();
         const checkboxSave = await gateway.waitForRequest("config.set", { after: 1 });
         expect(JSON.parse(String(asRecord(checkboxSave.params).raw))).toMatchObject({
@@ -637,6 +640,8 @@ suite.define(() => {
             },
           },
         });
+        await gateway.waitForRequest("plugins.inspect", { after: checkboxInspections });
+        const resetInspections = (await gateway.getRequests("plugins.inspect")).length;
         await page
           .getByRole("button", { name: "Actions for Workspace label", exact: true })
           .click();
@@ -650,6 +655,7 @@ suite.define(() => {
           notifications: false,
         });
         await expect.poll(() => workspace.inputValue()).toBe("Planning");
+        await gateway.waitForRequest("plugins.inspect", { after: resetInspections });
         const search = page
           .locator(".plugin-editor")
           .getByRole("searchbox", { name: "Search settings", exact: true });
