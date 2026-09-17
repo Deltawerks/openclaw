@@ -636,28 +636,33 @@ describe("plugin management Featured authority", () => {
     ]);
   });
 
-  it("clears local curation when a known published plugin is omitted from a live feed", async () => {
-    mocks.metadata.mockReturnValue(
-      metadataSnapshot({
-        id: "diffs",
-        name: "Diffs",
-        origin: "global",
-        installRecord: { source: "npm", spec: "@openclaw/diffs" },
-      }),
-    );
-    mocks.officialCatalog.mockResolvedValue(hostedCatalog([]));
+  it.each([
+    {
+      id: "diffs",
+      name: "Diffs",
+      origin: "global" as const,
+      installRecord: { source: "npm", spec: "@openclaw/diffs" },
+    },
+    { id: "memory-wiki", name: "Memory Wiki", origin: "bundled" as const },
+  ])(
+    "clears local curation when declared catalog counterpart $name is omitted from a live feed",
+    async (plugin) => {
+      mocks.metadata.mockReturnValue(metadataSnapshot(plugin));
+      mocks.officialCatalog.mockResolvedValue(hostedCatalog([]));
 
-    const catalog = await listManagedPlugins({ config: {}, env: {} });
+      const catalog = await listManagedPlugins({ config: {}, env: {} });
 
-    expect(catalog.plugins).toEqual([
-      expect.objectContaining({
-        id: "diffs",
-        packageName: "@openclaw/diffs",
-        featured: false,
-        order: 10,
-      }),
-    ]);
-  });
+      expect(catalog.plugins).toEqual([
+        expect.objectContaining({
+          id: plugin.id,
+          packageName: `@openclaw/${plugin.id}`,
+          clawhubPackage: `@openclaw/${plugin.id}`,
+          featured: false,
+          order: 10,
+        }),
+      ]);
+    },
+  );
 
   it("preserves npm-only bundled curation outside the hosted producer identity", async () => {
     mocks.bundledEntries = [compositionEntry("acpx", { npmSpec: "@openclaw/acpx" })];
