@@ -199,7 +199,8 @@ vi.mock("../../agents/embedded-agent-helpers.js", async () => {
   };
 });
 
-vi.mock("../../config/sessions.js", () => ({
+vi.mock("../../config/sessions.js", async () => ({
+  ...(await vi.importActual<typeof import("../../config/sessions.js")>("../../config/sessions.js")),
   resolveGroupSessionKey: vi.fn(() => null),
   resolveSessionTranscriptPath: vi.fn(),
   updateSessionStore: state.updateSessionStoreMock,
