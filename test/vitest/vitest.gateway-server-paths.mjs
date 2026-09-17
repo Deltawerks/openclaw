@@ -33,6 +33,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/native-hook-relay.test.ts",
   "src/gateway/server-methods/projects.test.ts",
   "src/gateway/server-methods/requester-cron-authority.integration.test.ts",
+  "src/gateway/server-methods/send.scheduled-reads.integration.test.ts",
   "src/gateway/server-methods/server-methods.test.ts",
   "src/gateway/server-methods/sessions-create-worktree-base.test.ts",
   "src/gateway/server-methods/sessions-describe-worker.test.ts",
@@ -41,7 +42,9 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/worktrees.test.ts",
   "src/gateway/server.sessions.create-worktree-spawn.test.ts",
   "src/gateway/server.sessions.create.projects.test.ts",
+  "src/gateway/server/ws-connection.startup.test.ts",
   "src/gateway/session-delivery-clock-jump.integration.test.ts",
+  "src/gateway/session-message-events.test.ts",
   "src/gateway/session-repository-materialization.test.ts",
   "src/gateway/session-repository-publication-handoff.test.ts",
   "src/gateway/session-swarm-summary.test.ts",
@@ -49,6 +52,9 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/setup-inference.first-signin.integration.test.ts",
   "src/gateway/tool-resolution.cron-capture.test.ts",
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
+  "src/gateway/worker-environments/worker-session-tool-executor.test.ts",
+  "test/e2e/qa-lab/runtime/gateway-tls-pinning.test.ts",
+  "test/plugins/codex-model-catalog.gateway.test.ts",
 ];
 
 // Canonical file ownership for the non-isolated Gateway server Vitest project.
