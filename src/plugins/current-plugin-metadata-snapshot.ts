@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
@@ -91,11 +90,20 @@ function resolvePluginMetadataControlPlaneFingerprint(
   config?: OpenClawConfig,
   options: Omit<ResolvePluginControlPlaneContextParams, "config"> = {},
 ): string {
-  const env = options.env ?? process.env;
   return JSON.stringify([
     resolvePluginControlPlaneFingerprint({ config, ...options }),
-    listAgentWorkspaceDirs(config ?? {}, env),
+    resolveConfiguredAgentWorkspaceFingerprint(config),
   ]);
+}
+
+function resolveConfiguredAgentWorkspaceFingerprint(config?: OpenClawConfig): string {
+  const entries = Object.entries(config?.agents?.entries ?? {})
+    .map(([id, entry]) => [id, entry.workspace ?? null] as const)
+    .toSorted(([left], [right]) => left.localeCompare(right));
+  const legacyEntries = (config?.agents?.list ?? [])
+    .map((entry) => [entry.id ?? null, entry.workspace ?? null] as const)
+    .toSorted(([left], [right]) => String(left).localeCompare(String(right)));
+  return JSON.stringify([config?.agents?.defaults?.workspace ?? null, entries, legacyEntries]);
 }
 
 function prepareCurrentPluginMetadataSnapshotPublication(
