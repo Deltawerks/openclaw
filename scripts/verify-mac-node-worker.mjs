@@ -122,7 +122,7 @@ try {
     let diagnostic = "";
     const exitCode = await runManagedCommand({
       bin: node,
-      args: [path.join(packageRoot, "dist/entry.js"), "node", "worker"],
+      args: [path.join(packageRoot, "dist/mac-node-worker.js"), "node", "worker"],
       cwd: proofHome,
       env: {
         HOME: proofHome,
