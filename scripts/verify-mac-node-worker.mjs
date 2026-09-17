@@ -116,12 +116,10 @@ try {
 import { DatabaseSync } from "node:sqlite";
 export function createSqliteWorkerBackend(_input, { databasePath }) {
   const database = new DatabaseSync(databasePath);
-  database.exec("CREATE TABLE proof (value TEXT NOT NULL)");
   return {
     execute(command) {
       if (command.type === "roundTrip") {
-        database.prepare("INSERT INTO proof (value) VALUES (?)").run(command.input);
-        return database.prepare("SELECT value FROM proof").get().value;
+        return database.prepare("SELECT ? AS value").get(command.input).value;
       }
       throw new Error("Unexpected SQLite worker proof command");
     },
