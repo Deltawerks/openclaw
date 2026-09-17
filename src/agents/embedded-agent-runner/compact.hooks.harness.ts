@@ -687,6 +687,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     isCurrentPluginMetadataSnapshotRuntimeGeneration: () => false,
     resolvePluginMetadataControlPlaneFingerprint: vi.fn(() => "test-plugin-fingerprint"),
     withPluginMetadataSnapshotScope: (_snapshot: unknown, run: () => unknown) => run(),
+    runOutsidePluginMetadataSnapshotScope: <T>(run: () => T): T => run(),
   }));
 
   vi.doMock("../../plugins/command-registry-state.js", () => ({
