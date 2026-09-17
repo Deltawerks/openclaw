@@ -165,6 +165,25 @@ suite.define(() => {
         ),
       );
       await capture("after-delete-response");
+      // Background refresh keeps the rows visible, but pagination must wait for
+      // its current cursor instead of offering a click the owner will discard.
+      const researchReads = (
+        await gateway.getRequests("sessions.list", { agentId: "research", archived: true })
+      ).length;
+      await gateway.deferNext("sessions.list", { agentId: "research", archived: true });
+      await gateway.emitGatewayEvent("sessions.changed", {
+        sessionKey: research[0]!.key,
+        agentId: "research",
+        reason: "archive",
+      });
+      await gateway.waitForRequest("sessions.list", {
+        after: researchReads,
+        match: { agentId: "research", archived: true },
+      });
+      await capture("pending-research-refresh");
+      await expect.poll(() => loadMore.isDisabled()).toBe(true);
+      await gateway.resolveDeferred("sessions.list");
+      await expect.poll(() => loadMore.isEnabled()).toBe(true);
       await loadMore.click();
       // Preserve the original assertion failure after exercising the recovery control.
       let paginationFailure: Error | undefined;

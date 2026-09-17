@@ -45,6 +45,7 @@ type RenderableSessionSection = SidebarSessionSection<SidebarRecentSession> & {
 };
 
 type SidebarSessionListHost = SessionListHost & {
+  readonly sessionData: SessionListHost["sessionData"] & { readonly sessionsLoading: boolean };
   readonly sidebarAgentsMode: "chip" | "roster";
   readonly sessionInvolvingMeFilterActive: boolean;
   loadMoreSidebarSessions(): Promise<void>;
@@ -401,6 +402,8 @@ function renderRosterLoadMore(
         type="button"
         class="sidebar-session-pagination__button"
         aria-label=${t("chat.selectors.loadMoreRosterSessions")}
+        ?disabled=${host.sessionData.sessionsLoading}
+        aria-busy=${String(host.sessionData.sessionsLoading)}
         @click=${() => {
           void host.loadMoreSidebarSessions().then(() => {
             for (const section of sections) {
