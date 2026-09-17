@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clearBundledDiscoveryModeMemo } from "../plugins/bundled-discovery-state.js";
 import {
   recordPluginCandidateInstallOwner,
   resolvePluginCandidateInstallOwner,
@@ -204,6 +205,7 @@ describe("config IO plugin metadata snapshots", () => {
     expect(loggingOnly).toBe(snapshot);
     expect(mocks.resolvePluginMetadataSnapshot).not.toHaveBeenCalled();
 
+    clearBundledDiscoveryModeMemo();
     const asyncLoggingOnly = await withPluginCache(createPluginCache(), () =>
       resolveConfigWidePluginMetadataSnapshotAsync({
         config: { ...config, logging: { level: "warn" } },

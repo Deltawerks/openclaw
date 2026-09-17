@@ -98,6 +98,7 @@ type ResolveConfigWidePluginMetadataParams = {
 
 function resolveReusableGatewayPluginMetadataSnapshot(
   params: ResolveConfigWidePluginMetadataParams,
+  allowSynchronousPolicyRead = true,
 ): PluginMetadataSnapshot | undefined {
   if (
     params.allowCurrent === false ||
@@ -113,6 +114,7 @@ function resolveReusableGatewayPluginMetadataSnapshot(
       env: params.env,
       allowWorkspaceScopedSnapshot: true,
       requireAgentWorkspaceCompatibility: true,
+      allowSynchronousPolicyRead,
     })
   );
 }
@@ -127,7 +129,7 @@ export async function resolveConfigWidePluginMetadataSnapshotAsync(
       resolveConfigWidePluginMetadataSnapshotAsync(captured),
     );
   }
-  const current = resolveReusableGatewayPluginMetadataSnapshot(captured);
+  const current = resolveReusableGatewayPluginMetadataSnapshot(captured, false);
   if (current) {
     return current;
   }
@@ -138,6 +140,10 @@ export async function resolveConfigWidePluginMetadataSnapshotAsync(
       // Policy determines the snapshot cache key before installed-index access.
       const activateDiscovery = await prepareBundledDiscoveryMode(captured.env);
       activateDiscovery();
+      const preparedCurrent = resolveReusableGatewayPluginMetadataSnapshot(captured);
+      if (preparedCurrent) {
+        return preparedCurrent;
+      }
       const { key } = resolveConfigWideMetadataSelection(captured);
       const existing = cache.metadata.snapshots.get(key);
       if (existing) {
