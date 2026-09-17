@@ -1,6 +1,8 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
+import { SIDEBAR_SESSION_ROSTER_LIMIT } from "../../../src/shared/session-list-limits.ts";
+import type { AppSidebarSessionNavigationElement } from "../components/app-sidebar-session-navigation.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
@@ -29,24 +31,47 @@ suite.define(() => {
       const original = sessionRow("agent:main:rename-cross-agent", "Original name", 3);
       const batch = [original, sessionRow("agent:main:batch-sibling", "Batch sibling", 2)];
       const mainRows = [sessionRow("agent:main:main", "Main", 1), ...batch];
+      const pageSize = SIDEBAR_SESSION_ROSTER_LIMIT;
       const researchRows = [
-        sessionRow("agent:research:main", "Research", 4),
-        sessionRow("agent:research:first", "Research first", 3),
+        sessionRow("agent:research:main", "Research", pageSize + 4),
+        sessionRow("agent:research:first", "Research first", pageSize + 3),
+        ...Array.from({ length: pageSize - 2 }, (_, index) =>
+          sessionRow(
+            `agent:research:page-${index}`,
+            `Research page ${index}`,
+            pageSize + 2 - index,
+          ),
+        ),
         sessionRow("agent:research:second", "Research second", 2),
       ];
+      const lastResearch = researchRows.at(-1)!;
       const responseFor = (rows: typeof researchRows) => ({
         cases: [
           {
-            match: { agentId: "research", offset: 2 },
-            response: sessionsListResponse(rows.slice(2), { offset: 2, totalCount: rows.length }),
+            match: { agentId: "research", offset: pageSize },
+            response: {
+              ...sessionsListResponse(rows.slice(pageSize), {
+                offset: pageSize,
+                totalCount: rows.length,
+              }),
+              limitApplied: pageSize,
+            },
+          },
+          {
+            // Replacements retain every loaded page; returning page one would hide appended rows.
+            match: { agentId: "research", limit: rows.length },
+            response: { ...sessionsListResponse(rows), limitApplied: rows.length },
           },
           {
             match: { agentId: "research" },
-            response: sessionsListResponse(rows.slice(0, 2), {
-              hasMore: true,
-              nextOffset: 2,
-              totalCount: rows.length,
-            }),
+            response: {
+              ...sessionsListResponse(rows.slice(0, pageSize), {
+                hasMore: true,
+                nextOffset: pageSize,
+                totalCount: rows.length,
+              }),
+              limitApplied: pageSize,
+            },
           },
           { response: sessionsListResponse(mainRows) },
         ],
@@ -71,6 +96,28 @@ suite.define(() => {
       const sidebar = page.locator("openclaw-app-sidebar");
       const rowFor = (key: string) =>
         sidebar.locator(`.sidebar-recent-session[data-session-key="${key}"]`);
+      const hasResearchRow = (key: string) =>
+        page.evaluate((target) => {
+          const data =
+            document.querySelector<AppSidebarSessionNavigationElement>(
+              "openclaw-app-sidebar",
+            )?.sessionData;
+          return data?.sessionsResult?.sessions.some((row) => row.key === target) ?? false;
+        }, key);
+      const revealResearchRow = async (key: string) => {
+        await expect.poll(() => hasResearchRow(key)).toBe(true);
+        const rows = sidebar.locator(".sidebar-recent-session");
+        for (let remaining = researchRows.length; remaining > 0; remaining -= 1) {
+          if (await rowFor(key).count()) {
+            break;
+          }
+          const before = await rows.count();
+          await sidebar.getByRole("button", { name: "Show more", exact: true }).click();
+          await expect.poll(() => rows.count()).toBeGreaterThan(before);
+        }
+        await rowFor(key).scrollIntoViewIfNeeded();
+        await rowFor(key).waitFor({ state: "visible" });
+      };
       const capture = (stage: string) =>
         page.screenshot({ path: path.join(artifactDir, `${stage}.png`) });
       try {
@@ -168,7 +215,7 @@ suite.define(() => {
         const newRow = sessionRow(
           "agent:research:new-after-completion",
           "Research new after completion",
-          5,
+          pageSize + 5,
         );
         await gateway.setMethodResponse("sessions.list", responseFor([newRow, ...researchRows]));
         const researchMatch = {
@@ -185,13 +232,13 @@ suite.define(() => {
           match: researchMatch,
           after: readsBeforeEvent,
         });
-        await rowFor(newRow.key).waitFor({ state: "visible" });
+        await revealResearchRow(newRow.key);
         await capture("after-selected-agent-update");
         await sidebar.getByRole("button", { name: "Load more sessions", exact: true }).click();
         await gateway.waitForRequest("sessions.list", {
-          match: { agentId: "research", offset: 2 },
+          match: { agentId: "research", offset: pageSize },
         });
-        await rowFor(researchRows[2]!.key).waitFor({ state: "visible" });
+        await revealResearchRow(lastResearch.key);
         await capture("after-pagination");
         await sidebar.getByRole("button", { name: /Switch agent/ }).click();
         await sidebar
@@ -210,9 +257,11 @@ suite.define(() => {
           .locator("wa-dropdown.sidebar-agent-menu")
           .getByRole("menuitemradio", { name: "Research", exact: true })
           .click();
-        await rowFor(newRow.key).waitFor({ state: "visible" });
-        await sidebar.getByRole("button", { name: "Load more sessions", exact: true }).click();
-        await rowFor(researchRows[2]!.key).waitFor({ state: "visible" });
+        await revealResearchRow(newRow.key);
+        if (!(await hasResearchRow(lastResearch.key))) {
+          await sidebar.getByRole("button", { name: "Load more sessions", exact: true }).click();
+        }
+        await revealResearchRow(lastResearch.key);
       } finally {
         await capture("final-state");
         await writeFile(
