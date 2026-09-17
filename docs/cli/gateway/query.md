@@ -113,7 +113,7 @@ openclaw gateway stability --json
 <AccordionGroup>
   <Accordion title="Privacy and bundle behavior">
     - Records keep operational metadata: event names, counts, byte sizes, memory readings, queue/session state, approval ids, channel/plugin names, and redacted session summaries. They exclude chat text, webhook bodies, tool outputs, raw request/response bodies, tokens, cookies, secret values, hostnames, and raw session ids. Set `diagnostics.enabled: false` to disable the recorder entirely.
-    - Fatal Gateway exits, shutdown timeouts, and restart startup failures write a diagnostic snapshot to `~/.openclaw/logs/stability/openclaw-stability-*.json`, even when the recorder has no events. Inspect the newest bundle with `openclaw gateway stability --bundle latest`; `--limit`, `--type`, and `--since-seq` apply to bundle output too.
+    - Fatal Gateway exits, shutdown timeouts, and restart startup failures write a diagnostic snapshot to `~/.openclaw/logs/stability/openclaw-stability-*.json`, even when the recorder has no events. When the error has a stack, `error.stack` retains it with secrets redacted and a limit of 8,000 UTF-16 code units. Inspect the newest bundle with `openclaw gateway stability --bundle latest`; `--limit`, `--type`, and `--since-seq` apply to bundle output too.
     - Failed shutdown steps include `evidence.shutdown`: the step and redacted error names, messages, codes, and stacks, including nested causes and aggregate errors. Use `openclaw gateway stability --bundle latest --json` to inspect these details. Capture is bounded to 32 errors and 8,000 UTF-16 code units per stack. `gateway.restart_close_failed` identifies a thrown close failure; `gateway.restart_shutdown_timeout` identifies the overall shutdown deadline. A timeout also retains any shutdown error already observed. Restart and stop failures flush the existing file logger before exit, within its shutdown budget.
 
   </Accordion>
@@ -216,7 +216,7 @@ openclaw gateway status --port 19001
 
   </Accordion>
   <Accordion title="Linux systemd auth-drift checks">
-    - Service auth drift checks read both `Environment=` and `EnvironmentFile=` from the unit (including `%h`, quoted paths, multiple files, and optional `-` files).
+    - Service auth drift checks read both `Environment=` and `EnvironmentFile=` from the unit. `Environment=` assignments may be quoted. Use one unquoted absolute path per `EnvironmentFile=` directive, including paths with spaces; multiple directives and optional `-` files are supported. `%h` expands to the service home, and `%%` represents a literal percent sign.
     - Resolves `gateway.auth.token` SecretRefs using merged runtime env (service command env first, then process env fallback).
     - Token-drift checks skip config token resolution when token auth is not effectively active (`gateway.auth.mode` explicitly `password`/`none`/`trusted-proxy`, or mode unset where password can win and no token candidate can win).
 
@@ -334,9 +334,12 @@ coordination; `--timeout` independently limits how long this CLI waits:
 openclaw gateway call sessions.send --params '{"key":"<session-key>","message":"Status update"}' --timeout 10000
 ```
 
-A `started` response confirms acceptance, not a completed reply. Agents should
-normally use [`sessions_send` with `timeoutSeconds: 0`](/concepts/session-tool#sending-cross-session-messages)
-for nonblocking coordination.
+A `started` response confirms acceptance, not a completed reply. These CLI methods
+are for operators and external automation. Agents use their exposed
+[`sessions_send` tool](/concepts/session-tool#sending-cross-session-messages),
+never a shell or direct RPC substitute. An unavailable messaging tool is not
+permission to use the CLI. Subagents return results through their accepted task
+completion path; the parent relays any necessary coordination with other sessions.
 
 <ParamField path="--params <json>" type="string" default="{}">
   JSON object string for params.

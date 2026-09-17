@@ -120,10 +120,18 @@ LAN can use the returned URL without configuring ingress. The published address
 stays fixed for the portal's lifetime; reopen the portal after a network change.
 If no private LAN address is available, wildcard listeners publish a loopback URL.
 A loopback URL works on the Gateway host, not on an unrelated remote browser.
-Discovery does not establish reachability through firewalls, container port
-mappings, or remote proxies. Wildcard binds do not declare a public hostname. For
-remote HTTPS access, configure one of the ingress paths above rather than changing
-the displayed URL or exposing random ports manually.
+Direct TLS listeners reuse the Gateway certificate. The service prefers a
+certificate-valid hostname from `gateway.publicOrigin` or the configured Control
+UI origins, then a certificate-valid bind address, then a concrete DNS name from
+the certificate. Wildcard certificate names alone cannot identify a destination;
+configure the existing `gateway.publicOrigin` when a concrete hostname is needed.
+The hostname must resolve to the Gateway and the returned port must be reachable.
+No additional portal ingress configuration is required for direct TLS.
+
+Discovery and certificate names do not establish reachability through firewalls,
+container port mappings, or remote proxies. A Gateway-only HTTPS proxy still
+requires one of the ingress paths above; changing the displayed URL does not
+expose its portal ports.
 
 HTTPS portals use secure partitioned cookies so their authentication also works
 when the Control UI is on another site. A direct HTTP portal can embed when the

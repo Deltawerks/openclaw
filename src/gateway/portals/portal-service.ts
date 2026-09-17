@@ -24,6 +24,7 @@ import {
   type PortalTarget,
 } from "./portal-http-proxy.js";
 import { createPortalIngress, portalIngressHostname } from "./portal-ingress.js";
+import { resolvePortalTlsHostname } from "./portal-tls-hostname.js";
 
 const PORTAL_PORT_ALLOCATION_ATTEMPTS = 10;
 
@@ -458,7 +459,11 @@ export function createGatewayPortalService(params: {
                 }
                 portal.publicOrigin = gatewayUrl.origin;
               } else {
-                portal.publicOrigin = `${tlsOptions ? "https" : "http"}://${await formatPortalHost(primaryHost)}:${portal.listenPort}`;
+                const bindHostname = await formatPortalHost(primaryHost);
+                const hostname = tlsOptions
+                  ? resolvePortalTlsHostname(tlsOptions, params.gatewayOrigins ?? [], bindHostname)
+                  : bindHostname;
+                portal.publicOrigin = `${tlsOptions ? "https" : "http"}://${hostname}:${portal.listenPort}`;
               }
             }
             if (closed) {

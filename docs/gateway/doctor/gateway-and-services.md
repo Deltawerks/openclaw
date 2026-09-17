@@ -33,6 +33,7 @@ warnings, workspace status, gateway auth and health, and supervisors.
     - paired tokens whose scopes drift outside the approved pairing baseline
     - local cached device-token entries for the current machine that predate a gateway-side token rotation or carry stale scope metadata
     - a retired `identity/device-auth.json` file that is still present and blocks inspection of locally cached tokens, including in remote Gateway mode; stop the Gateway and run `openclaw doctor --fix` to finish migration or cleanup
+    - retired `devices/*.json` and `nodes/*.json` stores on a local Gateway; stop the Gateway and run `openclaw doctor --fix` to import device approvals before node capabilities and archive the originals. Existing SQLite records take precedence; unreadable sources remain in place for repair.
 
     Doctor does not auto-approve pair requests or auto-rotate device tokens. It prints the exact next steps:
 
@@ -212,6 +213,14 @@ warnings, workspace status, gateway auth and health, and supervisors.
   </Accordion>
   <Accordion title="17. Gateway runtime best practices">
     Doctor accepts Bun 1.4+ runtimes that provide WAL-reset-safe `node:sqlite` and warns when the gateway service runs on an older or unsafe Bun or a version-managed Node path (`nvm`, `fnm`, `volta`, `asdf`, etc.). Repairs migrate unsupported Bun services to Node. Version-manager paths can break after upgrades because the service does not load your shell init. Doctor offers to migrate to a system Node install when available (Homebrew/apt/choco).
+
+    Explicit runtime-path pins are retained during service repair.
+    Doctor still checks their runtime capabilities, but does not migrate a valid
+    pin away from a version manager. Replace or remove an invalid pin with
+    `openclaw gateway install --runtime-path <path> --force` or
+    `openclaw gateway install --runtime node --force`.
+
+    Service installation and repair recognize current Node executables named `node`, `nodejs`, or versioned names such as `node24` and `node-24`, including Windows `.exe` variants. Each candidate still has to pass the Node and SQLite capability checks before selection.
 
     Newly installed or repaired macOS LaunchAgents use a canonical system PATH (`/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`) instead of copying the interactive shell PATH, so Homebrew-managed system binaries stay available while Volta, asdf, fnm, pnpm, and other version-manager directories do not change which Node child processes resolve. Linux services still keep explicit environment roots (`NVM_DIR`, `FNM_DIR`, `VOLTA_HOME`, `ASDF_DATA_DIR`, `BUN_INSTALL`, `PNPM_HOME`) and stable user-bin directories, but guessed version-manager fallback directories are only written to the service PATH when those directories exist on disk.
 

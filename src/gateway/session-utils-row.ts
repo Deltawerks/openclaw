@@ -90,6 +90,8 @@ import { projectWorkerPlacementAgentRuntime } from "./worker-environments/placem
 export function readSessionRowInputs(params: {
   cfg: OpenClawConfig;
   storePath: string;
+  storeAgentId?: string;
+  active?: boolean;
   store: Record<string, SessionEntry>;
   modelSource?: GatewaySessionModelSource;
   key: string;
@@ -131,7 +133,7 @@ export function readSessionRowInputs(params: {
   const selectedModel = resolveSessionSelectedModelRef({
     cfg,
     sessionKey: key,
-    source: params.modelSource ?? { entry, loadSessionEntry: (parentKey) => store[parentKey] },
+    source: params.modelSource ?? { entry, readSourceEntry: (parentKey) => store[parentKey] },
     agentId,
     rowContext,
     allowPluginNormalization: !lightweight,
@@ -154,6 +156,7 @@ export function readSessionRowInputs(params: {
           maxTranscriptBytes: params.transcriptUsageMaxBytes,
           rowContext,
           agentId,
+          storeAgentId: params.storeAgentId,
         })
       : undefined;
   const { provider, model } = selectedModel;
@@ -167,6 +170,8 @@ export function readSessionRowInputs(params: {
   // Display aliases do not change the selected route's catalog or runtime policy.
   const activeModel = resolveGatewaySessionActiveModel({
     cfg,
+    active: params.active,
+    storeAgentId: params.storeAgentId,
     selectedModel,
     projectedAgentRuns: (rowContext.projectedAgentRuns ??= buildProjectedAgentRunIndex()),
     entry,
@@ -180,7 +185,7 @@ export function readSessionRowInputs(params: {
   let lastMessagePreview: string | undefined;
   if (entry?.sessionId && (params.includeDerivedTitles || params.includeLastMessage)) {
     const fields = readScopedSessionTitleFieldsFromTranscript({
-      agentId,
+      agentId: params.storeAgentId ?? agentId,
       sessionEntry: entry,
       sessionId: entry.sessionId,
       sessionKey: key,
@@ -342,10 +347,11 @@ export function buildGatewaySessionRow(
   return presentSessionRow(materializeSessionRow(inputs), presentation);
 }
 
-export function resolveGatewaySessionActiveModel(params: {
+function resolveGatewaySessionActiveModel(params: {
   cfg: OpenClawConfig;
   active?: boolean;
   agentId?: string;
+  storeAgentId?: string;
   sessionId?: string;
   sessionKey: string;
   projectedAgentRuns: ProjectedAgentRunIndex;
@@ -392,7 +398,7 @@ export function resolveGatewaySessionActiveModel(params: {
         sessionEntry: params.entry,
         config: params.cfg,
         sessionScope: {
-          agentId: params.agentId,
+          agentId: params.storeAgentId ?? params.agentId,
           sessionKey: params.sessionKey,
           storePath: params.storePath,
         },
@@ -556,6 +562,7 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
     hasAutomation: input.hasAutomation,
     // Navigation lineage is persisted; runtime control is exposed separately above.
     parentSessionKey: entry?.parentSessionKey,
+    parentSessionId: entry?.parentSessionId,
     childSessions: undefined,
     responseUsage: entry?.responseUsage,
     effectiveResponseUsage: resolveEffectiveResponseUsage(
@@ -607,6 +614,9 @@ export function presentSessionRow(
   const { source } = materialized;
   const { entry, freshSessionTotalTokens } = source;
   const { now } = options;
+  // Stamp the temporal projection, not the reusable materialized inputs.
+  // Completed list caches retain this sample when they replay the finished row.
+  row.snapshotAt = now;
   const subagentRuns =
     options.subagentRuns ?? buildSubagentRunReadIndexFromRuns({ ...source.subagentRunInputs, now });
   const { subagentRun, subagentOwner, fields } = projectGatewaySessionRunState({
