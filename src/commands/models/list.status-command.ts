@@ -57,10 +57,8 @@ import { resolveModelCatalogIdentityKey } from "../../agents/openai-model-routes
 import { OPENAI_PROVIDER_ID } from "../../agents/openai-routing.js";
 import { loadPreparedModelCatalogSnapshot } from "../../agents/prepared-model-catalog.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
-import {
-  readUtilityModelSetting,
-  resolveUtilityModelRefForAgent,
-} from "../../agents/utility-model.js";
+import { readUtilityModelSetting } from "../../agents/utility-model-setting.js";
+import { resolveUtilityModelRefForAgent } from "../../agents/utility-model.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../agents/workspace.js";
 import { requestExitAfterOneShotOutput } from "../../cli/one-shot-exit.js";
 import { createConfigIO } from "../../config/config.js";

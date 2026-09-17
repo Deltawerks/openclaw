@@ -20,11 +20,15 @@ run_missing_load_path_fixture() {
   local stage="$1"
   local helper="scripts/e2e/lib/upgrade-survivor/assertions.mjs"
   case "$stage" in
+    seed)
+      phase missing-load-path-seed node "$helper" missing-load-path "$stage" || return "$?"
+      export OPENCLAW_UPGRADE_SURVIVOR_MISSING_LOAD_PATH_SEEDED=1
+      ;;
     baseline)
       local GATEWAY_LOG="$ARTIFACT_ROOT/missing-load-path/baseline-gateway.log"
       local HEALTHZ_JSON="$ARTIFACT_ROOT/missing-load-path/baseline-healthz.json"
       local READYZ_JSON="$ARTIFACT_ROOT/missing-load-path/baseline-readyz.json"
-      phase missing-load-path-baseline-start start_gateway
+      phase missing-load-path-baseline-start openclaw_prepublish_plugin_registry_run_published start_gateway
       phase missing-load-path-baseline-ready check_gateway_probes
       phase missing-load-path-baseline-stop stop_gateway
       ;;

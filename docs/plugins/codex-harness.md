@@ -16,8 +16,10 @@ media delivery, and the visible transcript mirror.
 
 The native session catalog requests at most 64 threads per page and shortens
 previews to 500 characters before delivering them to catalog consumers. An unfiltered
-first list fetches one native page; older pages load on demand. Title searches retain
-their bounded scan. A single native preview
+first list fetches one native page; older pages load on demand. Title search and
+hiding OpenClaw-managed sessions share a 20-page catalog scan budget for each returned
+page. Continuing from its cursor searches the next pages without skipping older matches.
+A single native preview
 can still make its response large because the native API has no preview byte limit.
 Pages use native recency order with tie-safe cursors.
 
@@ -28,6 +30,10 @@ Every tenth refresh rechecks the bounded head page for title, status, or archive
 changes that do not advance the newest timestamp. Refreshes update only the walked
 prefix, and native cursors keep older sessions available after cache eviction.
 Nothing is persisted, and restarting the Gateway starts with an empty cache.
+Within each source's 32 cached pages, up to 20 recent-page entries are favored over
+older discovery pages across all queries. Scanning older sessions therefore does
+not discard the entire recent listing before the next poll. Expiry and native
+pagination remain unchanged.
 
 Pasted text saved as a `.txt` attachment is extracted by OpenClaw and included in
 the current turn as untrusted external content, subject to the existing file

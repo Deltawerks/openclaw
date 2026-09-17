@@ -9,6 +9,23 @@ read_when:
 Checks 0-2 cover config normalization and the legacy config key migrations,
 plus how doctor publishes shared-state schema during an update.
 
+## Channel ownership during an update
+
+When Doctor migrates a legacy `agents.list` roster without a `default: true` marker
+to explicit ownership, it also preserves unbound accounts with a binding to the first
+agent from the old list, which received their implicit traffic before the
+update. Existing account bindings and narrower conversation routes remain unchanged. Doctor
+reports each added binding and saves it with the roster migration through the
+normal config backup and validation flow.
+
+Update-channel migration and manual `openclaw doctor --fix` use the original
+roster from the config snapshot. A narrower conversation route never establishes
+account-wide ownership. If the original roster is unavailable, Doctor reports
+`unresolved: original roster unavailable` with the exact binding to add and leaves
+the account's bindings unchanged. An unresolved account stays blocked
+with that reason while the Gateway and other accounts continue running; it does
+not enter a restart loop. Add the reported binding and restart the Gateway.
+
 ## Missing plugins during migration
 
 A configured plugin that is missing or cannot finish installation does not block
@@ -85,6 +102,8 @@ beyond the grace period.
     When model migrations change a configured consumer between subscription/OAuth and metered API-key billing, Doctor reports the consumer, model, and old and new routes after saving the config. The warning also appears in the diagnostic log and update run record. A later Doctor run does not repeat it when the resolved billing route is unchanged. Missing credentials are not treated as proof of a billing change.
 
     During an update, Doctor records model-retirement repairs that must wait until plugin installation finishes. The updated OpenClaw completes those repairs after plugin convergence, even when no plugin version changed. `openclaw update status` records their completion so retired subscription models do not fall through to metered API credentials.
+
+    Utility-model separation preserves an older config's implicit primary before recording `meta.migrations.utilityModelSeparation: true`. Doctor and normal config writes use the previous config to save that primary explicitly; existing primary selections, fallbacks, and credential bindings stay authoritative. This keeps regular chat available when the old implicit primary also served utility tasks. Fresh utility setup records the separation without choosing a primary, and a provider added during utility setup is not mistaken for the previous primary. See [agent model configuration](/gateway/config-agents/models#agentsdefaultsmodel).
 
     Other commands that encounter legacy keys still ask you to run `openclaw doctor`. Doctor explains the issues, shows its migrations, and rewrites `~/.openclaw/openclaw.json` with the updated schema. Cron job store migrations are also handled by `openclaw doctor --fix`; automatic config-key migration does not import legacy session stores or repair services.
 
@@ -207,11 +226,10 @@ beyond the grace period.
     - If two or more `channels.<channel>.accounts` entries are configured without `channels.<channel>.defaultAccount` or `accounts.default`, doctor warns that fallback routing can pick an unexpected account.
     - If `channels.<channel>.defaultAccount` is set to an unknown account ID, doctor warns and lists configured account IDs.
 
-    In multi-agent configs, `doctor --fix` adds a missing account-scoped routing
-    binding when all matchable narrower bindings for that channel/account explicitly
-    name one configured agent. Existing routes remain unchanged. Accounts with no
-    owner evidence or conflicting owners need an explicit binding; Doctor does
-    not infer their owner from roster order or another channel/account.
+    In multi-agent configs, `doctor --fix` preserves the historical account owner
+    from the original legacy roster. Existing routes remain unchanged. Accounts
+    without historical ownership evidence need an explicit binding; Doctor never
+    promotes a narrower conversation route to account-wide ownership.
 
   </Accordion>
 </AccordionGroup>
