@@ -101,8 +101,8 @@ function resolveConfiguredAgentWorkspaceFingerprint(config?: OpenClawConfig): st
     .map(([id, entry]) => [id, entry.workspace ?? null] as const)
     .toSorted(([left], [right]) => left.localeCompare(right));
   const legacyEntries = (config?.agents?.list ?? [])
-    .map((entry) => [entry.id ?? null, entry.workspace ?? null] as const)
-    .toSorted(([left], [right]) => String(left).localeCompare(String(right)));
+    .map((entry) => [entry.id, entry.workspace ?? null] as const)
+    .toSorted(([left], [right]) => left.localeCompare(right));
   return JSON.stringify([config?.agents?.defaults?.workspace ?? null, entries, legacyEntries]);
 }
 
