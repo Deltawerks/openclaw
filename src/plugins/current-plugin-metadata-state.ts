@@ -43,11 +43,13 @@ export function setCurrentPluginMetadataSnapshotState(
   owner: "gateway" | "operation" = "operation",
   envFingerprint?: string,
   defaultDiscoveryCompatible = false,
+  publicationConfig?: OpenClawConfig,
 ): void {
   const state = getProcessPluginCache().metadata.current;
   state.snapshot = snapshot;
   state.owner = owner;
   state.configFingerprint = snapshot ? configFingerprint : undefined;
+  state.publicationConfig = snapshot ? publicationConfig : undefined;
   state.envFingerprint = snapshot ? envFingerprint : undefined;
   state.defaultDiscoveryCompatible = Boolean(snapshot && defaultDiscoveryCompatible);
   state.compatiblePolicyHashes = snapshot ? compatiblePolicyHashes : undefined;
@@ -94,6 +96,7 @@ export function getCurrentPluginMetadataSnapshotState() {
     snapshot: state.snapshot,
     owner: state.owner,
     configFingerprint: state.configFingerprint,
+    publicationConfig: state.publicationConfig,
     envFingerprint: state.envFingerprint,
     defaultDiscoveryCompatible: state.defaultDiscoveryCompatible,
     compatiblePolicyHashes: state.compatiblePolicyHashes,

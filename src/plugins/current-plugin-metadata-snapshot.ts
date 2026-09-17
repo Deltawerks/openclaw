@@ -53,6 +53,7 @@ export type CurrentPluginMetadataSnapshotParams = {
   workspaceDir?: string;
   allowWorkspaceScopedSnapshot?: boolean;
   requireDefaultDiscoveryContext?: boolean;
+  requireAgentWorkspaceCompatibility?: boolean;
 };
 
 type PluginMetadataSnapshotCandidate = {
@@ -90,20 +91,31 @@ function resolvePluginMetadataControlPlaneFingerprint(
   config?: OpenClawConfig,
   options: Omit<ResolvePluginControlPlaneContextParams, "config"> = {},
 ): string {
-  return JSON.stringify([
-    resolvePluginControlPlaneFingerprint({ config, ...options }),
-    resolveConfiguredAgentWorkspaceFingerprint(config),
-  ]);
+  return resolvePluginControlPlaneFingerprint({ config, ...options });
 }
 
 function resolveConfiguredAgentWorkspaceFingerprint(config?: OpenClawConfig): string {
-  const entries = Object.entries(config?.agents?.entries ?? {})
-    .map(([id, entry]) => [id, entry.workspace ?? null] as const)
-    .toSorted(([left], [right]) => left.localeCompare(right));
-  const legacyEntries = (config?.agents?.list ?? [])
-    .map((entry) => [entry.id, entry.workspace ?? null] as const)
-    .toSorted(([left], [right]) => left.localeCompare(right));
+  const rawEntries: unknown = config?.agents?.entries;
+  const entries =
+    rawEntries && typeof rawEntries === "object" && !Array.isArray(rawEntries)
+      ? Object.entries(rawEntries)
+          .map(([id, entry]) => projectAgentWorkspaceEntry(id, entry))
+          .toSorted(([left], [right]) => String(left).localeCompare(String(right)))
+      : [];
+  const rawLegacyEntries: unknown = config?.agents?.list;
+  const legacyEntries = (Array.isArray(rawLegacyEntries) ? rawLegacyEntries : [])
+    .map((entry) => projectAgentWorkspaceEntry(undefined, entry))
+    .toSorted(([left], [right]) => String(left).localeCompare(String(right)));
   return JSON.stringify([config?.agents?.defaults?.workspace ?? null, entries, legacyEntries]);
+}
+
+function projectAgentWorkspaceEntry(id: unknown, entry: unknown) {
+  const entryId = entry && typeof entry === "object" && "id" in entry ? entry.id : undefined;
+  const entryWorkspace =
+    entry && typeof entry === "object" && "workspace" in entry ? entry.workspace : undefined;
+  const resolvedId = typeof id === "string" ? id : typeof entryId === "string" ? entryId : null;
+  const workspace = typeof entryWorkspace === "string" ? entryWorkspace : null;
+  return [resolvedId, workspace] as const;
 }
 
 function prepareCurrentPluginMetadataSnapshotPublication(
@@ -157,6 +169,7 @@ function prepareCurrentPluginMetadataSnapshotPublication(
       owner,
       envFingerprint,
       defaultDiscoveryCompatible,
+      options.config,
     );
     for (const config of configIdentities) {
       currentPluginMetadataConfigIdentityCache.add(config);
@@ -397,12 +410,21 @@ export function getCompatibleProcessGatewayPluginMetadataSnapshot(
     snapshot,
     owner,
     configFingerprint,
+    publicationConfig,
     envFingerprint,
     defaultDiscoveryCompatible,
     compatiblePolicyHashes,
     compatibleConfigFingerprints,
   } = getCurrentPluginMetadataSnapshotState();
   if (owner !== "gateway") {
+    return undefined;
+  }
+  if (
+    params.requireAgentWorkspaceCompatibility === true &&
+    params.config &&
+    resolveConfiguredAgentWorkspaceFingerprint(publicationConfig) !==
+      resolveConfiguredAgentWorkspaceFingerprint(params.config)
+  ) {
     return undefined;
   }
   const compatible = resolveCompatiblePluginMetadataSnapshot(

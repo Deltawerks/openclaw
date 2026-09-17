@@ -21,6 +21,7 @@ type CurrentPluginMetadataCacheState = {
   snapshot: PluginMetadataSnapshot | undefined;
   owner: "gateway" | "operation";
   configFingerprint: string | undefined;
+  publicationConfig: OpenClawConfig | undefined;
   envFingerprint: string | undefined;
   defaultDiscoveryCompatible: boolean;
   compatiblePolicyHashes: readonly string[] | undefined;
