@@ -5,7 +5,10 @@ import type { CustodianTurnAdmission } from "../../components/custodian-alert-co
 import { t } from "../../i18n/index.ts";
 import { canCallGatewayMethod, isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { CustodianInputDrafts } from "./custodian-input-drafts.ts";
-import { performCustodianAgentHandoff } from "./custodian-navigation.ts";
+import {
+  navigateFromCustodianSetup,
+  performCustodianAgentHandoff,
+} from "./custodian-navigation.ts";
 import * as nudgeActions from "./custodian-nudge-actions.ts";
 import {
   createCustodianSessionId,
@@ -206,7 +209,7 @@ export class CustodianSessionStore {
       this.activeClient !== null &&
       this.chatAvailable &&
       !this.sending &&
-      this.configuredInferenceState === "ready" &&
+      (this.configuredInferenceState === "ready" || this.configuredInferenceState === "utility") &&
       this.inferenceState === "ready"
     );
   }
@@ -396,7 +399,7 @@ export class CustodianSessionStore {
     // Leaving setup revokes navigation authority from every in-flight reply.
     // The destination surface separately decides whether to retain or rotate context.
     this.revokeNavigationAuthority();
-    this.context?.navigate(destination);
+    navigateFromCustodianSetup(this.context, destination, this.configuredInferenceState);
   }
 
   private revokeNavigationAuthority(): void {
@@ -443,9 +446,8 @@ export class CustodianSessionStore {
       // A freshly minted id cannot address a live session; no barrier needed.
       this.rejoinBarrierPending = false;
     }
-    const next = sessionId ?? createCustodianSessionId();
-    this.sessionId = next;
-    persistCustodianSessionId(next);
+    this.sessionId = sessionId ?? createCustodianSessionId();
+    persistCustodianSessionId(this.sessionId);
   }
 
   private abandonPendingUserTurn(pendingParams: SystemAgentChatParams | null): void {
