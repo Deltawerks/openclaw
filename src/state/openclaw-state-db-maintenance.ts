@@ -23,6 +23,7 @@ import {
   LEGACY_SKILL_WORKSHOP_COLLECTION_REVIEWS_INDEX,
   withSqliteWritableSchema,
 } from "./openclaw-state-db-doctor-schema.js";
+import { ensureWorktreeSessionBindingsSchema } from "./openclaw-state-db-schema-additive.js";
 import { ensureColumn, tableExists, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 import { migrateJsonCanonicalWideRowsV13 } from "./openclaw-state-db-schema-v13-widerow.js";
 import {
@@ -137,10 +138,12 @@ export function prepareStateDatabaseSchemaRepair(
   };
 }
 
+const STATE_V18_MIGRATION_TABLES = ["worktree_session_bindings"] as const;
 const STATE_V6_ADDITIVE_TABLES = [
   // v6-v12 databases may predate this former same-version lazy table.
   "gateway_origin_device_tokens",
   ...LAZY_ADDITIVE_STATE_TABLES,
+  ...STATE_V18_MIGRATION_TABLES,
   "worker_session_tool_operations",
   "worker_turn_tool_authorities",
 ] as const;
@@ -172,10 +175,11 @@ const STATE_MIGRATION_ALLOWED_MISSING_TABLES = {
   10: STATE_V6_ADDITIVE_TABLES,
   11: STATE_V6_ADDITIVE_TABLES,
   12: STATE_V6_ADDITIVE_TABLES,
-  13: LAZY_ADDITIVE_STATE_TABLES,
-  14: LAZY_ADDITIVE_STATE_TABLES,
-  15: LAZY_ADDITIVE_STATE_TABLES,
-  16: LAZY_ADDITIVE_STATE_TABLES,
+  13: [...LAZY_ADDITIVE_STATE_TABLES, ...STATE_V18_MIGRATION_TABLES],
+  14: [...LAZY_ADDITIVE_STATE_TABLES, ...STATE_V18_MIGRATION_TABLES],
+  15: [...LAZY_ADDITIVE_STATE_TABLES, ...STATE_V18_MIGRATION_TABLES],
+  16: [...LAZY_ADDITIVE_STATE_TABLES, ...STATE_V18_MIGRATION_TABLES],
+  17: [...LAZY_ADDITIVE_STATE_TABLES, ...STATE_V18_MIGRATION_TABLES],
 } as const satisfies Record<number, readonly string[]>;
 type OpenClawStateMigrationVersion = keyof typeof STATE_MIGRATION_ALLOWED_MISSING_TABLES;
 
@@ -264,7 +268,7 @@ export const openClawStateMigrationAssertions = new Map<
   number,
   (database: DatabaseSync, options: { pathname: string }) => void
 >(
-  ([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] as const).map(
+  ([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17] as const).map(
     (version) =>
       [
         version,
@@ -348,6 +352,39 @@ function migrateConversationBindingTargets(db: DatabaseSync, previousVersion: nu
     db.exec(`ALTER TABLE current_conversation_bindings DROP COLUMN ${column};`);
   }
   return true;
+}
+
+/** Publish legacy session-owned worktrees as explicit memberships before v18 fencing. */
+function migrateWorktreeSessionBindings(db: DatabaseSync, previousVersion: number): boolean {
+  if (previousVersion >= 18) {
+    return false;
+  }
+  ensureWorktreeSessionBindingsSchema(db);
+  if (!tableExists(db, "worktrees")) {
+    return false;
+  }
+  const query = getNodeSqliteKysely<Pick<DB, "worktrees" | "worktree_session_bindings">>(db);
+  const migrated = executeSqliteQuerySync(
+    db,
+    query
+      .insertInto("worktree_session_bindings")
+      .columns(["worktree_id", "session_key", "active", "attached_at"])
+      .expression(
+        query
+          .selectFrom("worktrees")
+          .select((eb) => [
+            "id as worktree_id",
+            eb.cast<string>("owner_id", "text").as("session_key"),
+            eb.val(1).as("active"),
+            "created_at as attached_at",
+          ])
+          .where("owner_kind", "=", "session")
+          .where("owner_id", "is not", null)
+          .where("removed_at", "is", null),
+      )
+      .onConflict((conflict) => conflict.columns(["worktree_id", "session_key"]).doNothing()),
+  );
+  return (migrated.numAffectedRows ?? 0n) > 0n;
 }
 
 /** Add preparation and activation facts without rebuilding the referenced environment table. */
@@ -533,6 +570,10 @@ export const versionedStateMigrations: ReadonlyArray<{
   {
     migrate: migratePreparedWorkerOwnership,
     applied: "Recorded prepared worker ownership and one-use lifecycle (v17)",
+  },
+  {
+    migrate: migrateWorktreeSessionBindings,
+    applied: "Migrated session-owned worktrees to explicit memberships (v18)",
   },
 ];
 

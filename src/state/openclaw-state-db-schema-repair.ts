@@ -451,6 +451,9 @@ export function detectOpenClawStateDatabaseSchemaMigrationsFromDatabase(
   ) {
     migrations.push({ kind: "prepared-worker-ownership-v17", path: pathname });
   }
+  if (userVersion < 18 && tableExists(db, "worktrees")) {
+    migrations.push({ kind: "worktree-session-bindings-v18", path: pathname });
+  }
   if (!hasCanonicalAgentDatabasesPrimaryKey(db)) {
     migrations.push({ kind: "agent-databases-composite-primary-key", path: pathname });
   }

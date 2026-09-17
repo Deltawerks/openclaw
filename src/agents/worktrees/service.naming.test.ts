@@ -261,6 +261,13 @@ describe("ManagedWorktreeService naming", () => {
     expect(
       migrated.prepare("SELECT schema_version FROM schema_meta WHERE meta_key = 'primary'").get(),
     ).toEqual({ schema_version: 18 });
+    expect(
+      migrated
+        .prepare(
+          "SELECT session_key, active, attached_at FROM worktree_session_bindings WHERE worktree_id = ?",
+        )
+        .get(created.id),
+    ).toEqual({ session_key: ownerKey, active: 1, attached_at: created.createdAt });
 
     await service.create({
       repoRoot: repo,

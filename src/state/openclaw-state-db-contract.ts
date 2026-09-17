@@ -143,6 +143,7 @@ export type OpenClawStateDatabaseSchemaMigration = {
     | "conversation-binding-targets-v15"
     | "skill-workshop-directory-ownership-v16"
     | "prepared-worker-ownership-v17"
+    | "worktree-session-bindings-v18"
     | "operator-approvals-system-agent"
     | "session-watch-cursor-provenance-v4"
     | "strict-tables-v3";
