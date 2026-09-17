@@ -1,3 +1,4 @@
+import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
@@ -113,10 +114,10 @@ export function canReceiveSessionEvent(params: {
   if (!visible || event !== "session.suggestion") {
     return visible;
   }
-  const authorId =
-    params.payload && typeof params.payload === "object"
-      ? (params.payload as { suggestion?: { author?: { id?: unknown } } }).suggestion?.author?.id
-      : undefined;
+  const payload = asOptionalObjectRecord(params.payload);
+  const suggestion = asOptionalObjectRecord(payload?.suggestion);
+  const author = asOptionalObjectRecord(suggestion?.author);
+  const authorId = author?.id;
   if (authorId === identity.id) {
     return true;
   }

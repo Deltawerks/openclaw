@@ -81,6 +81,7 @@ vi.mock("../../config/commands.flags.js", () => ({
 }));
 
 vi.mock("../../config/config.js", () => ({
+  getRuntimeConfig: () => ({}),
   readConfigFileSnapshot: async () => ({ valid: false }),
 }));
 
