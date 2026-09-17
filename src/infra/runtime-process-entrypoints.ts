@@ -9,6 +9,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../state/openclaw-state-read.worker",
     distWorkerPath: "state/openclaw-state-read.worker.js",
   },
+  spawnBroker: {
+    currentModuleUrl,
+    sourceWorkerName: "../process/spawn-broker/worker",
+    distWorkerPath: "process/spawn-broker/worker.js",
+  },
   cronStreamMatcher: {
     currentModuleUrl,
     sourceWorkerName: "../gateway/cron-stream-matcher.worker",

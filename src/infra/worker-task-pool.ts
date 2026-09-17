@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { channel as createDiagnosticsChannel } from "node:diagnostics_channel";
 import { availableParallelism } from "node:os";
-import { parentPort, Worker, type Transferable, type WorkerOptions } from "node:worker_threads";
+import { parentPort, Worker, type Transferable } from "node:worker_threads";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -13,7 +13,13 @@ import {
   DEFAULT_WORKER_PENDING_TASKS,
   getWorkerComputeCapacity,
 } from "./worker-task-capacity.js";
-import type { Slot, Task, WorkerTaskInput, WorkerTaskOptions } from "./worker-task-pool.types.js";
+import type {
+  Slot,
+  Task,
+  WorkerTaskInput,
+  WorkerTaskOptions,
+  WorkerTaskPoolOptions,
+} from "./worker-task-pool.types.js";
 
 export type { WorkerTaskRequestContext, WorkerTaskResponse } from "./worker-task-pool.types.js";
 
@@ -48,6 +54,9 @@ export class WorkerTaskPool<Input, Output> {
   private readonly maxPendingBytes: number;
   private pendingTasks = 0;
   private pendingBytes = 0;
+  private workers = 0;
+  private workersCreated = 0;
+  private activeTasks = 0;
   private readonly computeCapacity: ReturnType<typeof getWorkerComputeCapacity> | undefined;
   private readonly resumeCompute = () => this.dispatch();
   private closedError?: Error;
@@ -61,28 +70,7 @@ export class WorkerTaskPool<Input, Output> {
   private readonly setTimeoutFn = setTimeout;
   private readonly clearTimeoutFn = clearTimeout;
 
-  constructor(
-    private readonly options: {
-      workerUrl: URL;
-      workerOptions?: Omit<WorkerOptions, "eval">;
-      /** Shallow per-Worker overrides; returned scratch stays owned until Worker exit. */
-      prepareWorker?: () => {
-        options: Omit<WorkerOptions, "eval">;
-        temporaryDirectory?: string;
-      };
-      maxWorkers?: number;
-      /** Share CPU admission with other stateless compute pools in this isolate. */
-      sharedCompute?: boolean;
-      /** Include queued, preparing, and running tasks until execution has settled. */
-      maxPendingTasks?: number;
-      maxPendingBytes?: number;
-      idleTimeoutMs?: number;
-      restartOnError?: boolean;
-      validateResult?: (value: Output) => void;
-      /** Reports failed stops synchronously; returned rejections never delay retirement. */
-      onRetirementFailure?: (error: unknown) => void | Promise<void>;
-    },
-  ) {
+  constructor(private readonly options: WorkerTaskPoolOptions<Output>) {
     this.maxWorkers = options.maxWorkers ?? availableParallelism();
     this.maxPendingTasks = options.maxPendingTasks ?? DEFAULT_WORKER_PENDING_TASKS;
     this.maxPendingBytes = options.maxPendingBytes ?? DEFAULT_WORKER_PENDING_BYTES;
@@ -146,6 +134,20 @@ export class WorkerTaskPool<Input, Output> {
       this.dispatch();
     }
     return task.promise;
+  }
+
+  get isClosed(): boolean {
+    return this.closedError !== undefined;
+  }
+
+  getSnapshot() {
+    return {
+      maxWorkers: this.maxWorkers,
+      workers: this.workers,
+      workersCreated: this.workersCreated,
+      activeTasks: this.activeTasks,
+      pendingTasks: this.pendingTasks,
+    };
   }
 
   /** Pause dispatch, settle current work and join native exit before restarting the queue. */
@@ -242,6 +244,7 @@ export class WorkerTaskPool<Input, Output> {
       this.clearTimeoutFn(slot.idleTimer);
       const task = this.queue.shift()!;
       slot.task = task;
+      this.activeTasks++;
       task.slot = slot;
       task.startedAt = performance.now();
       slot.worker?.ref();
@@ -267,6 +270,8 @@ export class WorkerTaskPool<Input, Output> {
       }
       return new Worker(workerUrl, workerOptions);
     });
+    this.workers++;
+    this.workersCreated++;
     slot.worker = worker;
     worker.on("message", (message: unknown) => {
       const task = slot.task;
@@ -282,9 +287,10 @@ export class WorkerTaskPool<Input, Output> {
     worker.on("messageerror", (error) =>
       this.fail(slot, new WorkerTaskError(String(error), "unavailable")),
     );
-    worker.once("exit", (code) =>
-      this.fail(slot, new WorkerTaskError(`worker exited with code ${code}`, "unavailable")),
-    );
+    worker.once("exit", (code) => {
+      this.workers--;
+      this.fail(slot, new WorkerTaskError(`worker exited with code ${code}`, "unavailable"));
+    });
     return worker;
   }
 
@@ -300,7 +306,8 @@ export class WorkerTaskPool<Input, Output> {
           ? await (taskInput as () => Input | Promise<Input>)() // SAFETY: Callable inputs are factories.
           : taskInput;
     } catch (error) {
-      this.fail(slot, toErrorObject(error, "worker task preparation failed"));
+      // No input reached the worker; a rejected owner must not retire its healthy siblings.
+      this.finish(task, toErrorObject(error, "worker task preparation failed"));
       return;
     } finally {
       task.preparing = false;
@@ -547,13 +554,13 @@ export class WorkerTaskPool<Input, Output> {
           const now = performance.now();
           taskDiagnostics.publish({
             worker: this.options.workerUrl.pathname.split("/").at(-1),
+            ...this.getSnapshot(),
             outcome: completionError ? "failed" : "ok",
             queueMs: (task.startedAt ?? now) - task.enqueuedAt,
             preparationMs:
               task.startedAt === undefined ? 0 : (task.preparedAt ?? now) - task.startedAt,
             runMs: task.preparedAt === undefined ? 0 : now - task.preparedAt,
             transferMs: task.transferMs,
-            pendingTasks: this.pendingTasks,
             pendingBytes: this.pendingBytes,
           });
         }
@@ -567,6 +574,7 @@ export class WorkerTaskPool<Input, Output> {
     const slot = task.slot;
     if (slot) {
       slot.task = undefined;
+      this.activeTasks--;
       if (retire) {
         // Keep input and capacity custody until execution stops, even if rejection is early.
         (slot.completions ??= []).push(complete);

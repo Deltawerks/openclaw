@@ -19,7 +19,7 @@ backup.
 
 ## Recommended: `openclaw update`
 
-Detects your install type (npm, pnpm, Bun, or git), validates the candidate while
+Detects your install type (npm, pnpm, Bun, or git), checks the new version while
 the old Gateway serves, then activates and verifies the update.
 
 ```bash
@@ -56,8 +56,8 @@ An explicit package artifact (for example, a tarball path or URL) is validated
 and installed even when its version matches; matching versions do not prove
 that two artifacts contain the same code.
 An explicit `--channel` choice still becomes the saved update channel.
-For targets that support candidate validation, Doctor lint, config and plugin planning, and a
-canary boot on copied state finish before the service stops. The stopped interval
+For versions that support checks before installation, health checks, config and plugin planning, and a
+test Gateway boot on copied state finish before the service stops. The stopped interval
 contains the swap, required migrations, plugin downloads and convergence, and
 service start. Plugin work uses the installed target without requiring a serving
 Gateway. A changed plugin snapshot runs fresh Doctor migrations before restart;
@@ -83,7 +83,7 @@ its `--timeout` option cannot increase this cap.
 Package updates also check npm availability for enabled configured plugins before
 stopping the serving Gateway or replacing the installed core. Registry targets
 are checked early; explicit package artifacts are checked using the privately
-staged package version before rehearsal, live-state preparation, or activation.
+staged package version before private validation, live-state preparation, or activation.
 The check uses the same plugin version rules as post-update synchronization,
 including release-cohort tracking, beta selection, and extended-stable targets.
 A missing plugin version or registry error produces a warning naming the
@@ -223,7 +223,7 @@ you to the reflog instead. A refusal after state repairs keeps the migration
 owner's instructions: restoring source alone does not restore state.
 These diagnostics also enter the warning log, subject to normal logging settings
 and rotation. After resolving the refusal cause, retry the update. Once the
-upgrade succeeds, subsequent updates validate the candidate before activation.
+upgrade succeeds, subsequent updates check the new version before activation.
 
 ### From chat
 
@@ -237,7 +237,7 @@ restrictions still apply.
 or access to the `gateway` tool. The tool, slash command, and Control UI all use
 the same Gateway update handler and current authorization checks.
 
-The candidate validates while the old Gateway serves, and an already-current
+The new version is checked while the old Gateway serves, and an already-current
 update restarts it only when plugins change. Update runs can send these notices
 in that chat as the Gateway observes the recorded milestones:
 
@@ -434,6 +434,16 @@ openclaw health
 ```
 
 </Steps>
+
+### Background exec notifications after an update
+
+`[OpenClaw exec completion]` identifies an automatic follow-up for a background
+command, rather than a recurring heartbeat poll. These follow-ups can run with
+`agents.defaults.heartbeat.every: "0m"`. To keep background exec without these
+extra model calls, set `tools.exec.notifyOnExit: false` and check per-agent
+overrides at `agents.entries.<id>.tools.exec.notifyOnExit`. Use `process poll` to
+collect results. See [Background exec notifications](/gateway/background-process#disable-automatic-completion-turns)
+for when the setting takes effect.
 
 <a id="rollback" />
 <a id="roll-back-a-package-install" />

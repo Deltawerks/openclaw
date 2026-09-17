@@ -225,6 +225,7 @@ export async function resolveCronModelSelection(
   });
   const resolvedDefault = resolveConfiguredModelRef({
     cfg: cfgWithAgentDefaults,
+    agentId: ownerAgentId,
     defaultProvider: DEFAULT_PROVIDER,
     defaultModel: DEFAULT_MODEL,
     manifestPlugins: owner.metadataSnapshot,
