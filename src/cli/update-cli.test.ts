@@ -2023,8 +2023,7 @@ describe("update-cli", () => {
   };
 
   beforeEach(async () => {
-    process.exitCode = undefined;
-    fixtureStateDatabases.clear();
+    process.exitCode = void fixtureStateDatabases.clear();
     // Clear the helper's state selector below so HOME and profile overrides keep their semantics.
     const { createTempHomeEnv } = await import("../test-utils/temp-home.js");
     tempHome = await createTempHomeEnv("openclaw-update-cli-home-");
@@ -2318,8 +2317,7 @@ describe("update-cli", () => {
   });
 
   afterEach(async () => {
-    process.exitCode = undefined;
-    vi.restoreAllMocks();
+    process.exitCode = void vi.restoreAllMocks();
     closeOpenClawStateDatabaseForTest();
     await tempHome?.restore();
     tempHome = undefined;
