@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, test, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { getRegistryWorktree } from "../agents/worktrees/registry.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
@@ -8,6 +9,7 @@ import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { identifiedClient } from "./server-methods/sessions-sharing.test-support.js";
+import * as workspaceFiles from "./server-methods/workspace-files.js";
 import { resolveSessionMutationAuthorization } from "./session-sharing.js";
 import { testState } from "./test-helpers.js";
 import { directSessionReq, getGatewayConfigModule } from "./test/server-sessions.test-helpers.js";
@@ -334,6 +336,8 @@ test("sessions.files.get revalidates every shared peer after participation is re
   testState.agentConfig = { workspace };
   const { storePath } = await createSessionStoreDir();
   let worktreeId: string | undefined;
+  let releaseRead = () => {};
+  let restoreRead = () => {};
   try {
     const ownerClient = identifiedClient("profile-owner");
     const owner = await directSessionReq<{
@@ -400,18 +404,33 @@ test("sessions.files.get revalidates every shared peer after participation is re
       }),
     ).toMatchObject({ ok: true, payload: { file: { content: "private\n" } } });
 
+    const readEntered = createDeferred<void>();
+    const continueRead = createDeferred<void>();
+    const originalGetSessionWorkspaceFile = workspaceFiles.getSessionWorkspaceFile;
+    const readSpy = vi
+      .spyOn(workspaceFiles, "getSessionWorkspaceFile")
+      .mockImplementationOnce(async (params) => {
+        const result = await originalGetSessionWorkspaceFile(params);
+        readEntered.resolve();
+        await continueRead.promise;
+        return result;
+      });
+    releaseRead = () => continueRead.resolve();
+    restoreRead = () => readSpy.mockRestore();
+    const pendingRead = directSessionReq("sessions.files.get", requestParams, {
+      client: peerClient,
+      sessionMutationAuthorization: admitted.authorization,
+    });
+    await readEntered.promise;
     await patchSessionEntryCore(
       { storePath, sessionKey: owner.payload!.key },
       (entry) => ({ ...entry!, visibility: "draft" }),
       { skipMaintenance: true },
     );
+    continueRead.resolve();
 
-    await expect(
-      directSessionReq("sessions.files.get", requestParams, {
-        client: peerClient,
-        sessionMutationAuthorization: admitted.authorization,
-      }),
-    ).rejects.toThrow("session is draft for this connection");
+    await expect(pendingRead).rejects.toThrow("session is draft for this connection");
+    expect(readSpy).toHaveBeenCalledTimes(1);
 
     expect(
       resolveSessionMutationAuthorization({
@@ -422,6 +441,8 @@ test("sessions.files.get revalidates every shared peer after participation is re
       }).error,
     ).toMatchObject({ message: "session is draft for this connection" });
   } finally {
+    releaseRead();
+    restoreRead();
     const record = worktreeId ? getRegistryWorktree(process.env, worktreeId) : undefined;
     if (record && record.removedAt === undefined) {
       await managedWorktrees.remove({
