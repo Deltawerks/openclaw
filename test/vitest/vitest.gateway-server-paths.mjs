@@ -7,6 +7,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/config-reload.activation.integration.test.ts",
   "src/gateway/config-reload.test.ts",
   "src/gateway/config-reload.transcripts.test.ts",
+  "src/gateway/device-pairing-prune.test.ts",
   "src/gateway/gateway-code-mode-clock.test.ts",
   "src/gateway/gateway.chat-redaction.test.ts",
   "src/gateway/health/collector.queue-health.test.ts",
@@ -14,6 +15,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/local-request-context.session-tools.test.ts",
   "src/gateway/local-request-context.test.ts",
   "src/gateway/managed-image-attachments.test.ts",
+  "src/gateway/server-methods/agent.create-event.test.ts",
   "src/gateway/server-methods/chat-send-synthetic-repair.integration.test.ts",
   "src/gateway/server-methods/chat.abort-live-proof.test.ts",
   "src/gateway/server-methods/cron.list-scoped.test.ts",
@@ -35,6 +37,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/models-list.native-lifecycle.integration.test.ts",
   "src/gateway/server-methods/models-manual-policy.integration.test.ts",
   "src/gateway/server-methods/native-hook-relay.test.ts",
+  "src/gateway/server-methods/nodes.test.ts",
   "src/gateway/server-methods/projects.test.ts",
   "src/gateway/server-methods/requester-cron-authority.integration.test.ts",
   "src/gateway/server-methods/send.scheduled-reads.integration.test.ts",
@@ -89,6 +92,7 @@ export const gatewayServerBackedHttpTestFiles = [
 // Gateway methods needing native process state or a private module graph keep
 // the shared methods runner in isolated forks.
 export const gatewayMethodsIsolatedTestFiles = [
+  "src/gateway/server-methods/agent.task-runtime.test.ts",
   "src/gateway/server-methods/agent.test.ts",
   "src/gateway/server-methods/board.runtime-boundaries.test.ts",
   "src/gateway/server-methods/chat.reset-visible-yield.test.ts",

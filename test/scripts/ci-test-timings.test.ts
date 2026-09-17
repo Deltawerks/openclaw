@@ -413,6 +413,7 @@ describe("runtime placement observations", () => {
                     ...group.env,
                     OPENCLAW_VITEST_MAX_WORKERS:
                       group.env?.OPENCLAW_VITEST_MAX_WORKERS ??
+                      job.env?.OPENCLAW_VITEST_MAX_WORKERS ??
                       (job.planConcurrency === 2 ? "2" : undefined),
                   },
                 }),

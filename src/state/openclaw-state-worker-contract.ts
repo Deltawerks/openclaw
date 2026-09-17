@@ -12,6 +12,7 @@ import type { DeferredPluginMigration } from "../infra/deferred-plugin-migration
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type { DeviceIdentity } from "../infra/device-identity-store.js";
 import type { PreparedPromotionClaim } from "../infra/promotions-feed.kernel.js";
+import type { ApnsRegistration } from "../infra/push-apns-store.types.js";
 import type { WebPushWorkerOperations } from "../infra/push-web-store.worker-contract.js";
 import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-queue.worker-contract.js";
 import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
@@ -54,6 +55,8 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   TaskRegistryWorkerOperations & {
     "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
     "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
+    "apns.registration.read": { input: string; output: ApnsRegistration | null };
+    "apns.registrations.read": { input: readonly string[]; output: Map<string, ApnsRegistration> };
     "agentProvenance.read": {
       input: { agentId: string };
       output: AgentProvenance | undefined;
