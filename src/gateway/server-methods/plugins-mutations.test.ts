@@ -138,7 +138,10 @@ describe("plugin management Gateway mutation handlers", () => {
       const pending = pluginMutationHandlers["plugins.install"]!({
         req: { type: "req", id: "install-one", method: "plugins.install" },
         params: { source: "npm", spec: "workboard" },
-        client: { connId: "owner-connection" } as never,
+        client: {
+          connId: "owner-connection",
+          connect: { role: "operator", scopes: ["operator.admin"] },
+        } as never,
         context: {
           applyPluginLifecycleChange: () => {
             enteredRuntime.resolve();
