@@ -1,8 +1,21 @@
 import { throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
 import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { StateDatabaseReadAdmissionInvalidatedError } from "./openclaw-state-db-async-lifecycle.js";
 import { registerOpenClawStateDatabaseAsyncResource } from "./openclaw-state-db-cache.js";
 import type { RetainedReadScope } from "./openclaw-state-read.types.js";
+
+/** Closing retains custody for accepted readers, but never admits a new reader. */
+export function assertRetainedReadScopeAdmission(
+  pathname: string,
+  scopes: readonly (RetainedReadScope | undefined)[],
+): void {
+  if (scopes.some((scope) => scope?.path === pathname && (!scope.active || scope.work.isClosing))) {
+    throw new StateDatabaseReadAdmissionInvalidatedError(
+      "Shared-state read scope is closing or closed; retry the operation in a current scope.",
+    );
+  }
+}
 
 export function createRetainedReadScope(
   pathname: string,

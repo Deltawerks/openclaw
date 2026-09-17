@@ -12,7 +12,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
 const STATE_DATABASE_READ_ADMISSION_INVALIDATED = "STATE_DATABASE_READ_ADMISSION_INVALIDATED";
 
-class StateDatabaseReadAdmissionInvalidatedError extends Error {
+export class StateDatabaseReadAdmissionInvalidatedError extends Error {
   readonly code = STATE_DATABASE_READ_ADMISSION_INVALIDATED;
 }
 

@@ -32,7 +32,11 @@ import type {
 import { openOpenClawStateReadConnection } from "./openclaw-state-db-read-connection.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
-import { createRetainedReadScope, runRetainedReadScope } from "./openclaw-state-read-scope.js";
+import {
+  assertRetainedReadScopeAdmission,
+  createRetainedReadScope,
+  runRetainedReadScope,
+} from "./openclaw-state-read-scope.js";
 import { createOpenClawStateReadTransport } from "./openclaw-state-read-worker.js";
 import type {
   OpenClawStateReadAuthority,
@@ -63,10 +67,9 @@ const stateSnapshotReads = resolveGlobalSingleton(
 export function getActiveOpenClawStateDatabaseReadSnapshot(
   options: OpenClawStateDatabaseOptions = {},
 ): object | undefined {
+  const pathname = resolveReadOnlyPath(options);
   const current = stateSnapshotReads.getStore();
-  return current?.active === true && current.path === resolveReadOnlyPath(options)
-    ? current
-    : undefined;
+  return current?.path === pathname ? current : undefined;
 }
 
 /** Resolve a composite read from one online snapshot without redirecting live writers. */
@@ -116,7 +119,7 @@ export async function withDisposableOpenClawStateReads<T>(
   pathname: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const resolvedPath = path.resolve(pathname);
+  const resolvedPath = resolveReadOnlyPath({ path: pathname });
   const scope = createRetainedReadScope(
     resolvedPath,
     captureOpenClawStateDatabaseReadAdmission(resolvedPath).identity,
@@ -206,7 +209,14 @@ export function hasOpenClawStateTablesBeyondStartupCheckpoint(db: DatabaseSync):
 }
 
 function resolveReadOnlyPath(options: OpenClawStateDatabaseOptions): string {
-  return path.resolve(options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env));
+  const pathname = path.resolve(
+    options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env),
+  );
+  assertRetainedReadScopeAdmission(pathname, [
+    stateSnapshotReads.getStore(),
+    ...(disposableStateReads.getStore() ?? []),
+  ]);
+  return pathname;
 }
 
 function existingPathOrUndefined(pathname: string): string | undefined {
@@ -435,11 +445,6 @@ export function executeExistingOpenClawStateRead(
   const mutation = prepareStateDatabaseCanonicalMutation(pathname);
   const excluded = hasStateDatabaseSourceExclusion(pathname);
   const preserveArtifacts = requiresArtifactPreservingSnapshot(pathname);
-  for (const scope of scopes) {
-    if (scope.work.isClosing) {
-      return Promise.reject(new Error("Shared-state read scope is closing"));
-    }
-  }
   const run = async (): Promise<OpenClawStateReadReply | undefined> => {
     const controller = new AbortController();
     const producerSettled = createDeferredCore();
@@ -652,8 +657,8 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
   options: OpenClawStateDatabaseOptions = {},
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
 ): T | undefined {
+  const pathname = resolveReadOnlyPath(options);
   return stateSnapshotReads.exit(() => {
-    const pathname = resolveReadOnlyPath(options);
     // Maintenance admission belongs to a fresh private reader, never a cached writer.
     if (!openStateSchemaReadAdmission) {
       const reused = withOpenClawStateDatabaseReadOnlyIfOpen(operation, pathname);
