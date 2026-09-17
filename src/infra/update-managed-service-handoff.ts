@@ -1887,7 +1887,7 @@ let automaticRequested = false;
             recovery?.service === "healthy" ? "updater already verified recovery" :
               recovery?.service === "failed" ? "updater recovery failed; no automatic retry" :
                 "no verified recovery result; inspect the installation before restarting"));
-        if (restorationArmed && !restored) { const alarm = "Gateway recovery did not reach verified healthy readiness; its current availability is unverified. Run openclaw gateway status --deep before restarting it manually."; appendLog(alarm); runWarnings.set("warning:gateway-availability", alarm); }
+        if (restorationArmed && !restored) { const alarm = "OpenClaw could not verify Gateway recovery after the failed update. Run openclaw gateway status --deep now. If the Gateway is not healthy, inspect openclaw update status, then restart it manually after resolving the reported update failure."; appendLog(alarm); runWarnings.set("warning:gateway-availability", alarm); }
         if (childStatus !== "skipped" || !restored) {
           recordUpdateHandoffOutcome("managed-service-handoff-failed", undefined, childStatus === "skipped" ? "error" : childStatus);
         }
