@@ -201,6 +201,18 @@ export function createFaceTimeCallControl(params: {
     const attempt =
       call.carrierHangupAttempt ??
       (async () => {
+        const topologyVersion = params.getHelperTopologyVersion();
+        const readCompleteAbsenceGeneration = (error: unknown): number | undefined => {
+          if (!(error instanceof FaceTimeHelperAmbiguousError)) {
+            return undefined;
+          }
+          try {
+            return projectCompleteFaceTimeAbsence(error.result).topologyGeneration;
+          } catch {
+            return undefined;
+          }
+        };
+        let mutedAbsenceGeneration: number | undefined;
         try {
           const muted = await runCarrierActionAcrossAliases({
             call,
@@ -210,10 +222,14 @@ export function createFaceTimeCallControl(params: {
           });
           params.retainHelperResultPeers(call, muted);
         } catch (error) {
-          params.logger.warn(
-            `[facetime] failed to confirm carrier safety mute: ${formatErrorMessage(error)}`,
-          );
+          mutedAbsenceGeneration = readCompleteAbsenceGeneration(error);
+          if (mutedAbsenceGeneration === undefined) {
+            params.logger.warn(
+              `[facetime] failed to confirm carrier safety mute: ${formatErrorMessage(error)}`,
+            );
+          }
         }
+        let terminatedAbsenceGeneration: number | undefined;
         try {
           const leave = await runCarrierActionAcrossAliases({
             call,
@@ -223,11 +239,20 @@ export function createFaceTimeCallControl(params: {
           });
           params.retainHelperResultPeers(call, leave);
         } catch (error) {
-          params.logger.warn(
-            `[facetime] carrier termination request failed: ${formatErrorMessage(error)}`,
-          );
+          terminatedAbsenceGeneration = readCompleteAbsenceGeneration(error);
+          if (terminatedAbsenceGeneration === undefined) {
+            params.logger.warn(
+              `[facetime] carrier termination request failed: ${formatErrorMessage(error)}`,
+            );
+          }
         }
-        const topologyVersion = params.getHelperTopologyVersion();
+        if (
+          mutedAbsenceGeneration !== undefined &&
+          mutedAbsenceGeneration === terminatedAbsenceGeneration &&
+          params.getHelperTopologyVersion() === topologyVersion
+        ) {
+          return true;
+        }
         try {
           const inspect = async () =>
             await call.runCarrierCommand({

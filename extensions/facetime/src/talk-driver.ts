@@ -103,7 +103,6 @@ export async function startFaceTimeTalkDriver(params: {
   let bridge: RealtimeVoiceBridgeSession | undefined;
   let lastInputAudioStatusAt = 0;
   let callMediaTimestampMs = 0;
-  let inputSpeechGeneration = 0;
   let modelMediaGeneration = 1;
   let responseGeneration = 0;
   let response:
@@ -512,7 +511,6 @@ export async function startFaceTimeTalkDriver(params: {
             if (role === "user" && final) {
               if (text.trim()) {
                 initialGreeting.cancel();
-                consultController.cancelInterrupted(inputSpeechGeneration);
               } else {
                 initialGreeting.schedule();
               }
@@ -542,10 +540,6 @@ export async function startFaceTimeTalkDriver(params: {
             }
             if (event.type === "input_audio_buffer.speech_started") {
               initialGreeting.pause();
-              inputSpeechGeneration += 1;
-              // VAD can fire on brief line noise. Mark the in-flight consult now,
-              // but only cancel it after this speech produces a real final transcript.
-              consultController.markPendingInterrupted(inputSpeechGeneration);
               const playbackActive = response !== undefined && (pump?.queuedAudioFrames() ?? 0) > 0;
               if (response) {
                 bridge?.setMediaTimestamp(

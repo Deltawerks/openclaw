@@ -525,6 +525,24 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
+  it("closes from stable action absence when call inspection is unavailable", async () => {
+    const talk = createTalkDriver({});
+    mocks.startTalk.mockResolvedValueOnce(talk);
+    const runtime = await createRuntime();
+    mocks.helperParams?.onMessage(incomingCall(1));
+    await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
+    mocks.helper.safetyMute.mockResolvedValue(completeAbsence());
+    mocks.helper.leaveCall.mockResolvedValue(completeAbsence());
+    mocks.helper.inspectCall.mockRejectedValue(new Error("inspection unavailable"));
+
+    await expect(runtime.hangup()).resolves.toEqual({ callUUID: "call-1" });
+
+    expect(mocks.helper.inspectCall).not.toHaveBeenCalled();
+    expect((await runtime.status()).calls).toEqual([]);
+    expect(talk.close).toHaveBeenCalledWith("operator-hangup");
+    await runtime.stop();
+  });
+
   it("fences an in-flight unmute before transmission when hangup starts", async () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);

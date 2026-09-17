@@ -26,7 +26,6 @@ type PendingAgentConsult = {
   cancelRequested: boolean;
   backendSettled: boolean;
   generation: number;
-  interruptedBySpeechGeneration?: number;
   abortController: AbortController;
   runRegistration?: { runId: string; controller: AbortController };
 };
@@ -67,16 +66,9 @@ export function createFaceTimeConsultController(params: {
       abortConsult(consult);
     }
   };
-  const markPendingInterrupted = (speechGeneration: number) => {
+  const cancelPending = () => {
     for (const consult of pending.values()) {
-      if (!consult.cancelRequested) {
-        consult.interruptedBySpeechGeneration = speechGeneration;
-      }
-    }
-  };
-  const cancelInterrupted = (speechGeneration: number) => {
-    for (const consult of pending.values()) {
-      if (consult.cancelRequested || consult.interruptedBySpeechGeneration !== speechGeneration) {
+      if (consult.cancelRequested) {
         continue;
       }
       consult.cancelRequested = true;
@@ -201,6 +193,10 @@ export function createFaceTimeConsultController(params: {
       submitToolError(event, `Tool "${event.name}" not available`);
       return;
     }
+    // Caller speech can be a clarification or a request for progress. Keep the
+    // current task alive until the realtime model actually requests a new
+    // agent consult, which is the unambiguous replacement boundary.
+    cancelPending();
     const turnId = params.ensureTurn();
     const consult: PendingAgentConsult = {
       callId,
@@ -314,5 +310,5 @@ export function createFaceTimeConsultController(params: {
         void params.getBridge()?.submitToolResult(callId, { error: message });
       });
   };
-  return { abortForClose, cancelInterrupted, handleToolCall, markPendingInterrupted };
+  return { abortForClose, handleToolCall };
 }
