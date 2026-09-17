@@ -2,6 +2,7 @@ import type { AsyncLocalStorage } from "node:async_hooks";
 import type { Worker, Transferable, WorkerOptions } from "node:worker_threads";
 import type { Deferred } from "../shared/deferred.js";
 import type { WorkerComputePermit } from "./worker-task-capacity.js";
+import type { WorkerNativeSectionState } from "./worker-task-native-sections.js";
 
 export type WorkerTaskPoolOptions<Output> = {
   workerUrl: URL;
@@ -84,6 +85,7 @@ export type Task<Input, Output> = Deferred<Output> & {
   transferMs: number;
 };
 export type Slot<Input, Output> = {
+  nativeSections: WorkerNativeSectionState;
   worker?: Worker;
   temporaryDirectory?: string;
   task?: Task<Input, Output>;

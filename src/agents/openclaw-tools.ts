@@ -133,6 +133,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
       ? {
           root: options.sandboxRoot,
           bridge: options.sandboxFsBridge,
+          readOnlyResourceMounts: options.sandboxReadOnlyResourceMounts,
           stagedMediaPaths: options.stagedMediaPaths,
         }
       : undefined;
@@ -269,6 +270,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
         sandboxRoot: options?.sandboxRoot,
         sandboxContainerWorkdir: options?.sandboxContainerWorkdir,
         sandboxFsBridge: options?.sandboxFsBridge,
+        sandboxReadOnlyResourceMounts: options?.sandboxReadOnlyResourceMounts,
         sandboxWorkspaceMediaReadAllowed: options?.sandboxWorkspaceMediaReadAllowed,
         requireExplicitTarget: options?.requireExplicitMessageTarget,
         sourceReplyDeliveryMode: options?.sourceReplyDeliveryMode,

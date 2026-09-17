@@ -430,7 +430,7 @@ describe("tsdown config", () => {
     expect(hookEntries).toStrictEqual([]);
   });
 
-  it("bundles SDK-owned helpers while retaining fs-safe package ownership", () => {
+  it("bundles SDK-owned helpers while retaining native package ownership", () => {
     for (const graph of [
       requireUnifiedDistGraph(),
       requireStandaloneRuntimeGraph("infra/sqlite-readonly-location.worker"),
@@ -448,6 +448,10 @@ describe("tsdown config", () => {
       expect(alwaysBundle("openclaw/plugin-sdk/ssrf-runtime")).toBe(false);
       expect(alwaysBundle("zod")).toBe(true);
       expect(alwaysBundle("zod/v4/core")).toBe(true);
+      for (const id of ["typebox", "typebox/schema", "typebox/format", "typebox/system"]) {
+        expect(alwaysBundle(id)).toBe(false);
+        expect(external(id, undefined, false)).toBe(true);
+      }
       expect(alwaysBundle("not-a-runtime-dependency")).toBe(false);
     }
   });

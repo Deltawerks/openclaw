@@ -3,7 +3,6 @@ import {
   listNativeHookRelayBridgeSnapshotsInDatabase,
 } from "../agents/harness/native-hook-relay-store.kernel.js";
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
-import { loadSubagentSessionListRunsFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import {
@@ -23,12 +22,7 @@ import {
 } from "../fleet/registry.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
-import {
-  markPromotionSlugsNotifiedInDatabase,
-  PROMOTIONS_FEED_STATE_KEY,
-  recordPromotionClaimInDatabase,
-  type StoredPromotionsFeedState,
-} from "../infra/promotions-feed.kernel.js";
+import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -92,7 +86,6 @@ import {
 } from "../tasks/task-registry.store.kernel.js";
 import { readTaskRegistryStatusSnapshot } from "../tasks/task-registry.store.status.js";
 import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
-import { readConfigMachineState } from "./config-machine-state.js";
 import {
   openClawStateDatabaseCache,
   retainOpenClawStateDatabase,
@@ -178,37 +171,18 @@ function createSharedStateWorkerBackend(
       if (closed) {
         throw new Error("Shared-state worker is closed");
       }
-      if (command.type === "promotions.markNotified") {
-        const options = {
-          path: context.databasePath,
-          env: getSqliteWorkerStateContext().environment,
-        };
-        const stored = readConfigMachineState<StoredPromotionsFeedState>(
-          PROMOTIONS_FEED_STATE_KEY,
-          options,
+      if (command.type === "promotions.markNotified" || command.type === "promotions.recordClaim") {
+        return executePromotionCommand(
+          command,
+          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+          open,
         );
-        const known = new Set(stored?.notifiedSlugs ?? []);
-        const incoming = command.input.slugs.filter((slug) => !known.has(slug));
-        if (incoming.length > 0) {
-          runOpenClawStateWriteTransaction(
-            ({ db }) => markPromotionSlugsNotifiedInDatabase(db, incoming, command.input.now),
-            { ...options, database: open() },
-            { operationLabel: "config-machine-state.update" },
-          );
-        }
-        return true;
       }
       if (command.type === "doctor.databaseBloat") {
         return readSqliteDatabaseBloat({
           path: context.databasePath,
           env: getSqliteWorkerStateContext().environment,
         });
-      }
-      if (command.type === "subagents.sessionList") {
-        return withExistingOpenClawStateDatabaseReadOnly(
-          (database) => loadSubagentSessionListRunsFromSqlite(undefined, database),
-          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
-        );
       }
       if (command.type === "nativeHookRelay.read") {
         return withOpenClawStateDatabaseReadOnly(
@@ -496,12 +470,6 @@ function createSharedStateWorkerBackend(
               return releaseFleetCellOperationInDatabase(db, command.input);
           }
         }, writeOptions);
-      }
-      if (command.type === "promotions.recordClaim") {
-        return runOpenClawStateWriteTransaction(
-          ({ db }) => recordPromotionClaimInDatabase(db, command.input),
-          writeOptions,
-        );
       }
       if (command.type === "sessionState.recordGoalChange") {
         return runOpenClawStateWriteTransaction(
