@@ -539,7 +539,6 @@ export async function startFaceTimeTalkDriver(params: {
               });
             }
             if (event.type === "input_audio_buffer.speech_started") {
-              initialGreeting.pause();
               const playbackActive = response !== undefined && (pump?.queuedAudioFrames() ?? 0) > 0;
               if (response) {
                 bridge?.setMediaTimestamp(
@@ -552,8 +551,6 @@ export async function startFaceTimeTalkDriver(params: {
                 finishOutputAudio("barge-in");
               }
               resetResponsePlayback();
-            } else if (event.type === "input_audio_buffer.speech_stopped") {
-              initialGreeting.schedule();
             } else if (event.type === "response.created") {
               startResponse(event.responseId);
             } else if (event.type === "session.continuity.reset") {

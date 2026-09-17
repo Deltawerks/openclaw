@@ -29,17 +29,4 @@ describe("FaceTime initial greeting", () => {
 
     expect(speak).not.toHaveBeenCalled();
   });
-
-  it("resumes after a VAD-only interruption", async () => {
-    vi.useFakeTimers();
-    const speak = vi.fn();
-    const greeting = createFaceTimeInitialGreeting({ delayMs: 750, speak });
-
-    greeting.schedule();
-    greeting.pause();
-    greeting.schedule();
-    await vi.advanceTimersByTimeAsync(750);
-
-    expect(speak).toHaveBeenCalledOnce();
-  });
 });

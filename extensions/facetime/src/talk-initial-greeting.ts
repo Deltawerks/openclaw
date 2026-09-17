@@ -1,7 +1,9 @@
 // The carrier can report active before its newly enabled media route is audible.
-// Give that route one short settling window, and abandon the greeting if the
-// caller starts speaking first so it cannot collide with their opening words.
-const FACETIME_INITIAL_GREETING = "Say exactly: Hi, I'm here and listening.";
+// Give that route one short settling window. Only a real caller transcript may
+// cancel the greeting because raw VAD can fire on route noise and never report a
+// matching stop event, which would otherwise leave an answered call silent.
+const FACETIME_INITIAL_GREETING =
+  "Greet the caller briefly, introduce yourself using your configured identity, and ask how you can help.";
 const FACETIME_GREETING_MEDIA_SETTLE_MS = 750;
 
 export function createFaceTimeInitialGreeting(params: {
@@ -10,7 +12,6 @@ export function createFaceTimeInitialGreeting(params: {
 }): {
   readonly instructions: string;
   schedule(): void;
-  pause(): void;
   cancel(): void;
 } {
   let timer: NodeJS.Timeout | undefined;
@@ -35,9 +36,6 @@ export function createFaceTimeInitialGreeting(params: {
         params.speak(FACETIME_INITIAL_GREETING);
       }, params.delayMs ?? FACETIME_GREETING_MEDIA_SETTLE_MS);
       timer.unref?.();
-    },
-    pause() {
-      clear();
     },
     cancel() {
       dismissed = true;

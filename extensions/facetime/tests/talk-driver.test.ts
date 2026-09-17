@@ -613,7 +613,7 @@ describe("FaceTime talk driver lifecycle", () => {
     expect(mocks.pump.stop).toHaveBeenCalledOnce();
   });
 
-  it("greets after the answered call's media route has settled", async () => {
+  it("greets after the answered call's media route settles despite raw VAD noise", async () => {
     const driver = await startReadyFaceTimeTalkDriver();
 
     vi.useFakeTimers();
@@ -621,10 +621,14 @@ describe("FaceTime talk driver lifecycle", () => {
       expect(mocks.bridge.triggerGreeting).not.toHaveBeenCalled();
       driver.activate();
       driver.activate();
+      mocks.sessionParams?.onEvent({
+        direction: "server",
+        type: "input_audio_buffer.speech_started",
+      });
       await vi.advanceTimersByTimeAsync(750);
 
       expect(mocks.bridge.triggerGreeting).toHaveBeenCalledWith(
-        "Say exactly: Hi, I'm here and listening.",
+        "Greet the caller briefly, introduce yourself using your configured identity, and ask how you can help.",
       );
       expect(mocks.bridge.triggerGreeting).toHaveBeenCalledOnce();
     } finally {
