@@ -108,6 +108,7 @@ try {
   const jpeg = await resizeToJpeg({ buffer: png, maxSide: 1, quality: 80 });
   assert.deepEqual(jpeg.subarray(0, 2), Buffer.from([0xff, 0xd8]));
   for (const nativeFirst of [false, true]) {
+    const appGatedComputer = !nativeFirst;
     const proofHome = path.join(home, nativeFirst ? "native-first" : "absent");
     const stateDir = path.join(proofHome, "state");
     const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
@@ -143,6 +144,17 @@ try {
         PATH: `${path.dirname(node)}:/usr/bin:/bin:/usr/sbin:/sbin`,
         OPENCLAW_NODE_EXEC_HOST: "app",
         OPENCLAW_NODE_EXEC_FALLBACK: "0",
+        ...(appGatedComputer
+          ? {
+              // Match the Mac app's synchronous readiness lease so the proof verifies
+              // that the bundled CUA plugin registers its computer-control commands.
+              OPENCLAW_CUA_DRIVER_ENDPOINT: JSON.stringify({
+                v: 1,
+                socketPath: path.join(proofHome, "cua-driver.sock"),
+                binaryPath: "/usr/bin/true",
+              }),
+            }
+          : {}),
         // Same launch shape as MacNodeHostWorker: the worker must stay in the owned
         // process group, or requireProcessTreeExit only proves the respawn wrapper died.
         OPENCLAW_NO_RESPAWN: "1",
@@ -172,10 +184,13 @@ try {
             !message.manifest?.commands?.includes("browser.proxy") ||
             !message.manifest?.commands?.includes("browser.proxy.upload.v1") ||
             !message.manifest?.commands?.includes("mcp.tools.call.v1") ||
-            !message.manifest?.commands?.includes("screen.snapshot") ||
-            !message.manifest?.commands?.includes("computer.act")
+            (appGatedComputer &&
+              (!message.manifest?.commands?.includes("screen.snapshot") ||
+                !message.manifest?.commands?.includes("computer.act")))
           ) {
-            failure = new Error("Bundled worker returned an incompatible capability manifest");
+            failure = new Error(
+              `Bundled worker returned an incompatible capability manifest: ${JSON.stringify(message.manifest)}`,
+            );
             child.stdin.end('{"type":"stop"}\n');
             return;
           }
@@ -183,7 +198,14 @@ try {
           process.stdout.write(
             `${JSON.stringify({ architecture: process.arch, nativeFirst, build: actual, nativeFiles, databasePath, manifest: message.manifest })}\n`,
           );
-          child.stdin.end('{"type":"stop"}\n');
+          if (appGatedComputer) {
+            // The readiness lease uses a harmless executable, not a live MCP
+            // daemon. Kill this capability probe before provider cleanup tries
+            // to contact it; the second lane still proves graceful shutdown.
+            terminateManagedChild(child, "SIGKILL");
+          } else {
+            child.stdin.end('{"type":"stop"}\n');
+          }
         });
         child.on("close", () => lines.close());
         child.stdin.on("error", (error) => {
@@ -195,7 +217,13 @@ try {
     for (const file of coordinatorFiles) {
       fs.rmSync(file, { force: true });
     }
-    if (failure || !ready || exitCode !== 0 || /failed during register/u.test(diagnostic)) {
+    const expectedExitCode = appGatedComputer ? 137 : 0;
+    if (
+      failure ||
+      !ready ||
+      exitCode !== expectedExitCode ||
+      /failed during register/u.test(diagnostic)
+    ) {
       throw new Error(
         `Bundled worker proof failed (${exitCode}): ${failure?.message ?? "missing readiness or registration failure"}; ${diagnostic}`,
         { cause: failure },
