@@ -22,11 +22,19 @@ function fixture(): string {
       version: "1.2.3",
       type: "module",
       exports: { "./plugin-sdk/demo": "./dist/plugin-sdk/demo.js" },
-      dependencies: { alpha: "1.0.0" },
+      dependencies: {
+        "@openclaw/ai": "1.0.0",
+        alpha: "1.0.0",
+        "partial-json": "1.0.0",
+      },
       optionalDependencies: { "sqlite-vec": "1.0.0" },
     }),
   );
-  write(root, "dist/mac-node-worker.js", 'import "./worker-shared.mjs"; import "alpha/subpath";');
+  write(
+    root,
+    "dist/mac-node-worker.js",
+    'import "./worker-shared.mjs"; import "@openclaw/ai"; import "alpha/subpath";',
+  );
   write(
     root,
     "dist/worker-shared.mjs",
@@ -37,6 +45,8 @@ function fixture(): string {
   write(root, "dist/sdk-shared.mjs", "export const sdk = true;");
   write(root, "dist/media/image-processor.worker.js", 'import "../image-worker-shared.mjs";');
   write(root, "dist/image-worker-shared.mjs", "export const imageWorker = true;");
+  write(root, "node_modules/@openclaw/ai/package.json", '{"name":"@openclaw/ai"}');
+  write(root, "node_modules/@openclaw/ai/dist/runtime.js", 'import "partial-json";');
   for (const [id, registration] of [
     ["browser", "export default { nodeHostCommands: [] };"],
     ["file-transfer", "api.registerNodeHostCommand({});"],
@@ -65,7 +75,13 @@ function fixture(): string {
 describe("Mac node worker closure", () => {
   it("retains worker, plugin SDK, bundled node plugins, and skills only", () => {
     const plan = planMacNodeWorkerClosure(fixture());
-    expect(plan.dependencies).toEqual(["alpha", "sqlite-vec", "ws"]);
+    expect(plan.dependencies).toEqual([
+      "@openclaw/ai",
+      "alpha",
+      "partial-json",
+      "sqlite-vec",
+      "ws",
+    ]);
     expect(plan.files).toContain("dist/mac-node-worker.js");
     expect(plan.files).toContain("dist/worker-shared.mjs");
     expect(plan.files).toContain("dist/plugin-sdk/demo.js");

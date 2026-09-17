@@ -104,6 +104,43 @@ function collectNodeHostPluginSeeds(packageRoot: string): string[] {
     });
 }
 
+function collectOwnedPackageDependencies(packageRoot: string, dependencies: Set<string>): void {
+  const pending = [...dependencies].filter((name) => name.startsWith("@openclaw/"));
+  const visited = new Set<string>();
+  while (pending.length) {
+    const name = pending.pop()!;
+    if (visited.has(name)) {
+      continue;
+    }
+    visited.add(name);
+    const installedRoot = path.join(packageRoot, "node_modules", name);
+    if (!fs.existsSync(installedRoot)) {
+      continue;
+    }
+    for (const relative of walkFiles(installedRoot)) {
+      if (relative.startsWith("node_modules/") || !/\.[cm]?js$/u.test(relative)) {
+        continue;
+      }
+      const source = fs.readFileSync(path.join(installedRoot, relative), "utf8");
+      for (const specifier of [
+        ...collectPackageRootImports(source),
+        ...collectCreatedRequireResolveImports(source),
+      ]) {
+        const dependency = packageNameFromSpecifier(specifier);
+        if (!dependency || dependency === "openclaw" || isBuiltin(dependency)) {
+          continue;
+        }
+        if (!dependencies.has(dependency)) {
+          dependencies.add(dependency);
+          if (dependency.startsWith("@openclaw/")) {
+            pending.push(dependency);
+          }
+        }
+      }
+    }
+  }
+}
+
 function collectSeeds(packageRoot: string, manifest: PackageManifest): Set<string> {
   const seeds = new Set([WORKER_ENTRY, "dist/build-info.json"]);
   for (const entrypoint of macNodeWorkerRuntimeProcessEntrypoints) {
@@ -183,6 +220,10 @@ export function planMacNodeWorkerClosure(packageRoot: string): {
       }
     }
   }
+  // Internal packages are published without their own dependency declarations;
+  // the root package owns those specs. Follow their built imports so pruning an
+  // otherwise unrelated root dependency cannot break a retained internal chunk.
+  collectOwnedPackageDependencies(packageRoot, dependencies);
   return {
     dependencies: [...dependencies].toSorted((left, right) => left.localeCompare(right)),
     files: orderedFiles,
