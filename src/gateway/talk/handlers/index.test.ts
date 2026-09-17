@@ -128,9 +128,7 @@ const mocks = vi.hoisted(() => ({
   agentRuntime: {},
 }));
 
-vi.mock("../../../config/config.js", () => ({
-  readConfigFileSnapshot: mocks.readConfigFileSnapshot,
-}));
+vi.mock("../../../config/config.js", () => mocks);
 
 vi.mock("../../../state/user-preferences.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../state/user-preferences.js")>()),

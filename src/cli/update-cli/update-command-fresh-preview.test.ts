@@ -906,7 +906,7 @@ it("requires confirmation for an inspected older artifact without a TTY", async 
   expect(fs.existsSync(fixture.databasePath)).toBe(false);
 });
 
-it.each([17, 18])(
+it.each([18, 19])(
   "admits compatible parent history before artifact schema %s migration",
   async (schema) => {
     const candidate = dirs.make("artifact-forward-");
@@ -945,7 +945,7 @@ it.each([17, 18])(
         assert(run);
         const db = new DatabaseSync(fixture.databasePath, { readOnly: true });
         try {
-          expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 17 });
+          expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 18 });
         } finally {
           db.close();
         }

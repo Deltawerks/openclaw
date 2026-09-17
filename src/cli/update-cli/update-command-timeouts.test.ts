@@ -30,7 +30,7 @@ it.each(
       target: "2026.9.4",
       version: "2026.9.4",
       nodeEngine: null,
-      schemaVersions: { state: 17, agent: 20 },
+      schemaVersions: { state: 18, agent: 20 },
     });
     vi.spyOn(servicePlan, "resolvePackageRuntimePreflight").mockResolvedValue({
       ok: true,

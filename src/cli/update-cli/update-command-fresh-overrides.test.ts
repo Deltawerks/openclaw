@@ -49,7 +49,7 @@ it.each([false, true])(
         name: "openclaw",
         version: "2026.9.4",
         type: "module",
-        openclaw: { schemaVersions: { state: 17, agent: 20 } },
+        openclaw: { schemaVersions: { state: 18, agent: 20 } },
       }),
     );
     await writePackageDistInventory(candidate);
