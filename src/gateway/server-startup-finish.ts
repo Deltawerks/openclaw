@@ -519,7 +519,7 @@ export async function finishGatewayStartup(params: {
         (nextConfig.gateway?.terminal?.detachedSessionTimeoutSeconds ??
           DEFAULT_TERMINAL_DETACH_SECONDS) * 1000,
       );
-      disconnectDisallowedGatewayBrowserOriginClients(clients, nextConfig);
+      disconnectDisallowedGatewayBrowserOriginClients(clients.authorityClients, nextConfig);
       for (const nodeSession of nodeRegistry.refreshRuntimePolicy(nextConfig)) {
         refreshConnectedNodeSurfaceCaches({ context: gatewayRequestContext, nodeSession });
       }
@@ -548,7 +548,7 @@ export async function finishGatewayStartup(params: {
     applyRuntimeConfigOverrides: applyFixedGatewayOverlays,
     resolveSharedGatewaySessionGenerationForConfig,
     sharedGatewaySessionGenerationState,
-    clients,
+    clients: clients.authorityClients,
     ...(opts.hotReloadRecovery ? { requestRecoveryRestart: opts.hotReloadRecovery } : {}),
     restartRecoveryAvailable: opts.hotReloadRecovery !== undefined,
   };

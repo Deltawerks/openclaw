@@ -5,7 +5,10 @@ import type { CustodianTurnAdmission } from "../../components/custodian-alert-co
 import { t } from "../../i18n/index.ts";
 import { canCallGatewayMethod, isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { CustodianInputDrafts } from "./custodian-input-drafts.ts";
-import { performCustodianAgentHandoff } from "./custodian-navigation.ts";
+import {
+  navigateFromCustodianSetup,
+  performCustodianAgentHandoff,
+} from "./custodian-navigation.ts";
 import * as nudgeActions from "./custodian-nudge-actions.ts";
 import {
   createCustodianSessionId,
@@ -100,8 +103,7 @@ export class CustodianSessionStore {
 
   connect(context: ApplicationContext, variant: CustodianSessionVariant): void {
     const contextChanged = this.context !== context;
-    const variantChanged = this.variant !== variant;
-    if (!contextChanged && !variantChanged) {
+    if (!contextChanged && this.variant === variant) {
       return;
     }
     if (contextChanged) {
@@ -206,7 +208,7 @@ export class CustodianSessionStore {
       this.activeClient !== null &&
       this.chatAvailable &&
       !this.sending &&
-      this.configuredInferenceState === "ready" &&
+      (this.configuredInferenceState === "ready" || this.configuredInferenceState === "utility") &&
       this.inferenceState === "ready"
     );
   }
@@ -263,7 +265,7 @@ export class CustodianSessionStore {
   ): Promise<eventNudgeState.CustodianSendOutcome> {
     const questionState = [this.answeredQuestions, this.questionReplyUncertain] as const;
     let replyEpoch: number | undefined;
-    const reply = this.requestReply(client, params, () => {
+    const outcome = await this.requestReply(client, params, () => {
       const ordinaryDraft = this.inputDrafts.ordinary;
       if (admit && !admit()) {
         return false;
@@ -286,7 +288,6 @@ export class CustodianSessionStore {
         }
       };
     });
-    const outcome = await reply;
     if (questionReply && this.requestEpoch === replyEpoch) {
       this.questionReplyUncertain = eventNudgeState.questionUncertainty(questionState[1], outcome);
       if (outcome === "rejected") {
@@ -396,7 +397,7 @@ export class CustodianSessionStore {
     // Leaving setup revokes navigation authority from every in-flight reply.
     // The destination surface separately decides whether to retain or rotate context.
     this.revokeNavigationAuthority();
-    this.context?.navigate(destination);
+    navigateFromCustodianSetup(this.context, destination, this.configuredInferenceState);
   }
 
   private revokeNavigationAuthority(): void {
@@ -443,9 +444,8 @@ export class CustodianSessionStore {
       // A freshly minted id cannot address a live session; no barrier needed.
       this.rejoinBarrierPending = false;
     }
-    const next = sessionId ?? createCustodianSessionId();
-    this.sessionId = next;
-    persistCustodianSessionId(next);
+    this.sessionId = sessionId ?? createCustodianSessionId();
+    persistCustodianSessionId(this.sessionId);
   }
 
   private abandonPendingUserTurn(pendingParams: SystemAgentChatParams | null): void {
