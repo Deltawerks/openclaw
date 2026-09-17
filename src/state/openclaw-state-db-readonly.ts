@@ -4,6 +4,10 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { SqliteCoordinatorError, throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
+import {
+  retainSnapshotTempDirectory,
+  retainSnapshotWork,
+} from "../infra/sqlite-readonly-location-cleanup.js";
 import { prepareSqliteReadOnlyLocationFromOwnedDatabase } from "../infra/sqlite-readonly-location.js";
 import type { PreparedSqliteReadOnlyLocation } from "../infra/sqlite-readonly-location.types.js";
 import {
@@ -15,6 +19,7 @@ import {
   hasStateDatabaseSourceExclusion,
   prepareStateDatabaseCanonicalMutation,
 } from "../infra/state-database-coordinator.js";
+import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { observeOpenClawDatabaseMaintenanceResource } from "./openclaw-state-db-async-lifecycle.js";
@@ -34,6 +39,7 @@ import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-ve
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import {
   assertRetainedReadScopeAdmission,
+  bindRetainedReadScope,
   createRetainedReadScope,
   runRetainedReadScope,
 } from "./openclaw-state-read-scope.js";
@@ -83,34 +89,60 @@ export async function withOpenClawStateDatabaseReadSnapshot<T>(
     return await operation();
   }
   const env = options.env ?? process.env;
-  openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
-  let admission: ReturnType<typeof captureOpenClawStateDatabaseReadAdmission>;
-  let prepared: PreparedSqliteReadOnlyLocation;
-  try {
-    admission = captureOpenClawStateDatabaseReadAdmission(pathname);
-    prepared = await prepareSqliteReadOnlyLocation(pathname, {
-      preserveSourceArtifacts: isArtifactPreservingStateRead(),
-    });
-  } catch (error) {
-    throw new Error(
-      `Cannot read shared state for discovery: ${pathname}. Retry after the current state operation completes. ${String(error)}`,
-      { cause: error },
-    );
-  }
-  const scope = Object.assign(
-    createRetainedReadScope(pathname, admission.identity, async () => {
-      if (!(await prepared.cleanupAsync())) {
-        throw new Error(
-          `Shared-state discovery snapshot cleanup failed: ${prepared.cleanupRoot ?? pathname}`,
-        );
-      }
-    }),
-    { location: prepared.location, env },
-  );
-  return await runRetainedReadScope(scope, async () => {
+  const callerSignal = getAsyncWorkSignal();
+  const controller = new AbortController();
+  let closeSnapshotWork: ((reason: unknown) => void) | undefined;
+  const run = async () => {
     openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
-    admission.assertCurrent();
-    return await stateSnapshotReads.run(scope, operation);
+    let admission: ReturnType<typeof captureOpenClawStateDatabaseReadAdmission>;
+    let prepared: PreparedSqliteReadOnlyLocation;
+    try {
+      admission = captureOpenClawStateDatabaseReadAdmission(pathname);
+      prepared = await prepareSqliteReadOnlyLocation(pathname, {
+        preserveSourceArtifacts: isArtifactPreservingStateRead(),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new Error(
+        `Cannot read shared state for discovery: ${pathname}. Retry after the current state operation completes. ${String(error)}`,
+        { cause: error },
+      );
+    }
+    const releaseSource = retainSnapshotTempDirectory(
+      prepared.cleanupRoot ?? path.dirname(prepared.location),
+    );
+    const snapshot = Object.assign(
+      createRetainedReadScope(pathname, admission.identity, async () => {
+        releaseSource();
+        if (!(await prepared.cleanupAsync())) {
+          throw new Error(
+            `Shared-state discovery snapshot cleanup failed: ${prepared.cleanupRoot ?? pathname}`,
+          );
+        }
+      }),
+      { location: prepared.location, env },
+    );
+    const lifecycle = stateSnapshotReads.run(snapshot, () => bindRetainedReadScope(snapshot));
+    closeSnapshotWork = lifecycle.abort;
+    const closeFromCaller = () => lifecycle.abort(callerSignal?.reason);
+    callerSignal?.addEventListener("abort", closeFromCaller, { once: true });
+    if (callerSignal?.aborted) {
+      closeFromCaller();
+    }
+    try {
+      return await lifecycle.run(async () => {
+        controller.signal.throwIfAborted();
+        openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(pathname, env);
+        admission.assertCurrent();
+        return await operation();
+      });
+    } finally {
+      callerSignal?.removeEventListener("abort", closeFromCaller);
+    }
+  };
+  return await retainSnapshotWork(run(), () => {
+    controller.abort(new Error("Shared-state snapshot admission closed"));
+    closeSnapshotWork?.(controller.signal.reason);
   });
 }
 
@@ -445,8 +477,8 @@ export function executeExistingOpenClawStateRead(
   const mutation = prepareStateDatabaseCanonicalMutation(pathname);
   const excluded = hasStateDatabaseSourceExclusion(pathname);
   const preserveArtifacts = requiresArtifactPreservingSnapshot(pathname);
+  const controller = new AbortController();
   const run = async (): Promise<OpenClawStateReadReply | undefined> => {
-    const controller = new AbortController();
     const producerSettled = createDeferredCore();
     const transport = createOpenClawStateReadTransport(command, (error) => controller.abort(error));
     let cleanupPending: Promise<void> | undefined;
@@ -457,6 +489,7 @@ export function executeExistingOpenClawStateRead(
     let borrowed: ReturnType<typeof borrowOpenClawStateDatabaseForAsyncRead>;
     let sourcePin: ReturnType<typeof acquireStateDatabaseHandleLease> | undefined;
     let prepared: PreparedSqliteReadOnlyLocation | undefined;
+    let releasePreparedSource: (() => void) | undefined;
     const authority: OpenClawStateReadAuthority = {
       signal: controller.signal,
       assertCurrent() {
@@ -486,6 +519,7 @@ export function executeExistingOpenClawStateRead(
         }
         await producerSettled.promise;
         if (prepared) {
+          releasePreparedSource?.();
           if (!(await prepared.cleanupAsync())) {
             throw new Error(
               `Shared-state read snapshot cleanup failed: ${prepared.cleanupRoot ?? pathname}`,
@@ -572,6 +606,11 @@ export function executeExistingOpenClawStateRead(
         });
         location = prepared.location;
       }
+      if (prepared) {
+        releasePreparedSource = retainSnapshotTempDirectory(
+          prepared.cleanupRoot ?? path.dirname(prepared.location),
+        );
+      }
       authority.assertCurrent();
       const outcome = await transport.read(
         { context, location, checkFreshAdmission: !borrowed },
@@ -630,7 +669,10 @@ export function executeExistingOpenClawStateRead(
     run,
   );
   const maintenance = context.maintenanceScope;
-  return maintenance ? maintenance.run(() => maintenance.track(tracked())) : tracked();
+  return retainSnapshotWork(
+    maintenance ? maintenance.run(() => maintenance.track(tracked())) : tracked(),
+    () => controller.abort(new Error("Shared-state read admission closed")),
+  );
 }
 
 /** Read existing shared state without creating or updating its SQLite sidecars. */

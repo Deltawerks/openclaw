@@ -47,6 +47,11 @@ vi.mock("../infra/sqlite-snapshot-source.js", async (importOriginal) => ({
   prepareSqliteReadOnlyLocation: mocks.prepare,
   prepareSqliteReadOnlyLocationSync: mocks.forbiddenNative,
 }));
+vi.mock("../infra/sqlite-readonly-location-cleanup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/sqlite-readonly-location-cleanup.js")>()),
+  // Preparation is mocked; this fixture has no private directory to retain.
+  retainSnapshotTempDirectory: () => () => {},
+}));
 
 vi.mock("./openclaw-state-db-read-connection.js", () => ({
   openOpenClawStateReadConnection: mocks.forbiddenNative,
