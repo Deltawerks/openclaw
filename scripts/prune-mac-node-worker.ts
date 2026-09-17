@@ -6,7 +6,7 @@ import { isBuiltin } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectPackageRootImports } from "../src/infra/package-root-imports.js";
-import { macNodeWorkerRuntimeProcessEntrypoints } from "../src/infra/runtime-process-entrypoints.js";
+import { runtimeProcessEntrypoints } from "../src/infra/runtime-process-entrypoints.js";
 import {
   collectPackageDistImportErrors,
   collectPackageDistImports,
@@ -143,9 +143,7 @@ function collectOwnedPackageDependencies(packageRoot: string, dependencies: Set<
 
 function collectSeeds(packageRoot: string, manifest: PackageManifest): Set<string> {
   const seeds = new Set([WORKER_ENTRY, "dist/build-info.json"]);
-  for (const entrypoint of macNodeWorkerRuntimeProcessEntrypoints) {
-    seeds.add(`dist/${entrypoint.distWorkerPath}`);
-  }
+  seeds.add(`dist/${runtimeProcessEntrypoints.imageProcessor.distWorkerPath}`);
   for (const relative of collectNodeHostPluginSeeds(packageRoot)) {
     seeds.add(relative);
   }
