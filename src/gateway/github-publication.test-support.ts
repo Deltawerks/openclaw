@@ -69,6 +69,7 @@ vi.mock("../agents/worktrees/service.js", () => ({
   managedWorktrees: {
     findLiveByOwner: mocks.findWorktree,
     findLiveById: mocks.findWorktreeById,
+    listSessionBindings: vi.fn(() => []),
     resolveRepositoryIdentity: mocks.resolveRepository,
   },
 }));
