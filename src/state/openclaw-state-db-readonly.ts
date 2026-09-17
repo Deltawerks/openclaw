@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { statSync } from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { SqliteCoordinatorError, throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
 import { prepareSqliteReadOnlyLocationFromOwnedDatabase } from "../infra/sqlite-readonly-location.js";
@@ -33,6 +32,11 @@ import { openOpenClawStateReadConnection } from "./openclaw-state-db-read-connec
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import {
+  mapOpenClawStateReadError,
+  observeReadOutcome,
+  type OpenClawStateReadReceipt,
+} from "./openclaw-state-read-error.js";
+import {
   assertRetainedReadScopeAdmission,
   createRetainedReadScope,
   runRetainedReadScope,
@@ -40,6 +44,7 @@ import {
 import { createOpenClawStateReadTransport } from "./openclaw-state-read-worker.js";
 import type {
   OpenClawStateReadAuthority,
+  OpenClawStateReadOptions,
   OpenClawStateReadCommand,
   OpenClawStateReadReply,
   OpenClawStateReadOnlyDatabase,
@@ -196,17 +201,6 @@ export function withSynchronousArtifactPreservingStateSnapshot<T>(operation: () 
 }
 
 type ReusedOpenClawStateReadOnlyDatabase<T> = { reused: false } | { reused: true; value: T };
-
-/** Missing runtime tables are empty only before state grows beyond checkpoint bootstrap. */
-export function hasOpenClawStateTablesBeyondStartupCheckpoint(db: DatabaseSync): boolean {
-  return (
-    /* sqlite-allow-raw -- Read-only startup-checkpoint schema discriminator. */ db
-      .prepare(
-        "SELECT 1 FROM main.sqlite_schema WHERE type = 'table' AND name NOT IN ('schema_meta', 'state_leases') LIMIT 1",
-      )
-      .get() !== undefined
-  );
-}
 
 function resolveReadOnlyPath(options: OpenClawStateDatabaseOptions): string {
   const pathname = path.resolve(
@@ -428,6 +422,17 @@ export function withExistingOpenClawStateDatabaseReadOnly<T>(
 export function executeExistingOpenClawStateRead(
   options: OpenClawStateDatabaseOptions,
   command: OpenClawStateReadCommand,
+  readOptions: OpenClawStateReadOptions = {},
+): Promise<OpenClawStateReadReply | undefined> {
+  return mapOpenClawStateReadError(readOptions.mapError, (receipt) =>
+    executeRetainedOpenClawStateRead(options, command, receipt),
+  );
+}
+
+function executeRetainedOpenClawStateRead(
+  options: OpenClawStateDatabaseOptions,
+  command: OpenClawStateReadCommand,
+  receipt: OpenClawStateReadReceipt,
 ): Promise<OpenClawStateReadReply | undefined> {
   const pathname = resolveReadOnlyPath(options);
   const current = stateSnapshotReads.getStore();
@@ -573,10 +578,12 @@ export function executeExistingOpenClawStateRead(
         location = prepared.location;
       }
       authority.assertCurrent();
+      receipt.phase = "unobserved";
       const outcome = await transport.read(
         { context, location, checkFreshAdmission: !borrowed },
         authority,
       );
+      observeReadOutcome(receipt, outcome);
       const sourceAdmitted =
         "error" in outcome
           ? outcome.sourceAdmitted
@@ -613,9 +620,10 @@ export function executeExistingOpenClawStateRead(
     } catch (error) {
       cleanupErrors.push(error);
     }
-    const taskFailure = await transport.readFailure();
-    if (taskFailure && !errors.includes(taskFailure.error)) {
-      errors.unshift(taskFailure.error);
+    const interrupted = await transport.readInterruptedOutcome();
+    observeReadOutcome(receipt, interrupted);
+    if (interrupted && "error" in interrupted && !errors.includes(interrupted.error)) {
+      errors.unshift(interrupted.error);
     }
     // Cancellation can be the producer's error as well as its final admission result.
     errors.push(

@@ -32,6 +32,8 @@ import {
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
+import { executePluginBlobCommand } from "../plugin-state/plugin-blob-store.worker.js";
+import { isPluginBlobWorkerCommand } from "../plugin-state/plugin-blob-worker-contract.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import {
@@ -227,6 +229,16 @@ function createSharedStateWorkerBackend(
           path: context.databasePath,
           env: getSqliteWorkerStateContext().environment,
         });
+      }
+      if (isPluginBlobWorkerCommand(command)) {
+        return executePluginBlobCommand(
+          command,
+          {
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+          },
+          open,
+        );
       }
       if (isPluginStateWorkerCommand(command)) {
         return executePluginStateCommand(

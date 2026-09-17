@@ -1,6 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import type {
+  PluginBlobReadCommand,
+  PluginBlobReadReply,
+} from "../plugin-state/plugin-blob-worker-contract.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
@@ -17,6 +21,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | PluginBlobReadCommand
   | { type: "fleet.list" }
   | { type: "fleet.get"; tenantId: string };
 export type OpenClawStateReadRequest = {
@@ -27,6 +32,7 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply =
+  | PluginBlobReadReply
   | { ok: true; type: "admit" }
   | { ok: true; type: "fleet.list"; sourceAdmitted: true; cells: FleetCellRecord[] }
   | { ok: true; type: "fleet.get"; sourceAdmitted: true; cell: FleetCellRecord | undefined }
@@ -39,7 +45,7 @@ export type OpenClawStateReadReply =
 
 export type OpenClawStateReadOutcome =
   | { value: Extract<OpenClawStateReadReply, { ok: true }> }
-  | { error: unknown; sourceAdmitted?: true };
+  | { error: unknown; sourceAdmitted?: boolean };
 
 export type ReadResource = { close(): Promise<void> };
 export type RetainedReadScope = {
@@ -53,4 +59,10 @@ export type RetainedReadScope = {
 export type OpenClawStateReadOnlyDatabase = {
   db: DatabaseSync;
   path: string;
+};
+
+export type OpenClawStateReadPhase = "before-read" | "read" | "unobserved";
+
+export type OpenClawStateReadOptions = {
+  mapError?: (error: unknown, phase: OpenClawStateReadPhase) => Error;
 };

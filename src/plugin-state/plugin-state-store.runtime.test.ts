@@ -6,7 +6,10 @@ import type { PluginRecord } from "../plugins/registry-types.js";
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resetPluginBlobStoreForTests, type OpenBlobStoreOptions } from "./plugin-blob-store.js";
 import { resetPluginStateStoreForTests } from "./plugin-state-store.js";
@@ -72,8 +75,9 @@ function createTestPluginRegistry() {
   });
 }
 
-afterEach(() => {
+afterEach(async () => {
   closeOpenClawAgentDatabasesForTest();
+  await closeOpenClawStateDatabaseAsync();
   resetPluginBlobStoreForTests();
   resetPluginStateStoreForTests();
 });
@@ -250,6 +254,7 @@ describe("plugin runtime state proxy", () => {
       } as OpenBlobStoreOptions & { env: NodeJS.ProcessEnv });
       await store.register("viewer", new Uint8Array([1]), { kind: "viewer" });
 
+      await closeOpenClawStateDatabaseAsync();
       resetPluginBlobStoreForTests();
       const { db } = openOpenClawStateDatabase({ env: state.env });
       expect(

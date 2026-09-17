@@ -16,6 +16,7 @@ import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-
 import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
+import type { PluginBlobWorkerOperations } from "../plugin-state/plugin-blob-worker-contract.js";
 import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-worker-contract.js";
 import type { PluginBindingApprovalEntry } from "../plugins/conversation-binding-state.types.js";
 import type { PluginMetadataStateSelector } from "../plugins/installed-plugin-index-row.js";
@@ -39,6 +40,7 @@ import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js
 export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations &
   HostedCatalogSnapshotWorkerOperations &
   PluginStateWorkerOperations &
+  PluginBlobWorkerOperations &
   UserPreferenceWorkerOperations &
   CronStoreWorkerOperations &
   CronStoreSaveWorkerOperations &
