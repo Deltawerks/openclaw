@@ -13,7 +13,6 @@ import {
   type ExecutionDecisionWork,
 } from "../audit/execution-decision-work.js";
 import { createExecutionIdentityAdmissionToken } from "../audit/execution-identity-admission.js";
-import type { ChannelMessagingAdapter } from "../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   appendTranscriptMessage,
@@ -35,7 +34,7 @@ import {
 } from "../process/gateway-work-admission.js";
 import { runWithGatewayRootWorkAdmissionForTest } from "../process/gateway-work-admission.test-helpers.js";
 import { disposeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db.js";
-import { createTestRegistry } from "../test-utils/channel-plugins.js";
+import { createMessagingTestRegistry } from "./openclaw-tools.sessions.registry.test-support.js";
 
 const agentCommandFromIngress = vi.hoisted(() =>
   vi.fn<typeof import("../commands/agent.js").agentCommandFromIngress>(),
@@ -118,72 +117,6 @@ function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean) 
     }
   }
   return count;
-}
-
-const resolveSessionConversationStub: NonNullable<
-  ChannelMessagingAdapter["resolveSessionConversation"]
-> = ({ rawId }) => ({
-  id: rawId,
-});
-const resolveSessionTargetStub: NonNullable<ChannelMessagingAdapter["resolveSessionTarget"]> = ({
-  kind,
-  id,
-  threadId,
-}) => (threadId ? `${kind}:${id}:thread:${threadId}` : `${kind}:${id}`);
-
-function installMessagingTestRegistry() {
-  // Registry stubs expose enough channel target resolution for session-send tests.
-  setActivePluginRegistry(
-    createTestRegistry([
-      {
-        pluginId: "discord",
-        source: "test",
-        plugin: {
-          id: "discord",
-          meta: {
-            id: "discord",
-            label: "Discord",
-            selectionLabel: "Discord",
-            docsPath: "/channels/discord",
-            blurb: "Discord test stub.",
-          },
-          capabilities: { chatTypes: ["direct", "channel", "thread"] },
-          messaging: {
-            resolveSessionConversation: resolveSessionConversationStub,
-            resolveSessionTarget: resolveSessionTargetStub,
-          },
-          config: {
-            listAccountIds: () => ["default"],
-            resolveAccount: () => ({}),
-          },
-        },
-      },
-      {
-        pluginId: "whatsapp",
-        source: "test",
-        plugin: {
-          id: "whatsapp",
-          meta: {
-            id: "whatsapp",
-            label: "WhatsApp",
-            selectionLabel: "WhatsApp",
-            docsPath: "/channels/whatsapp",
-            blurb: "WhatsApp test stub.",
-            preferSessionLookupForAnnounceTarget: true,
-          },
-          capabilities: { chatTypes: ["direct", "group"] },
-          messaging: {
-            resolveSessionConversation: resolveSessionConversationStub,
-            resolveSessionTarget: resolveSessionTargetStub,
-          },
-          config: {
-            listAccountIds: () => ["default"],
-            resolveAccount: () => ({}),
-          },
-        },
-      },
-    ]),
-  );
 }
 
 function createOpenClawTools(options?: {
@@ -316,7 +249,7 @@ describe("sessions tools", () => {
     embeddedRunsTesting.resetActiveEmbeddedRuns();
     loadSessionEntryByKeyMock.mockReset();
     loadSessionEntryByKeyMock.mockReturnValue(undefined);
-    installMessagingTestRegistry();
+    setActivePluginRegistry(createMessagingTestRegistry());
     agentCommandFromIngress.mockReset().mockResolvedValue({
       payloads: [{ text: "ANNOUNCE_SKIP", mediaUrl: null }],
       meta: { durationMs: 1 },
