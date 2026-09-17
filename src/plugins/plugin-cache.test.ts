@@ -74,6 +74,19 @@ describe("plugin package facts", () => {
     });
   });
 
+  it("expands Windows aliases even when native realpath preserves the lexical path", () => {
+    const lexicalPath = path.resolve(tempDirs.make("plugin-realpath-windows-alias-"));
+    const canonicalPath = `${lexicalPath}-canonical`;
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.spyOn(fs.realpathSync, "native").mockReturnValue(lexicalPath);
+    const javascriptRealpath = vi.spyOn(fs, "realpathSync").mockReturnValue(canonicalPath);
+
+    withPluginCache(createPluginCache(), () => {
+      expect(pluginCacheRealpathSync(lexicalPath)).toBe(canonicalPath);
+    });
+    expect(javascriptRealpath).toHaveBeenCalledWith(lexicalPath);
+  });
+
   it.each(["native", "javascript"] as const)(
     "reuses the provider catalog source resolved by the %s filesystem path",
     (resolver) => {
