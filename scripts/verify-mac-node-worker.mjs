@@ -107,6 +107,47 @@ try {
   );
   const jpeg = await resizeToJpeg({ buffer: png, maxSide: 1, quality: 80 });
   assert.deepEqual(jpeg.subarray(0, 2), Buffer.from([0xff, 0xd8]));
+  // The retained SQLite SDK launches its store host through another declared
+  // runtime path. Prove a real create/write/read/close cycle after relocation.
+  const sqliteBackendPath = path.join(home, "sqlite-worker-proof-backend.mjs");
+  fs.writeFileSync(
+    sqliteBackendPath,
+    `
+import { DatabaseSync } from "node:sqlite";
+export function createSqliteWorkerBackend(_input, { databasePath }) {
+  const database = new DatabaseSync(databasePath);
+  database.exec("CREATE TABLE proof (value TEXT NOT NULL)");
+  return {
+    execute(command) {
+      if (command.type === "roundTrip") {
+        database.prepare("INSERT INTO proof (value) VALUES (?)").run(command.input);
+        return database.prepare("SELECT value FROM proof").get().value;
+      }
+      throw new Error("Unexpected SQLite worker proof command");
+    },
+    close() {
+      database.close();
+    },
+  };
+}
+`,
+  );
+  const { openSqliteWorkerStore } = await import(
+    pathToFileURL(path.join(packageRoot, "dist/plugin-sdk/sqlite-runtime.js")).href
+  );
+  const sqliteStore = await openSqliteWorkerStore({
+    moduleUrl: pathToFileURL(sqliteBackendPath),
+    databasePath: path.join(home, "sqlite-worker-proof.sqlite"),
+    input: undefined,
+  });
+  try {
+    assert.equal(
+      await sqliteStore.execute({ type: "roundTrip", input: "sqlite-worker-proof" }),
+      "sqlite-worker-proof",
+    );
+  } finally {
+    await sqliteStore.close();
+  }
   for (const nativeFirst of [false, true]) {
     const appGatedComputer = !nativeFirst;
     const proofHome = path.join(home, nativeFirst ? "native-first" : "absent");

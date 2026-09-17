@@ -143,7 +143,12 @@ function collectOwnedPackageDependencies(packageRoot: string, dependencies: Set<
 
 function collectSeeds(packageRoot: string, manifest: PackageManifest): Set<string> {
   const seeds = new Set([WORKER_ENTRY, "dist/build-info.json"]);
-  seeds.add(`dist/${runtimeProcessEntrypoints.imageProcessor.distWorkerPath}`);
+  for (const entrypoint of [
+    runtimeProcessEntrypoints.imageProcessor,
+    runtimeProcessEntrypoints.sqliteStore,
+  ]) {
+    seeds.add(`dist/${entrypoint.distWorkerPath}`);
+  }
   for (const relative of collectNodeHostPluginSeeds(packageRoot)) {
     seeds.add(relative);
   }

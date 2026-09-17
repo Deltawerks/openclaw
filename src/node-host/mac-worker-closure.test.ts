@@ -45,6 +45,8 @@ function fixture(): string {
   write(root, "dist/sdk-shared.mjs", "export const sdk = true;");
   write(root, "dist/media/image-processor.worker.js", 'import "../image-worker-shared.mjs";');
   write(root, "dist/image-worker-shared.mjs", "export const imageWorker = true;");
+  write(root, "dist/infra/sqlite-store.worker.js", 'import "../sqlite-worker-shared.mjs";');
+  write(root, "dist/sqlite-worker-shared.mjs", "export const sqliteWorker = true;");
   write(root, "node_modules/@openclaw/ai/package.json", '{"name":"@openclaw/ai"}');
   write(root, "node_modules/@openclaw/ai/dist/runtime.js", 'import "partial-json";');
   for (const [id, registration] of [
@@ -91,6 +93,8 @@ describe("Mac node worker closure", () => {
     expect(plan.files).toContain("dist/extensions/cua-computer/index.js");
     expect(plan.files).toContain("dist/media/image-processor.worker.js");
     expect(plan.files).toContain("dist/image-worker-shared.mjs");
+    expect(plan.files).toContain("dist/infra/sqlite-store.worker.js");
+    expect(plan.files).toContain("dist/sqlite-worker-shared.mjs");
     expect(plan.files).not.toContain("dist/extensions/unrelated/index.js");
     expect(plan.files).toContain("skills/system/SKILL.md");
     expect(plan.files).not.toContain("dist/entry.js");
