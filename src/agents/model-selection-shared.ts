@@ -13,6 +13,7 @@ import {
 } from "../config/model-policy-allowlist-migration.js";
 import { parseModelPolicyWildcardRef } from "../config/model-policy-ref.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { hasUtilityModelSeparationMigrationMarker } from "../config/utility-model-separation-migration.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { loadManifestMetadataSnapshot } from "../plugins/manifest-contract-eligibility.js";
@@ -38,6 +39,7 @@ import {
 } from "./model-ref-shared.js";
 import { findNormalizedProviderValue, parseModelRef } from "./model-selection-normalize.js";
 import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
+import { readUtilityModelSetting } from "./utility-model-setting.js";
 
 export { resolvePrimaryStringValue as normalizeModelSelection } from "@openclaw/normalization-core/string-coerce";
 
@@ -715,37 +717,27 @@ export function resolveModelRefFromString(
   return { ref: parsed };
 }
 
-/** Resolves legacy provider/model pairs whose model field may still contain an alias. */
-export function resolveModelAliasFromPair(
+/** Prepare implicit provider selection without promoting the agent's utility route. */
+export function resolveConfiguredPrimaryProviderFallback(
   params: {
-    cfg?: OpenClawConfig;
+    cfg: OpenClawConfig;
     agentId?: string;
-    provider: string;
-    model: string;
     defaultProvider: string;
-    aliasIndex?: ModelAliasIndex;
+    defaultModel: string | undefined;
     allowManifestNormalization?: boolean;
     allowPluginNormalization?: boolean;
   } & ModelManifestNormalizationContext,
 ): ModelRef | null {
-  const bareAlias = resolveModelRefFromString({
-    ...params,
-    raw: params.model,
-    defaultProvider: params.provider,
-  });
-  const providerAlias = resolveModelRefFromString({
-    ...params,
-    raw: `${params.provider}/${params.model}`,
-  });
-  if (providerAlias?.alias) {
-    return providerAlias.ref;
-  }
-  const provider = normalizeProviderId(params.provider);
-  return bareAlias?.alias &&
-    (normalizeProviderId(bareAlias.ref.provider) === provider ||
-      provider === normalizeProviderId(params.defaultProvider))
-    ? bareAlias.ref
-    : null;
+  const utility = readUtilityModelSetting(params.cfg, params.agentId);
+  const excludedModel =
+    utility.kind === "explicit" && hasUtilityModelSeparationMigrationMarker(params.cfg)
+      ? resolveModelRefFromString({
+          ...params,
+          raw: utility.modelRef,
+          aliasIndex: buildModelAliasIndex(params),
+        })?.ref
+      : undefined;
+  return resolveConfiguredProviderFallback({ ...params, excludedModel });
 }
 
 /** Resolve the default configured model ref, including aliases and fallback provider rows. */
@@ -944,11 +936,7 @@ export function resolveConfiguredModelRef(
       `Model "${safe}" could not be resolved. Falling back to default "${safeFallback}".`,
     );
   }
-  const fallbackProvider = resolveConfiguredProviderFallback({
-    cfg: params.cfg,
-    defaultProvider: params.defaultProvider,
-    defaultModel: params.defaultModel,
-  });
+  const fallbackProvider = resolveConfiguredPrimaryProviderFallback(params);
   if (fallbackProvider) {
     return fallbackProvider;
   }

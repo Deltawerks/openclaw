@@ -55,9 +55,10 @@ export function getSupportedThinkingLevels<TApi extends Api>(
     }
     if (level === "xhigh" || level === "max") {
       return (
-        mapped !== undefined ||
-        mappedLevels.includes(level) ||
-        reasoningEfforts?.includes(level) === true
+        reasoningEfforts?.length !== 0 &&
+        (mapped !== undefined ||
+          mappedLevels.includes(level) ||
+          reasoningEfforts?.includes(level) === true)
       );
     }
     return true;

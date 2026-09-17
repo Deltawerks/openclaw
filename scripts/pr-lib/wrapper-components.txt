@@ -100,6 +100,9 @@ scripts/lib/failed-trailer.mts
 scripts/lib/gateway-server-test-plan.mts
 scripts/lib/local-check-runtime.mts
 scripts/lib/managed-child-process.mts
+scripts/lib/managed-windows-job-entrypoint.mts
+scripts/lib/managed-windows-job-launcher.mts
+scripts/lib/managed-windows-job.mts
 scripts/lib/merge-head-diff-base.mjs
 scripts/lib/native-session-catalogs.json
 scripts/lib/numeric-options.mjs
@@ -186,6 +189,7 @@ src/agents/tool-policy-shared.ts
 src/agents/tool-policy.ts
 src/agents/tools/automations-tool-name.ts
 src/agents/tools/sessions-send-tokens.ts
+src/agents/utility-model-setting.ts
 src/agents/utils/git.ts
 src/agents/workspace-default-path.ts
 src/agents/workspace-default.ts
@@ -341,6 +345,8 @@ src/config/io.plugin-metadata.ts
 src/config/io.read-helpers.ts
 src/config/io.recovery.ts
 src/config/io.runtime.ts
+src/config/io.snapshot-preparation.ts
+src/config/io.snapshot-preparation.types.ts
 src/config/io.snapshot-shared.ts
 src/config/io.snapshot.ts
 src/config/io.state.ts
@@ -416,14 +422,15 @@ src/config/types.models.ts
 src/config/types.secrets.ts
 src/config/types.tools.ts
 src/config/types.ts
+src/config/utility-model-separation-migration.ts
 src/config/validation-channel-rules.ts
 src/config/validation-core.ts
 src/config/validation-issues.ts
 src/config/validation-plugin-config.ts
 src/config/validation-plugin-registry.ts
 src/config/validation-plugin-rules.ts
-src/config/validation-plugin-registry.ts
 src/config/validation.ts
+src/config/validation.types.ts
 src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
 src/config/write-lock.ts
@@ -641,6 +648,7 @@ src/infra/sqlite-post-commit.ts
 src/infra/sqlite-private-directory.ts
 src/infra/sqlite-readonly-location-cleanup.ts
 src/infra/sqlite-readonly-location.ts
+src/infra/sqlite-readonly-location.worker.ts
 src/infra/sqlite-readonly-worker-protocol.ts
 src/infra/sqlite-readonly-worker.ts
 src/infra/sqlite-runtime-version.ts
@@ -704,7 +712,10 @@ src/infra/windows-port-pids.ts
 src/infra/windows-private-directory.ts
 src/infra/windows-process-start.ts
 src/infra/worker-task-capacity.ts
+src/infra/worker-task-native-sections.ts
 src/infra/worker-task-pool.ts
+src/infra/worker-task-server.ts
+src/infra/worker-transfer-bytes.ts
 src/infra/wsl.ts
 src/logger.ts
 src/logging/config.ts
@@ -926,6 +937,7 @@ src/plugins/runtime/generation-scope.ts
 src/plugins/runtime/generation-state.ts
 src/plugins/runtime/load-context-state.ts
 src/plugins/schema-validator.ts
+src/plugins/sdk-alias-normalization.ts
 src/plugins/sdk-alias.ts
 src/plugins/setup-descriptors.ts
 src/plugins/setup-presentation-url.ts
@@ -944,6 +956,14 @@ src/process/exec-termination.ts
 src/process/exec.ts
 src/process/kill-tree.ts
 src/process/scoped-child-reaper.ts
+src/process/spawn-broker/child.ts
+src/process/spawn-broker/context.ts
+src/process/spawn-broker/execa-client.ts
+src/process/spawn-broker/execa-message.ts
+src/process/spawn-broker/execa-protocol.ts
+src/process/spawn-broker/pipe.ts
+src/process/spawn-broker/protocol.ts
+src/process/supervisor/service-child-windows-job-native.ts
 src/process/windows-command.ts
 src/proxy-capture/env.ts
 src/proxy-capture/header-redaction.ts
@@ -985,6 +1005,7 @@ src/sessions/session-diff-parser.ts
 src/sessions/session-diff-revisions.ts
 src/sessions/session-diff.runtime.ts
 src/sessions/session-key-utils.ts
+src/sessions/session-row-changes.ts
 src/shared/assistant-error-format.ts
 src/shared/avatar-limits.ts
 src/shared/avatar-policy.ts
@@ -1004,6 +1025,7 @@ src/shared/incognito-session-key.ts
 src/shared/json-schema-defaults.ts
 src/shared/lazy-promise.ts
 src/shared/lazy-runtime.ts
+src/shared/listeners.ts
 src/shared/model-key.ts
 src/shared/path-array-index.ts
 src/shared/pid-alive.ts
