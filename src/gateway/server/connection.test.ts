@@ -5,13 +5,13 @@ import { GATEWAY_SERVER_CAPS } from "../../../packages/gateway-protocol/src/serv
 import { PROTOCOL_VERSION } from "../../../packages/gateway-protocol/src/version.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { GatewayConnectionWork } from "../server-connection-work.js";
+import { GatewayClientRegistry } from "./client-registry.js";
 import type { GatewayConnectionTransport } from "./connection-transport.js";
 import { attachGatewayConnection } from "./connection.js";
 import {
   createGatewayWsTestLogger,
   createGatewayWsTestRequestContext,
 } from "./ws-connection.test-helpers.js";
-import type { GatewayWsClient } from "./ws-types.js";
 
 describe("Gateway connection transport", () => {
   it.each(["written", "failed"] as const)(
@@ -26,7 +26,7 @@ describe("Gateway connection transport", () => {
             ok?: boolean;
             payload?: { type?: string; capabilities?: string[] };
           }> = [];
-          const clients = new Set<GatewayWsClient>();
+          const clients = new GatewayClientRegistry();
           const connectionWork = new GatewayConnectionWork();
           let readyState = 1;
           let finishHello: ((error?: Error) => void) | undefined;

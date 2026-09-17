@@ -52,6 +52,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
 }) {
   const {
     connId,
+    clients,
     getRequiredSharedGatewaySessionGeneration,
     extraHandlers,
     getMethodRegistry,
@@ -245,6 +246,8 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
         client.socket.once("close", cancelRequest);
       }
       let dispatchOutcome: "returned" | "threw" = "returned";
+      // Revocation owns the whole invocation, beyond both preparation and transport closure.
+      const releaseAuthority = clients.retainRequest(client);
       try {
         entry = context.requestEntryLifetime?.enter({ req, client, context });
         if (credentialMutationBarrier) {
@@ -335,6 +338,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
           staleInstall?.error ?? errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)),
         );
       } finally {
+        releaseAuthority();
         policyResponse?.finish();
         diagnostics?.finish(requestController?.signal.aborted ? "cancelled" : dispatchOutcome);
         entry?.release();

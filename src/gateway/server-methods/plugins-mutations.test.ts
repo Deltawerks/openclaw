@@ -59,8 +59,13 @@ async function callHandler(
     ...authority,
     params,
     req: {} as never,
-    // Minimal transport fixture: only the host-attested ingress marker is read here.
-    client: (localClient ? { internal: { isLocalClient: true } } : null) as never,
+    // Local RPCs carry both admitted administrator authority and host-attested ingress.
+    client: (localClient
+      ? {
+          connect: { role: "operator", scopes: ["operator.admin"] },
+          internal: { isLocalClient: true },
+        }
+      : null) as never,
     isWebchatConnect: () => false,
     context: {
       getRuntimeConfig: () => runtimeConfig,

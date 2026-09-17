@@ -44,6 +44,8 @@ import {
   enforceSharedGatewaySessionGenerationForConfigWrite,
   getRequiredSharedGatewaySessionGeneration,
 } from "../../server-shared-auth-generation.js";
+import { GatewayClientRegistry } from "../client-registry.js";
+import { createGatewayWsTestLogger as createLogger } from "../ws-connection.test-helpers.js";
 import { resolveSharedGatewaySessionGeneration } from "../ws-shared-generation.js";
 import { GatewayNodeLifecycleDispatchTracker } from "./node-lifecycle-dispatch.js";
 
@@ -214,15 +216,6 @@ async function withGatewayTestState(
 
 function waitForFast(assertion: () => void | Promise<void>) {
   return vi.waitFor(assertion, { interval: 1 });
-}
-
-function createLogger() {
-  return {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  };
 }
 
 function createHealthSummary(): HealthSummary {
@@ -405,6 +398,7 @@ function attachGatewayHarness(options: {
     }
   });
   attachGatewayWsMessageHandler({
+    clients: new GatewayClientRegistry(),
     socket,
     prepareAuthenticatedReceive: () => ({ ok: true, value: vi.fn() }),
     connectionWork,

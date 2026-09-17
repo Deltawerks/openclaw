@@ -1,10 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { GatewayClientRegistry } from "./client-registry.js";
 import { disconnectDisallowedGatewayBrowserOriginClients } from "./ws-origin-policy.js";
+import type { GatewayWsClient } from "./ws-types.js";
 
 describe("committed browser origin policy", () => {
-  it.each(["allowedOrigins", "dangerouslyAllowHostHeaderOriginFallback"] as const)(
-    "retires only clients no longer admitted after %s changes",
-    (policy) => {
+  it.each(
+    (["allowedOrigins", "dangerouslyAllowHostHeaderOriginFallback"] as const).flatMap((policy) =>
+      ["live", "disconnected"].map((transport) => ({ policy, transport })),
+    ),
+  )(
+    "retires only clients no longer admitted after $policy changes ($transport)",
+    ({ policy, transport }) => {
       const revoked = {
         browserOrigin: {
           origin: "https://revoked.example.test",
@@ -24,7 +30,13 @@ describe("committed browser origin policy", () => {
         socket: { close: vi.fn() },
       };
       const backend = { socket: { close: vi.fn() } };
-      const clients = [revoked, retained, backend];
+      const registry = new GatewayClientRegistry([revoked, retained, backend] as never);
+      const release = registry.retainRequest(revoked as unknown as GatewayWsClient);
+      onTestFinished(release);
+      if (transport === "disconnected") {
+        registry.delete(revoked as unknown as GatewayWsClient);
+      }
+      const clients = registry.authorityClients;
       disconnectDisallowedGatewayBrowserOriginClients(clients, {
         gateway: {
           controlUi: {

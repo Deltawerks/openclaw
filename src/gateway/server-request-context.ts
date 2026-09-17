@@ -19,13 +19,13 @@ import {
   enforceSharedGatewaySessionGenerationForConfigWrite,
 } from "./server-shared-auth-generation.js";
 import { recordClientPresenceActivity, refreshClientPresence } from "./server/client-presence.js";
+import type { GatewayClientRegistry } from "./server/client-registry.js";
 import {
   getHealthCache,
   getHealthVersion,
   incrementPresenceVersion,
 } from "./server/health-state.js";
 import { broadcastPresenceSnapshot } from "./server/presence-events.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
 
 type GatewayRequestContextClient = GatewayClient & {
   socket: { close: (code: number, reason: string) => void };
@@ -102,7 +102,7 @@ type GatewayRequestContextRuntime = Pick<
     sessionActivitySummaries?: GatewayRequestContext["sessionActivitySummaries"];
     sessionCompanion: NonNullable<GatewayRequestContext["sessionCompanion"]>;
     isConnectionActive: NonNullable<GatewayRequestContext["isConnectionActive"]>;
-    clients: Set<GatewayWsClient>;
+    clients: GatewayClientRegistry;
     gatewayTls: Pick<GatewayCoreRuntime["gatewayTls"], "enabled" | "fingerprintSha256">;
     nodeDesktopService?: GatewayCoreRuntime["nodeDesktopService"];
     cancelRunBoundApprovals?: GatewayCoreRuntime["cancelRunBoundApprovals"];
@@ -433,7 +433,7 @@ export function createGatewayRequestContext(
     },
     invalidateClientsForDevice: (deviceId: string, opts?: { role?: string; reason?: string }) => {
       const reason = opts?.reason ?? "device-invalidated";
-      for (const gatewayClient of clients) {
+      for (const gatewayClient of clients.authorityClients) {
         if (gatewayClient.connect.device?.id !== deviceId) {
           continue;
         }
@@ -451,7 +451,7 @@ export function createGatewayRequestContext(
       invalidateDeviceTransports?.(deviceId, opts);
     },
     disconnectClientsForDevice: (deviceId: string, opts?: { role?: string }) => {
-      for (const gatewayClient of clients) {
+      for (const gatewayClient of clients.authorityClients) {
         if (gatewayClient.connect.device?.id !== deviceId) {
           continue;
         }
@@ -472,7 +472,7 @@ export function createGatewayRequestContext(
       disconnectDeviceTransports?.(deviceId, opts);
     },
     disconnectClientsForUserProfile: (profileId: string) => {
-      for (const gatewayClient of clients) {
+      for (const gatewayClient of clients.authorityClients) {
         if (gatewayClient.authenticatedUserProfile?.profileId !== profileId) {
           continue;
         }
@@ -487,14 +487,14 @@ export function createGatewayRequestContext(
       }
     },
     disconnectClientsUsingSharedGatewayAuth: () => {
-      disconnectAllSharedGatewayAuthClients(clients);
+      disconnectAllSharedGatewayAuthClients(clients.authorityClients);
     },
     enforceSharedGatewayAuthGenerationForConfigWrite: (nextConfig) => {
       enforceSharedGatewaySessionGenerationForConfigWrite({
         state: sharedGatewaySessionGenerationState,
         nextConfig,
         resolveRuntimeSnapshotGeneration: resolveSharedGatewaySessionGenerationForRuntimeSnapshot,
-        clients,
+        clients: clients.authorityClients,
       });
     },
     nodeRegistry,
