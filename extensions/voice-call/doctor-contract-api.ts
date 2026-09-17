@@ -147,6 +147,8 @@ function describeVoiceCallSchemaMigration(migration: OpenClawStateDatabaseSchema
       return "Skill Workshop proposals -> per-agent Workshop directory ownership";
     case "prepared-worker-ownership-v17":
       return "prepared workers -> one-use capacity and fixed workspace ownership";
+    case "worktree-session-bindings-v18":
+      return "session-owned worktrees -> explicit memberships";
     case "worker-placement-execution-mode-v8":
       return "cloud worker placements -> execution-mode claims";
     case "operator-approvals-system-agent":

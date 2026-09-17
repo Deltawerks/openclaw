@@ -404,8 +404,8 @@ test("sessions.files.get revalidates every shared peer after participation is re
       }),
     ).toMatchObject({ ok: true, payload: { file: { content: "private\n" } } });
 
-    const readEntered = createDeferred<void>();
-    const continueRead = createDeferred<void>();
+    const readEntered = createDeferred();
+    const continueRead = createDeferred();
     const originalGetSessionWorkspaceFile = workspaceFiles.getSessionWorkspaceFile;
     const readSpy = vi
       .spyOn(workspaceFiles, "getSessionWorkspaceFile")

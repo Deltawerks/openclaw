@@ -3907,6 +3907,7 @@ describe("openclaw state database", () => {
       { kind: "state-consolidation-v13", path: fixture.databasePath },
       { kind: "creator-namespace-v14", path: fixture.databasePath },
       { kind: "conversation-binding-targets-v15", path: fixture.databasePath },
+      { kind: "worktree-session-bindings-v18", path: fixture.databasePath },
       { kind: "audit-events-v2", path: fixture.databasePath },
       { kind: "strict-tables-v3", path: fixture.databasePath },
     ]);
@@ -4581,6 +4582,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
     expect(detectOpenClawStateDatabaseSchemaMigrations(options)).toEqual([
       { kind: "creator-namespace-v14", path: databasePath },
+      { kind: "worktree-session-bindings-v18", path: databasePath },
       { kind: "strict-tables-v3", path: databasePath },
       { kind: "session-watch-cursor-provenance-v4", path: databasePath },
     ]);
@@ -4617,6 +4619,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
     expect(detectOpenClawStateDatabaseSchemaMigrations(options)).toEqual([
       { kind: "creator-namespace-v14", path: seeded.databasePath },
+      { kind: "worktree-session-bindings-v18", path: seeded.databasePath },
       { kind: "session-watch-cursor-provenance-v4", path: seeded.databasePath },
     ]);
     expect(repairOpenClawStateDatabaseSchema(options)).toEqual({
