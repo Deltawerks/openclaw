@@ -12,6 +12,7 @@ import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { restorePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { buildDeclaredProviderOwnerIndex } from "../plugins/provider-owner-index.js";
+import type { OpenClawConfig } from "./types.openclaw.js";
 
 const mocks = vi.hoisted(() => ({
   resolvePluginMetadataSnapshot: vi.fn(),
@@ -222,6 +223,60 @@ describe("config IO plugin metadata snapshots", () => {
       }),
     );
     expect(mocks.resolvePluginMetadataSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects Gateway metadata when the configured workspace set changes", async () => {
+    const prepared = manifestRecord({ id: "prepared", source: "/srv/ops/prepared" });
+    const config = {
+      agents: {
+        entries: {
+          ops: { workspace: "/srv/ops" },
+          research: { workspace: "/srv/research" },
+        },
+      },
+    };
+    const snapshot = workspaceSnapshot(
+      "/srv/ops",
+      [prepared],
+      [],
+      resolveInstalledPluginIndexPolicyHash(config, {}),
+    );
+    setGatewayPluginMetadataSnapshot(snapshot, { config, env: {} });
+    mocks.resolvePluginMetadataSnapshot.mockReturnValue(snapshot);
+
+    const changedConfigs: OpenClawConfig[] = [
+      { agents: { entries: { ops: { workspace: "/srv/ops" } } } },
+      {
+        agents: {
+          entries: {
+            ops: { workspace: "/srv/ops" },
+            research: { workspace: "/srv/analysis" },
+          },
+        },
+      },
+      {
+        agents: {
+          entries: {
+            ops: { workspace: "/srv/ops" },
+            research: { workspace: "/srv/research" },
+            support: { workspace: "/srv/support" },
+          },
+        },
+      },
+    ];
+    for (const [index, changedConfig] of changedConfigs.entries()) {
+      mocks.resolvePluginMetadataSnapshot.mockClear();
+      if (index === 1) {
+        await withPluginCache(createPluginCache(), () =>
+          resolveConfigWidePluginMetadataSnapshotAsync({ config: changedConfig, env: {} }),
+        );
+      } else {
+        withPluginCache(createPluginCache(), () =>
+          resolveConfigWidePluginMetadataSnapshot({ config: changedConfig, env: {} }),
+        );
+      }
+      expect(mocks.resolvePluginMetadataSnapshot).toHaveBeenCalledTimes(index + 1);
+    }
   });
 
   it("feeds merged workspace plugins to snapshot-backed read-only discovery", () => {
