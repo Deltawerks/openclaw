@@ -1,4 +1,5 @@
 // Agent scope tests cover which per-agent fields may flatten into runtime defaults.
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import { migratePersistedImplicitMainRoster } from "../config/legacy.roster.js";
@@ -7,6 +8,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { freezeJsonSnapshot } from "../shared/immutable-data.js";
 import {
   AgentSelectionRequiredError,
+  listAgentEntries,
   listAgentEntriesWithSource,
   listAgentIds,
   resolveConfiguredAgentId,
@@ -197,7 +199,7 @@ describe("agent roster resolution", () => {
       },
     } satisfies OpenClawConfig;
 
-    expect(resolveDefaultAgentDir(config)).toBe("/tmp/openclaw-beta-agent");
+    expect(resolveDefaultAgentDir(config)).toBe(path.resolve("/tmp/openclaw-beta-agent"));
   });
 
   it("preserves legacy default ownership for non-explicit CLI operations", () => {
@@ -396,8 +398,8 @@ describe("agent roster resolution", () => {
 
     expect(cfg.agents?.entries?.ops?.default).toBeUndefined();
     expect(cfg.agents?.entries?.ops?.workspace).toBeUndefined();
-    expect(resolveAgentWorkspaceDir(cfg, "ops")).toBe("/srv/ops");
-    expect(resolveAgentWorkspaceDir(cfg, "research")).toBe("/srv/ops/research");
+    expect(resolveAgentWorkspaceDir(cfg, "ops")).toBe(path.resolve("/srv/ops"));
+    expect(resolveAgentWorkspaceDir(cfg, "research")).toBe(path.resolve("/srv/ops/research"));
   });
 
   it("keeps a raw legacy marker owner on the inherited workspace", () => {
@@ -408,8 +410,8 @@ describe("agent roster resolution", () => {
       },
     };
 
-    expect(resolveAgentWorkspaceDir(cfg, "ops")).toBe("/srv/ops");
-    expect(resolveAgentWorkspaceDir(cfg, "research")).toBe("/srv/ops/research");
+    expect(resolveAgentWorkspaceDir(cfg, "ops")).toBe(path.resolve("/srv/ops"));
+    expect(resolveAgentWorkspaceDir(cfg, "research")).toBe(path.resolve("/srv/ops/research"));
   });
 
   it("keeps the implicit default workspace inside an overridden state directory", () => {
@@ -420,7 +422,7 @@ describe("agent roster resolution", () => {
         HOME: "/home/operator",
         OPENCLAW_STATE_DIR: stateDir,
       }),
-    ).toBe(`${stateDir}/workspace`);
+    ).toBe(path.resolve(stateDir, "workspace"));
   });
 
   it("offers a non-throwing diagnostic lookup for malformed rosters", () => {
@@ -436,18 +438,22 @@ describe("agent roster resolution", () => {
 
   it("copies own __proto__ fields without changing the listed entry prototype", () => {
     const entry = JSON.parse('{"__proto__":{"tools":{"allow":["*"]}}}') as Record<string, unknown>;
-    const [listed] = listAgentEntriesWithSource({
+    const cfg = {
       agents: { entries: { ops: entry } },
-    } as OpenClawConfig);
+    } as OpenClawConfig;
+    const [listed] = listAgentEntriesWithSource(cfg);
     expect(listed).toBeDefined();
-    const listedEntry = listed!.entry;
+    const [plainEntry] = listAgentEntries(cfg);
+    expect(plainEntry).toBeDefined();
 
-    expect(Object.getPrototypeOf(listedEntry)).toBe(Object.prototype);
-    expect(Object.hasOwn(listedEntry, "__proto__")).toBe(true);
-    expect(Object.getOwnPropertyDescriptor(listedEntry, "__proto__")?.value).toEqual({
-      tools: { allow: ["*"] },
-    });
-    expect(listedEntry.tools).toBeUndefined();
+    for (const listedEntry of [listed!.entry, plainEntry!]) {
+      expect(Object.getPrototypeOf(listedEntry)).toBe(Object.prototype);
+      expect(Object.hasOwn(listedEntry, "__proto__")).toBe(true);
+      expect(Object.getOwnPropertyDescriptor(listedEntry, "__proto__")?.value).toEqual({
+        tools: { allow: ["*"] },
+      });
+      expect(listedEntry.tools).toBeUndefined();
+    }
   });
 });
 
