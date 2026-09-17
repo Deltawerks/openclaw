@@ -38,7 +38,7 @@ function fixture(): string {
   write(
     root,
     "dist/worker-shared.mjs",
-    'import { createRequire } from "node:module"; const require = createRequire(import.meta.url); require.resolve("ws/package.json");',
+    'import { createRequire } from "node:module"; const require = createRequire(import.meta.url); require.resolve("ws/package.json"); globalThis.runtimeProcessEntrypoints.serviceChildRelay; globalThis.runtimeProcessEntrypoints.gitOperations;',
   );
   write(root, "dist/build-info.json", "{}");
   write(root, "dist/plugin-sdk/demo.js", 'export * from "../sdk-shared.mjs";');
@@ -47,6 +47,20 @@ function fixture(): string {
   write(root, "dist/image-worker-shared.mjs", "export const imageWorker = true;");
   write(root, "dist/infra/sqlite-store.worker.js", 'import "../sqlite-worker-shared.mjs";');
   write(root, "dist/sqlite-worker-shared.mjs", "export const sqliteWorker = true;");
+  write(
+    root,
+    "dist/process/supervisor/service-child-relay.js",
+    'import "./relay-shared.mjs"; globalThis.runtimeProcessEntrypoints.serviceChildGroupAnchor;',
+  );
+  write(root, "dist/process/supervisor/relay-shared.mjs", "export const relay = true;");
+  write(
+    root,
+    "dist/process/supervisor/service-child-group-anchor.js",
+    'import "./anchor-shared.mjs";',
+  );
+  write(root, "dist/process/supervisor/anchor-shared.mjs", "export const anchor = true;");
+  write(root, "dist/infra/git-operation.worker.js", 'import "./git-worker-shared.mjs";');
+  write(root, "dist/infra/git-worker-shared.mjs", "export const gitWorker = true;");
   write(root, "node_modules/@openclaw/ai/package.json", '{"name":"@openclaw/ai"}');
   write(root, "node_modules/@openclaw/ai/dist/runtime.js", 'import "partial-json";');
   for (const [id, registration] of [
@@ -95,6 +109,12 @@ describe("Mac node worker closure", () => {
     expect(plan.files).toContain("dist/image-worker-shared.mjs");
     expect(plan.files).toContain("dist/infra/sqlite-store.worker.js");
     expect(plan.files).toContain("dist/sqlite-worker-shared.mjs");
+    expect(plan.files).toContain("dist/process/supervisor/service-child-relay.js");
+    expect(plan.files).toContain("dist/process/supervisor/relay-shared.mjs");
+    expect(plan.files).toContain("dist/process/supervisor/service-child-group-anchor.js");
+    expect(plan.files).toContain("dist/process/supervisor/anchor-shared.mjs");
+    expect(plan.files).toContain("dist/infra/git-operation.worker.js");
+    expect(plan.files).toContain("dist/infra/git-worker-shared.mjs");
     expect(plan.files).not.toContain("dist/extensions/unrelated/index.js");
     expect(plan.files).toContain("skills/system/SKILL.md");
     expect(plan.files).not.toContain("dist/entry.js");

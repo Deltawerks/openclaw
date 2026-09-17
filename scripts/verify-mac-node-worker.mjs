@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, fork, spawnSync } from "node:child_process";
 // Package proof: relocation, native load dependencies, provenance, and actual
 // JSONL worker readiness. Never admits or opens the operator's live state.
 import { createHash } from "node:crypto";
@@ -40,6 +40,190 @@ if (fs.realpathSync(process.execPath) !== node) {
 }
 
 const nativeFiles = auditMacWorkerPortability(runtime, node);
+
+async function proveServiceChildRuntime(home) {
+  const relayPath = path.join(packageRoot, "dist/process/supervisor/service-child-relay.js");
+  const anchorPath = path.join(
+    packageRoot,
+    "dist/process/supervisor/service-child-group-anchor.js",
+  );
+  assert(fs.existsSync(anchorPath), "Bundled service-child group anchor is missing");
+  await new Promise((resolve, reject) => {
+    const child = fork(relayPath, [], {
+      cwd: home,
+      env: { ...process.env, HOME: home, TMPDIR: home },
+      execPath: node,
+      stdio: ["pipe", "pipe", "pipe", "pipe", "pipe", "ipc"],
+    });
+    const control = child.stdio[3];
+    const lineage = child.stdio[4];
+    let controlBuffer = "";
+    let output = "";
+    let rootSucceeded = false;
+    let closed = false;
+    let hostSequence = 0;
+    let lineageReported = false;
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("Bundled service-child relay proof timed out"));
+    }, 20_000);
+    const fail = (error) => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      clearTimeout(timeout);
+      child.kill("SIGKILL");
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+    child.on("error", fail);
+    child.on("message", (message) => {
+      if (message?.type === "relay-error") {
+        fail(new Error(`Bundled service-child relay failed: ${message.error}`));
+      }
+    });
+    control.on("data", (chunk) => {
+      controlBuffer += chunk.toString();
+      for (;;) {
+        const newline = controlBuffer.indexOf("\n");
+        if (newline < 0) {
+          break;
+        }
+        const line = controlBuffer.slice(0, newline);
+        controlBuffer = controlBuffer.slice(newline + 1);
+        const message = JSON.parse(line);
+        if (message.type === "root-result") {
+          rootSucceeded = message.code === 0 && message.signal === null;
+        } else if (message.type === "closing") {
+          control.write(
+            `${JSON.stringify({
+              type: "closing-ack",
+              generation: message.generation,
+              sequence: ++hostSequence,
+              closingSequence: message.sequence,
+            })}\n`,
+          );
+        }
+      }
+    });
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString();
+    });
+    control.on("error", fail);
+    lineage.on("error", fail);
+    const reportLineageClosed = () => {
+      if (lineageReported) {
+        return;
+      }
+      lineageReported = true;
+      control.write(
+        `${JSON.stringify({
+          type: "lineage-closed",
+          generation: "mac-worker-relay-proof",
+          sequence: ++hostSequence,
+        })}\n`,
+      );
+    };
+    lineage.once("end", reportLineageClosed);
+    lineage.once("close", reportLineageClosed);
+    child.once("spawn", () => {
+      child.send({
+        type: "start",
+        generation: "mac-worker-relay-proof",
+        command: node,
+        args: ["-e", 'process.stdout.write("mcp-relay-proof")'],
+        cwd: home,
+        env: Object.fromEntries(
+          Object.entries({ ...process.env, HOME: home, TMPDIR: home }).filter(
+            (entry) => entry[1] !== undefined,
+          ),
+        ),
+        stdinMode: "pipe-closed",
+        controlFd: 3,
+        lineageFd: 4,
+        acknowledgeClosing: true,
+      });
+    });
+    child.once("exit", (code, signal) => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      clearTimeout(timeout);
+      if (code === 0 && signal === null && rootSucceeded && output === "mcp-relay-proof") {
+        resolve();
+      } else {
+        reject(
+          new Error(
+            `Bundled service-child relay proof failed (${code}/${signal}): ${JSON.stringify(output)}`,
+          ),
+        );
+      }
+    });
+  });
+}
+
+async function proveGitWorkerRuntime(home) {
+  const repository = path.join(home, "git-worker-proof");
+  fs.mkdirSync(repository);
+  for (const args of [
+    ["init", "-q"],
+    ["config", "user.email", "proof@openclaw.invalid"],
+    ["config", "user.name", "OpenClaw Proof"],
+  ]) {
+    execFileSync("git", args, { cwd: repository });
+  }
+  fs.writeFileSync(path.join(repository, "proof.txt"), "before\n");
+  execFileSync("git", ["add", "proof.txt"], { cwd: repository });
+  execFileSync("git", ["commit", "-qm", "proof"], { cwd: repository });
+  fs.writeFileSync(path.join(repository, "proof.txt"), "after\n");
+  const { WorkerTaskPool } = await import(
+    pathToFileURL(path.join(packageRoot, "dist/plugin-sdk/process-runtime.js")).href
+  );
+  const pool = new WorkerTaskPool({
+    workerUrl: pathToFileURL(path.join(packageRoot, "dist/infra/git-operation.worker.js")),
+    maxWorkers: 1,
+    idleTimeoutMs: 1_000,
+  });
+  try {
+    const reply = await pool.run(
+      { type: "checkout.diff", input: { cwd: repository, scope: "uncommitted" } },
+      {
+        timeoutMs: 30_000,
+        onRequest: async (request) => {
+          assert.equal(request?.type, "git.batch");
+          const replies = request.input.requests.map((operation) => {
+            assert(operation.type === "git.text" || operation.type === "git.buffer");
+            const result = spawnSync("git", ["-C", operation.input.cwd, ...operation.input.args], {
+              env: { ...process.env, ...operation.input.options.env },
+              input: operation.input.options.input,
+              encoding: null,
+            });
+            return {
+              ok: true,
+              value: {
+                stdout: new Uint8Array(result.stdout ?? Buffer.alloc(0)),
+                stderr: new Uint8Array(result.stderr ?? Buffer.alloc(0)),
+                windowsEncoding: null,
+                code: result.status,
+                signal: result.signal,
+                killed: false,
+                cleanup: "normal",
+                termination: result.signal ? "signal" : "exit",
+                timeoutMs: 30_000,
+              },
+            };
+          });
+          return { input: replies, timeoutMs: 30_000 };
+        },
+      },
+    );
+    assert(reply.ok, `Bundled Git worker failed: ${JSON.stringify(reply.error)}`);
+    assert(reply.value.files.some((file) => file.path === "proof.txt"));
+  } finally {
+    await pool.close();
+  }
+}
 
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-worker-proof-")));
 try {
@@ -146,6 +330,11 @@ export function createSqliteWorkerBackend(_input, { databasePath }) {
   } finally {
     await sqliteStore.close();
   }
+  // Configured stdio MCP servers and hosted-workspace diffs both reach helpers
+  // through runtime descriptors. Execute those relocated process boundaries so
+  // a present-but-incomplete closure fails before the app is signed.
+  await proveServiceChildRuntime(home);
+  await proveGitWorkerRuntime(home);
   for (const nativeFirst of [false, true]) {
     const appGatedComputer = !nativeFirst;
     const proofHome = path.join(home, nativeFirst ? "native-first" : "absent");
