@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   seedMacNodeWorkerProofState,
   readMacNodeWorkerProofRows,
@@ -96,6 +96,17 @@ try {
       }
     });
   });
+  // Browser screenshot normalization reaches this SDK helper, which launches a
+  // worker by its declared runtime path rather than through a module import.
+  const { resizeToJpeg } = await import(
+    pathToFileURL(path.join(packageRoot, "dist/plugin-sdk/media-runtime.js")).href
+  );
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const jpeg = await resizeToJpeg({ buffer: png, maxSide: 1, quality: 80 });
+  assert.deepEqual(jpeg.subarray(0, 2), Buffer.from([0xff, 0xd8]));
   for (const nativeFirst of [false, true]) {
     const proofHome = path.join(home, nativeFirst ? "native-first" : "absent");
     const stateDir = path.join(proofHome, "state");
@@ -160,7 +171,9 @@ try {
             !message.manifest?.commands?.includes("system.which") ||
             !message.manifest?.commands?.includes("browser.proxy") ||
             !message.manifest?.commands?.includes("browser.proxy.upload.v1") ||
-            !message.manifest?.commands?.includes("mcp.tools.call.v1")
+            !message.manifest?.commands?.includes("mcp.tools.call.v1") ||
+            !message.manifest?.commands?.includes("screen.snapshot") ||
+            !message.manifest?.commands?.includes("computer.act")
           ) {
             failure = new Error("Bundled worker returned an incompatible capability manifest");
             child.stdin.end('{"type":"stop"}\n');

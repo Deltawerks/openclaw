@@ -152,3 +152,10 @@ export const runtimeProcessEntrypoints = {
     distWorkerPath: "infra/bun-sqlite-library.js",
   },
 } as const;
+
+// The private macOS node host can invoke image processing through plugin SDK
+// media helpers. That worker is resolved by path rather than an import edge, so
+// package closure owners must retain it explicitly.
+export const macNodeWorkerRuntimeProcessEntrypoints = [
+  runtimeProcessEntrypoints.imageProcessor,
+] as const;

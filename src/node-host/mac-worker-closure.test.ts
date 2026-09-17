@@ -35,10 +35,15 @@ function fixture(): string {
   write(root, "dist/build-info.json", "{}");
   write(root, "dist/plugin-sdk/demo.js", 'export * from "../sdk-shared.mjs";');
   write(root, "dist/sdk-shared.mjs", "export const sdk = true;");
+  write(root, "dist/media/image-processor.worker.js", 'import "../image-worker-shared.mjs";');
+  write(root, "dist/image-worker-shared.mjs", "export const imageWorker = true;");
   for (const [id, registration] of [
     ["browser", "export default { nodeHostCommands: [] };"],
     ["file-transfer", "api.registerNodeHostCommand({});"],
-    ["logbook", "api.registerComputerUseProvider({});"],
+    [
+      "cua-computer",
+      'import { registerComputerUseProvider } from "openclaw/plugin-sdk/demo"; registerComputerUseProvider(api, {});',
+    ],
   ]) {
     write(root, `dist/extensions/${id}/package.json`, JSON.stringify({ name: id }));
     write(root, `dist/extensions/${id}/openclaw.plugin.json`, JSON.stringify({ id }));
@@ -67,7 +72,9 @@ describe("Mac node worker closure", () => {
     expect(plan.files).toContain("dist/sdk-shared.mjs");
     expect(plan.files).toContain("dist/extensions/browser/index.js");
     expect(plan.files).toContain("dist/extensions/file-transfer/index.js");
-    expect(plan.files).toContain("dist/extensions/logbook/index.js");
+    expect(plan.files).toContain("dist/extensions/cua-computer/index.js");
+    expect(plan.files).toContain("dist/media/image-processor.worker.js");
+    expect(plan.files).toContain("dist/image-worker-shared.mjs");
     expect(plan.files).not.toContain("dist/extensions/unrelated/index.js");
     expect(plan.files).toContain("skills/system/SKILL.md");
     expect(plan.files).not.toContain("dist/entry.js");

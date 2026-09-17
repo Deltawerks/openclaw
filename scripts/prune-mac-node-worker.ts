@@ -6,6 +6,7 @@ import { isBuiltin } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectPackageRootImports } from "../src/infra/package-root-imports.js";
+import { macNodeWorkerRuntimeProcessEntrypoints } from "../src/infra/runtime-process-entrypoints.js";
 import {
   collectPackageDistImportErrors,
   collectPackageDistImports,
@@ -17,7 +18,7 @@ const REQUIRED_OPTIONAL_DEPENDENCIES = ["sqlite-vec"] as const;
 const NODE_HOST_PLUGIN_MARKERS = [
   /\bnodeHostCommands\s*:/u,
   /\.registerNodeHostCommand\s*\(/u,
-  /\.registerComputerUseProvider\s*\(/u,
+  /\bregisterComputerUseProvider\s*\(/u,
 ] as const;
 
 type PackageManifest = {
@@ -105,6 +106,9 @@ function collectNodeHostPluginSeeds(packageRoot: string): string[] {
 
 function collectSeeds(packageRoot: string, manifest: PackageManifest): Set<string> {
   const seeds = new Set([WORKER_ENTRY, "dist/build-info.json"]);
+  for (const entrypoint of macNodeWorkerRuntimeProcessEntrypoints) {
+    seeds.add(`dist/${entrypoint.distWorkerPath}`);
+  }
   for (const relative of collectNodeHostPluginSeeds(packageRoot)) {
     seeds.add(relative);
   }
