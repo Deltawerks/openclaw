@@ -42,7 +42,7 @@ type CurrentPluginMetadataSnapshotOptions = {
   workspaceDir?: string;
 };
 
-type CurrentPluginMetadataSnapshotParams = {
+export type CurrentPluginMetadataSnapshotParams = {
   /** Stop before policy-state validation so async owners can prepare it before retrying. */
   allowSynchronousPolicyRead?: boolean;
   config?: OpenClawConfig;
@@ -377,6 +377,38 @@ function resolveCompatiblePluginMetadataSnapshot(
     return undefined;
   }
   return snapshot;
+}
+
+/** Reads Gateway-owned metadata from an operation cache only when its inputs still match. */
+export function getCompatibleProcessGatewayPluginMetadataSnapshot(
+  params: CurrentPluginMetadataSnapshotParams = {},
+): PluginMetadataSnapshot | undefined {
+  const {
+    snapshot,
+    owner,
+    configFingerprint,
+    envFingerprint,
+    defaultDiscoveryCompatible,
+    compatiblePolicyHashes,
+    compatibleConfigFingerprints,
+  } = getCurrentPluginMetadataSnapshotState();
+  if (owner !== "gateway") {
+    return undefined;
+  }
+  const compatible = resolveCompatiblePluginMetadataSnapshot(
+    {
+      // SAFETY: Gateway publication accepts only a complete typed metadata snapshot.
+      snapshot: snapshot as PluginMetadataSnapshot | undefined,
+      configFingerprint,
+      envFingerprint,
+      defaultDiscoveryCompatible,
+      compatiblePolicyHashes,
+      compatibleConfigFingerprints,
+      hasConfigIdentity: (config) => currentPluginMetadataConfigIdentityCache.has(config),
+    },
+    params,
+  );
+  return compatible === NEEDS_PREPARED_POLICY ? undefined : compatible;
 }
 
 export function isCurrentPluginMetadataSnapshotRuntimeGeneration(

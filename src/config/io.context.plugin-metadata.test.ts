@@ -3,8 +3,12 @@ import {
   recordPluginCandidateInstallOwner,
   resolvePluginCandidateInstallOwner,
 } from "../plugins/candidate-install-owner.js";
+import { setGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
+import { clearCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
+import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
 import type { InstalledPluginIndex } from "../plugins/installed-plugin-index-types.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
+import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { restorePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { buildDeclaredProviderOwnerIndex } from "../plugins/provider-owner-index.js";
@@ -20,8 +24,11 @@ vi.mock("../plugins/plugin-metadata-snapshot.js", async (importOriginal) => ({
 
 const { resolveReadOnlyChannelPluginsForConfig } = await import("../channels/plugins/read-only.js");
 const { createConfigIoContext } = await import("./io.context.js");
-const { resolveConfigWidePluginMetadataSnapshot, resolveConfigWidePluginManifestRegistry } =
-  await import("./io.plugin-metadata.js");
+const {
+  resolveConfigWidePluginMetadataSnapshot,
+  resolveConfigWidePluginMetadataSnapshotAsync,
+  resolveConfigWidePluginManifestRegistry,
+} = await import("./io.plugin-metadata.js");
 
 const agents = {
   ownership: "explicit" as const,
@@ -57,13 +64,14 @@ function workspaceSnapshot(
   workspaceDir: string,
   plugins: PluginManifestRecord[],
   disabledIds: readonly string[] = [],
+  policyHash = "test",
 ) {
   const index: InstalledPluginIndex = {
     version: 1,
     hostContractVersion: "test",
     compatRegistryVersion: "test",
     migrationVersion: 1,
-    policyHash: "test",
+    policyHash,
     generatedAtMs: 1,
     workspaceDir,
     installRecords: {},
@@ -82,7 +90,7 @@ function workspaceSnapshot(
   };
   return restorePluginMetadataSnapshot({
     workspaceDir,
-    policyHash: "test",
+    policyHash,
     index,
     registryIndex: index,
     registryDiagnostics: [],
@@ -130,6 +138,7 @@ function workspaceSnapshot(
 
 describe("config IO plugin metadata snapshots", () => {
   beforeEach(() => {
+    clearCurrentPluginMetadataSnapshot();
     clearPluginMetadataLifecycleCaches();
     mocks.resolvePluginMetadataSnapshot.mockReset();
   });
@@ -167,6 +176,52 @@ describe("config IO plugin metadata snapshots", () => {
       ).toEqual([pluginId]);
     }
     expect(mocks.resolvePluginMetadataSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses compatible Gateway metadata inside an isolated reload operation", async () => {
+    const prepared = manifestRecord({ id: "prepared", source: "/srv/ops/prepared" });
+    const config = {
+      agents: { entries: { ops: { workspace: "/srv/ops" } } },
+      logging: { level: "info" as const },
+      plugins: { entries: { prepared: { enabled: true } } },
+    };
+    const snapshot = workspaceSnapshot(
+      "/srv/ops",
+      [prepared],
+      [],
+      resolveInstalledPluginIndexPolicyHash(config, {}),
+    );
+    setGatewayPluginMetadataSnapshot(snapshot, { config, env: {} });
+    mocks.resolvePluginMetadataSnapshot.mockReturnValue(snapshot);
+
+    const loggingOnly = withPluginCache(createPluginCache(), () =>
+      resolveConfigWidePluginMetadataSnapshot({
+        config: { ...config, logging: { level: "debug" } },
+        env: {},
+      }),
+    );
+    expect(loggingOnly).toBe(snapshot);
+    expect(mocks.resolvePluginMetadataSnapshot).not.toHaveBeenCalled();
+
+    const asyncLoggingOnly = await withPluginCache(createPluginCache(), () =>
+      resolveConfigWidePluginMetadataSnapshotAsync({
+        config: { ...config, logging: { level: "warn" } },
+        env: {},
+      }),
+    );
+    expect(asyncLoggingOnly).toBe(snapshot);
+    expect(mocks.resolvePluginMetadataSnapshot).not.toHaveBeenCalled();
+
+    withPluginCache(createPluginCache(), () =>
+      resolveConfigWidePluginMetadataSnapshot({
+        config: {
+          ...config,
+          plugins: { ...config.plugins, load: { paths: ["/srv/new-plugin"] } },
+        },
+        env: {},
+      }),
+    );
+    expect(mocks.resolvePluginMetadataSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it("feeds merged workspace plugins to snapshot-backed read-only discovery", () => {
