@@ -19,7 +19,11 @@ import {
   agentSessionSetContextReplacementHook,
 } from "../sessions/agent-session-compaction.js";
 import type { SessionManager } from "../sessions/session-manager.js";
-import { emptyPluginMetadataSnapshot } from "./compact.hooks.metadata.test-support.js";
+import {
+  emptyPluginMetadataSnapshot,
+  getCurrentPluginMetadataSnapshotMock,
+  mockCompactPluginMetadata,
+} from "./compact.hooks.metadata.test-support.js";
 import { createMockToolDefinitions } from "./compact.hooks.tools.test-support.js";
 import type { resolveModelAsync } from "./model.js";
 import type { attemptServerEndpointCompaction } from "./server-endpoint-compaction.js";
@@ -438,9 +442,6 @@ export const acquireAgentRunPreparedModelRuntimeMock = vi.fn(
     [Symbol.asyncDispose]: vi.fn(async () => {}),
   }),
 );
-const getCurrentPluginMetadataSnapshotMock: Mock<
-  typeof import("../../plugins/current-plugin-metadata-snapshot.js").getCurrentPluginMetadataSnapshot
-> = vi.fn(() => emptyPluginMetadataSnapshot);
 
 export function resetCompactSessionStateMocks(): void {
   sanitizeSessionHistoryMock.mockReset();
@@ -682,13 +683,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     runGlobalGatewayStopSafely: vi.fn(async () => undefined),
   }));
 
-  vi.doMock("../../plugins/current-plugin-metadata-snapshot.js", () => ({
-    getCurrentPluginMetadataSnapshot: getCurrentPluginMetadataSnapshotMock,
-    isCurrentPluginMetadataSnapshotRuntimeGeneration: () => false,
-    resolvePluginMetadataControlPlaneFingerprint: vi.fn(() => "test-plugin-fingerprint"),
-    withPluginMetadataSnapshotScope: (_snapshot: unknown, run: () => unknown) => run(),
-    runOutsidePluginMetadataSnapshotScope: <T>(run: () => T): T => run(),
-  }));
+  mockCompactPluginMetadata();
 
   vi.doMock("../../plugins/command-registry-state.js", () => ({
     clearPluginCommands: vi.fn(),

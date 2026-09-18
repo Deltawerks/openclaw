@@ -1,3 +1,4 @@
+import { vi, type Mock } from "vitest";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 
 const emptyPluginIndex: PluginMetadataSnapshot["index"] = {
@@ -42,3 +43,18 @@ export const emptyPluginMetadataSnapshot: PluginMetadataSnapshot = {
     manifestPluginCount: 0,
   },
 };
+
+export const getCurrentPluginMetadataSnapshotMock: Mock<
+  typeof import("../../plugins/current-plugin-metadata-snapshot.js").getCurrentPluginMetadataSnapshot
+> = vi.fn(() => emptyPluginMetadataSnapshot);
+
+/** Register metadata mocks after the compaction harness resets modules. */
+export function mockCompactPluginMetadata(): void {
+  vi.doMock("../../plugins/current-plugin-metadata-snapshot.js", () => ({
+    getCurrentPluginMetadataSnapshot: getCurrentPluginMetadataSnapshotMock,
+    isCurrentPluginMetadataSnapshotRuntimeGeneration: () => false,
+    resolvePluginMetadataControlPlaneFingerprint: vi.fn(() => "test-plugin-fingerprint"),
+    withPluginMetadataSnapshotScope: (_snapshot: unknown, run: () => unknown) => run(),
+    runOutsidePluginMetadataSnapshotScope: <T>(run: () => T): T => run(),
+  }));
+}
