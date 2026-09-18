@@ -35,12 +35,12 @@ if (process.execArgv.includes("--trace-exit") && require("node:worker_threads").
     }
   };
   process.emit = function (event, ...args) {
-    if (this !== process || event !== "exit") {
-      return Reflect.apply(emit, this, [event, ...args]);
+    if (event !== "exit") {
+      return emit(event, ...args);
     }
     writeExitBoundary("exit-listeners-enter", args[0]);
     try {
-      const result = Reflect.apply(emit, this, [event, ...args]);
+      const result = emit(event, ...args);
       writeExitBoundary("exit-listeners-return", args[0]);
       return result;
     } catch (error) {
