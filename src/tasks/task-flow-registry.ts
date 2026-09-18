@@ -598,14 +598,15 @@ export function syncFlowFromTaskResult(task: TaskFlowSyncInput): TaskFlowSyncRes
   if (!flowId) {
     return { ok: true, flow: null };
   }
-  const flow = getTaskFlowById(flowId);
-  if (!flow) {
-    return { ok: true, flow: null };
-  }
-  if (flow.syncMode !== "task_mirrored") {
-    return { ok: true, flow };
-  }
+  ensureTaskFlowRegistryReady({ refreshProjection: false });
   const cached = flows.get(flowId);
+  if (
+    !projectionDirty &&
+    !dirtyFlowIds.has(flowId) &&
+    (!cached || cached.syncMode !== "task_mirrored")
+  ) {
+    return { ok: true, flow: cached ? cloneFlowRecord(cached) : null };
+  }
   try {
     const result = getTaskFlowRegistryStore().syncMirroredTask(task, (observed) =>
       prepareFlowRecordPublication(
@@ -618,8 +619,12 @@ export function syncFlowFromTaskResult(task: TaskFlowSyncInput): TaskFlowSyncRes
     );
     return { ok: true, flow: result.flow ? cloneFlowRecord(result.flow) : null };
   } catch (error) {
+    const current = getTaskFlowById(flowId);
+    if (!current || current.syncMode !== "task_mirrored") {
+      return { ok: true, flow: current ?? null };
+    }
     log.warn("Failed to persist task-mirrored flow", { flowId, taskId: task.taskId, error });
-    return { ok: false, reason: "persist_failed", current: flow };
+    return { ok: false, reason: "persist_failed", current };
   }
 }
 

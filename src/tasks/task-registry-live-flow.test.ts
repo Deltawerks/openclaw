@@ -11,7 +11,11 @@ import {
   createInMemoryTaskFlowRegistryStore,
   createInMemoryTaskRegistryStore,
 } from "../test-utils/task-registry-store.js";
-import { getTaskFlowById } from "./task-flow-registry.js";
+import {
+  getTaskFlowById,
+  runTaskFlowRegistryWorkerMutation,
+  syncFlowFromTaskResult,
+} from "./task-flow-registry.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import { publishTaskRecordAfterAtomicStore } from "./task-registry-publication.js";
 import { getTaskById } from "./task-registry-query.js";
@@ -77,8 +81,10 @@ afterEach(async () => {
   await state.cleanup();
 });
 
-async function fixture(records = [task]) {
-  const flows = createInMemoryTaskFlowRegistryStore({ flows: new Map([[flow.flowId, flow]]) });
+async function fixture(records = [task], initialFlows: TaskFlowRecord[] = [flow]) {
+  const flows = createInMemoryTaskFlowRegistryStore({
+    flows: new Map(initialFlows.map((record) => [record.flowId, record])),
+  });
   const store = createInMemoryTaskRegistryStore(
     { tasks: new Map(records.map((record) => [record.taskId, record])), deliveryStates: new Map() },
     flows,
@@ -87,7 +93,9 @@ async function fixture(records = [task]) {
   configureTaskRegistryRuntime({ store });
   const context = captureOpenClawStateWorkerContext();
   await ensureTaskRegistryReadyAsync(context);
-  expect(getTaskFlowById(flow.flowId)?.revision).toBe(4);
+  expect(getTaskFlowById(flow.flowId)?.revision).toBe(
+    initialFlows.find((record) => record.flowId === flow.flowId)?.revision,
+  );
   return { flows, store, context };
 }
 
@@ -333,6 +341,177 @@ it.each(["success", "failure"] as const)(
     }
   },
 );
+
+it.each(["missing", "new row", "managed", "mirrored"] as const)(
+  "synchronizes a dirty target against its canonical %s row",
+  async (boundary) => {
+    const cached: TaskFlowRecord =
+      boundary === "mirrored"
+        ? { ...flow, syncMode: "managed", controllerId: "tests/cached-flow" }
+        : flow;
+    const current: TaskFlowRecord = {
+      ...flow,
+      revision: 9,
+      goal: "Fresh canonical flow",
+      ...(boundary === "managed"
+        ? {
+            syncMode: "managed" as const,
+            controllerId: "tests/current-flow",
+            currentStep: "Manual step",
+          }
+        : {}),
+    };
+    const { flows, context } = await fixture([task], boundary === "new row" ? [] : [cached]);
+    const release = createDeferred();
+    const pending = runTaskFlowRegistryWorkerMutation(
+      { flowId: flow.flowId, admission: context.admission },
+      async () => {
+        if (boundary === "missing") {
+          flows.deleteFlow(flow.flowId);
+        } else {
+          flows.upsertFlow(current);
+        }
+        await release.promise;
+      },
+      () => flows.readFlowAsync(context, flow.flowId),
+    );
+    const write = vi.spyOn(flows, "upsertFlow");
+    try {
+      const result = syncFlowFromTaskResult(task);
+      if (boundary === "missing") {
+        expect(result).toEqual({ ok: true, flow: null });
+        expect(flows.loadSnapshot().flows.has(flow.flowId)).toBe(false);
+        expect(write).not.toHaveBeenCalled();
+      } else if (boundary === "managed") {
+        expect(result).toMatchObject({ ok: true, flow: current });
+        expect(flows.loadSnapshot().flows.get(flow.flowId)).toEqual(current);
+        expect(write).not.toHaveBeenCalled();
+      } else {
+        expect(result).toMatchObject({
+          ok: true,
+          flow: { revision: 10, status: "blocked", blockedTaskId: task.taskId, goal: task.task },
+        });
+        expect(flows.loadSnapshot().flows.get(flow.flowId)).toMatchObject({
+          revision: 10,
+          status: "blocked",
+          blockedTaskId: task.taskId,
+          goal: task.task,
+        });
+      }
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  },
+);
+
+it.each(["missing", "managed", "mirrored", "read failure"] as const)(
+  "preserves canonical %s classification when dirty synchronization cannot enter",
+  async (boundary) => {
+    const { flows, context } = await fixture();
+    const current: TaskFlowRecord = {
+      ...flow,
+      revision: 9,
+      goal: "Fresh failure metadata",
+      ...(boundary === "managed"
+        ? {
+            syncMode: "managed" as const,
+            controllerId: "tests/current-flow",
+            currentStep: "Manual step",
+          }
+        : {}),
+    };
+    const release = createDeferred();
+    const pending = runTaskFlowRegistryWorkerMutation(
+      { flowId: flow.flowId, admission: context.admission },
+      async () => {
+        if (boundary === "missing") {
+          flows.deleteFlow(flow.flowId);
+        } else {
+          flows.upsertFlow(current);
+        }
+        await release.promise;
+      },
+      () => flows.readFlowAsync(context, flow.flowId),
+    );
+    vi.spyOn(flows, "syncMirroredTask").mockImplementationOnce(() => {
+      throw new Error("Controlled synchronous store refusal");
+    });
+    const readError = new Error("Controlled canonical classifier read failure");
+    if (boundary === "read failure") {
+      vi.spyOn(flows, "loadSnapshot").mockImplementationOnce(() => {
+        throw readError;
+      });
+    }
+    const write = vi.spyOn(flows, "upsertFlow");
+    try {
+      if (boundary === "read failure") {
+        expect(() => syncFlowFromTaskResult(task)).toThrow(readError);
+      } else {
+        const result = syncFlowFromTaskResult(task);
+        if (boundary === "missing") {
+          expect(result).toEqual({ ok: true, flow: null });
+        } else if (boundary === "managed") {
+          expect(result).toMatchObject({ ok: true, flow: current });
+        } else {
+          expect(result).toMatchObject({ ok: false, reason: "persist_failed", current });
+        }
+      }
+      expect(write).not.toHaveBeenCalled();
+      expect(flows.loadSnapshot().flows.get(flow.flowId)).toEqual(
+        boundary === "missing" ? undefined : current,
+      );
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  },
+);
+
+it.each(["missing", "managed"] as const)(
+  "does not admit synchronization for a clean %s target",
+  async (boundary) => {
+    const managed: TaskFlowRecord = {
+      ...flow,
+      syncMode: "managed",
+      controllerId: "tests/clean-flow",
+    };
+    const { flows } = await fixture([task], boundary === "missing" ? [] : [managed]);
+    const sync = vi.spyOn(flows, "syncMirroredTask");
+    const result = syncFlowFromTaskResult(task);
+    expect(sync).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true, flow: boundary === "missing" ? null : managed });
+  },
+);
+
+it("keeps an unrelated pending flow dirty after synchronizing the target", async () => {
+  const unrelated: TaskFlowRecord = {
+    ...flow,
+    flowId: "unrelated-pending-flow",
+    syncMode: "managed",
+    controllerId: "tests/unrelated-flow",
+    goal: "Original unrelated flow",
+  };
+  const { flows, context } = await fixture([task], [flow, unrelated]);
+  const release = createDeferred();
+  const pending = runTaskFlowRegistryWorkerMutation(
+    { flowId: unrelated.flowId, admission: context.admission },
+    () => release.promise,
+    () => flows.readFlowAsync(context, unrelated.flowId),
+  );
+  try {
+    expect(syncFlowFromTaskResult(task)).toMatchObject({
+      ok: true,
+      flow: { revision: 5, status: "blocked" },
+    });
+    const next = { ...unrelated, revision: 8, goal: "Changed after target synchronization" };
+    flows.upsertFlow(next);
+    expect(getTaskFlowById(unrelated.flowId)).toMatchObject(next);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
 
 it("repairs a terminal no-op from the flow revision current at store entry", async () => {
   const { store, flows } = await fixture();
