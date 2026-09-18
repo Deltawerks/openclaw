@@ -66,7 +66,7 @@ type ToolDelivery = Pick<
   | "toolTrustedLocalMedia"
 >;
 
-export type AgentsApiToolExecutionResult = (
+type AgentsApiToolExecutionResult = (
   | { success: true; output: string }
   | { success: false; error: string }
 ) & { sourceReplyDelivered?: true; terminate?: true };

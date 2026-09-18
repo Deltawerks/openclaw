@@ -310,15 +310,7 @@ export class AgentsApiClient {
       }
       return Buffer.concat(chunks, bytes);
     } finally {
-      try {
-        await reader.cancel();
-      } catch (error) {
-        if (!signal.aborted) {
-          throw error;
-        }
-      } finally {
-        reader.releaseLock();
-      }
+      await closeResponseReader(reader, signal);
     }
   }
 
@@ -513,14 +505,21 @@ async function* readEvents(
       }
     }
   } finally {
-    try {
-      await reader.cancel();
-    } catch (error) {
-      if (!signal.aborted) {
-        throw error;
-      }
-    } finally {
-      reader.releaseLock();
+    await closeResponseReader(reader, signal);
+  }
+}
+
+async function closeResponseReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch (error) {
+    if (!signal.aborted) {
+      throw error;
     }
+  } finally {
+    reader.releaseLock();
   }
 }

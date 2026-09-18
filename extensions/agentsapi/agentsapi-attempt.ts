@@ -4,7 +4,6 @@ import {
   agentHarnessAttemptTerminal,
   clearActiveEmbeddedRun,
   embeddedAgentLog,
-  emitAgentEvent,
   setActiveEmbeddedRun,
   type AgentHarnessAttemptParamsV2,
   type AgentHarnessAttemptResult,
@@ -12,10 +11,17 @@ import {
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { calculateCost, type AssistantMessage } from "openclaw/plugin-sdk/llm";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
-import { appendSessionTranscriptMessageByIdentityStrict } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { AgentsApiClient, type AgentsApiEvent } from "./agentsapi-client.js";
 import { collectOutputs, prepareInputs, uploadInputs } from "./agentsapi-files.js";
 import { buildAgentsApiToolSurface } from "./agentsapi-tools.js";
+import {
+  commitAgentsApiAssistant,
+  createAgentsApiSnapshotEmitter,
+  createAgentsApiUsage,
+  emitAgentsApiEvent,
+  selectAgentsApiReplyText,
+  updateAgentsApiUsage,
+} from "./agentsapi-reply.js";
 
 type SessionBinding = { sessionId: string; authFingerprint: string };
 
@@ -87,13 +93,13 @@ export async function runAgentsApiAttempt(
     if (!remoteSessionId || stopped || sessionSettled || rootTurn) {
       throw new Error("Agents API turn is stopped");
     }
-    const sessionId = remoteSessionId;
+    const submittedSessionId = remoteSessionId;
     submission = submission.then(() => {
       if (sessionSettled || rootTurn) {
         throw new Error("Agents API turn settled before steering was submitted");
       }
       admittedMessageCount++;
-      return client.message(sessionId, text, AbortSignal.timeout(60_000));
+      return client.message(submittedSessionId, text, AbortSignal.timeout(60_000));
     });
     void submission.catch(() => {});
     return submission;
@@ -105,31 +111,8 @@ export async function runAgentsApiAttempt(
   let turnFailure: string | undefined;
   const texts = new Map<string, Map<number, string>>();
   const assistantPhases = new Map<string, string | null | undefined>();
-  let visibleAssistantItemId: string | undefined;
-  const emitAssistantSnapshot = (itemId: string, text: string, delta = "") => {
-    const replace = visibleAssistantItemId !== itemId;
-    visibleAssistantItemId = itemId;
-    // Steering can supersede a completed native turn before the session settles.
-    // Hold append-only consumers until authoritative items select the final reply.
-    emitAgentsApiEvent(params, {
-      stream: "assistant",
-      data: {
-        itemId,
-        text,
-        delta: replace ? "" : delta,
-        replaceable: true,
-        ...(replace ? { replace: true } : {}),
-      },
-    });
-  };
-  let usage: AssistantMessage["usage"] = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
+  const emitAssistantSnapshot = createAgentsApiSnapshotEmitter(params);
+  let usage = createAgentsApiUsage();
   const stop = (requested = true) => {
     if (stopped) {
       return;
@@ -141,7 +124,7 @@ export async function runAgentsApiAttempt(
     }
     controller.abort(new Error("Agents API turn interrupted"));
     if (remoteSessionId && submitted) {
-      const sessionId = remoteSessionId;
+      const cancelledSessionId = remoteSessionId;
       const admittedSubmission = submission;
       cancellation = (async () => {
         // Do not abort an admitted POST: cancel only after its response settles.
@@ -152,9 +135,11 @@ export async function runAgentsApiAttempt(
         } catch (error) {
           submissionError = error;
         }
-        await cleanupClient.cancel(sessionId, AbortSignal.timeout(30_000));
+        await cleanupClient.cancel(cancelledSessionId, AbortSignal.timeout(30_000));
         if (submissionError) {
-          throw submissionError;
+          throw submissionError instanceof Error
+            ? submissionError
+            : new Error(String(submissionError), { cause: submissionError });
         }
       })();
       // The settlement barrier below observes errors; attach immediately to prevent unhandled rejection.
@@ -311,9 +296,8 @@ export async function runAgentsApiAttempt(
         const result = await surface.execute(call);
         assertCurrent();
         controller.signal.throwIfAborted();
-        const sessionId = nativeSessionId;
         submission = submission.then(() =>
-          client.toolResult(sessionId, call, result, AbortSignal.timeout(60_000)),
+          client.toolResult(nativeSessionId, call, result, AbortSignal.timeout(60_000)),
         );
         void submission.catch(() => {});
         await submission;
@@ -541,7 +525,7 @@ export async function runAgentsApiAttempt(
             emitAssistantSnapshot(
               `agentsapi:${remoteSessionId}:${event.item.id}`,
               [...parts.entries()]
-                .sort(([left], [right]) => left - right)
+                .toSorted(([left], [right]) => left - right)
                 .map(([, text]) => text)
                 .join(""),
             );
@@ -570,7 +554,7 @@ export async function runAgentsApiAttempt(
             emitAssistantSnapshot(
               `agentsapi:${remoteSessionId}:${event.item_id}`,
               [...parts.entries()]
-                .sort(([left], [right]) => left - right)
+                .toSorted(([left], [right]) => left - right)
                 .map(([, text]) => text)
                 .join(""),
               event.delta ?? "",
@@ -612,23 +596,7 @@ export async function runAgentsApiAttempt(
       stage = "read_items";
       const items = await client.items(remoteSessionId, rootTurn.id, controller.signal);
       assertCurrent();
-      const completedMessages = items.filter(
-        (item) =>
-          item.type === "message" && item.role === "assistant" && item.status === "completed",
-      );
-      const finalItems = completedMessages.filter((item) => item.phase === "final_answer");
-      const visibleItems = finalItems.length
-        ? finalItems
-        : completedMessages.filter((item) => item.phase !== "commentary");
-      const text = visibleItems
-        .map(
-          (item) =>
-            item.content
-              ?.filter((part) => part.type === "output_text")
-              .map((part) => part.text ?? "")
-              .join("") ?? "",
-        )
-        .join("\n");
+      const text = selectAgentsApiReplyText(items);
       stage = "collect_outputs";
       outputMedia = await collectOutputs(
         client,
@@ -637,45 +605,22 @@ export async function runAgentsApiAttempt(
         assertCurrent,
         controller.signal,
       );
-      const nativeUsage = rootTurn.usage;
-      if (nativeUsage) {
-        usage = {
-          ...usage,
-          input: nativeUsage.input_tokens - (nativeUsage.input_tokens_details?.cached_tokens ?? 0),
-          output: nativeUsage.output_tokens,
-          cacheRead: nativeUsage.input_tokens_details?.cached_tokens ?? 0,
-          totalTokens: nativeUsage.input_tokens + nativeUsage.output_tokens,
-        };
+      if (rootTurn.usage) {
+        usage = updateAgentsApiUsage(usage, rootTurn.usage);
         params.hostCapabilities.reportOutputTokens?.(usage.output);
         calculateCost(params.model, usage);
       }
       if (text) {
         stage = "commit_reply";
-        const assistant: AssistantMessage & { idempotencyKey: string } = {
-          role: "assistant",
-          content: [{ type: "text", text }],
-          api: "openai-responses",
-          provider: "openai",
-          model: params.model.id,
+        lastAssistant = await commitAgentsApiAssistant(
+          params,
+          sessionTarget,
+          remoteSessionId,
+          rootTurn.id,
+          text,
           usage,
-          stopReason: "stop",
-          timestamp: Date.now(),
-          idempotencyKey: `agentsapi:${remoteSessionId}:${rootTurn.id}`,
-        };
-        const append = await appendSessionTranscriptMessageByIdentityStrict({
-          ...sessionTarget,
-          config: params.config,
-          message: assistant,
-          prepareMessageAfterIdempotencyCheck: (message) => {
-            assertCurrent();
-            return message;
-          },
-        });
-        assertCurrent();
-        if (append.kind !== "result") {
-          throw new Error("Agents API assistant transcript append was refused");
-        }
-        lastAssistant = append.result.message;
+          assertCurrent,
+        );
       }
       if (text) {
         await params.onAssistantMessageStart?.();
@@ -780,20 +725,3 @@ export async function runAgentsApiAttempt(
   };
 }
 
-function emitAgentsApiEvent(
-  params: AgentHarnessAttemptParamsV2,
-  event: Parameters<NonNullable<AgentHarnessAttemptParamsV2["onAgentEvent"]>>[0],
-): void {
-  try {
-    emitAgentEvent({ runId: params.runId, sessionKey: params.sessionKey, ...event });
-  } catch (error) {
-    embeddedAgentLog.debug("Agents API global event handler failed", { error });
-  }
-  try {
-    void Promise.resolve(params.onAgentEvent?.(event)).catch((error: unknown) => {
-      embeddedAgentLog.debug("Agents API event handler rejected", { error });
-    });
-  } catch (error) {
-    embeddedAgentLog.debug("Agents API event handler failed", { error });
-  }
-}
