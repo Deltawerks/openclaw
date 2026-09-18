@@ -7,6 +7,7 @@ import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { clearPluginMetadataLifecycleCaches } from "../../plugins/plugin-metadata-lifecycle.js";
 import { expectNoReaddirSyncDuring } from "../../test-utils/fs-scan-assertions.js";
+import { mockChannelPluginModuleLoader } from "./bundled.shape-guard.test-helpers.js";
 
 vi.mock("../../plugins/bundled-dir.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../plugins/bundled-dir.js")>();
@@ -1213,16 +1214,7 @@ module.exports = {
         resolveBundledChannelGeneratedPath: () => modulePath,
       };
     });
-    vi.doMock("./module-loader.js", async (importOriginal) => {
-      const actual = await importOriginal<typeof import("./module-loader.js")>();
-      const { createRequire } = await import("node:module");
-      const requireModule = createRequire(import.meta.url);
-      return {
-        ...actual,
-        loadChannelPluginModule: ({ modulePath: candidatePath }: { modulePath: string }) =>
-          requireModule(candidatePath),
-      };
-    });
+    mockChannelPluginModuleLoader();
     vi.doMock("../../plugins/channel-catalog-registry.js", () => ({
       listChannelCatalogEntries: () => [],
     }));
