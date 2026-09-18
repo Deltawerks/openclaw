@@ -73,7 +73,7 @@ describe("Gateway plugin replacement channel ownership", () => {
   });
 
   it(
-    "hot-applies first channel setup and pending installs while retaining a sibling channel",
+    "hot-applies pending installs without restarting a sibling whose package metadata keys were reordered",
     { timeout: 120_000 },
     async () => {
       const bundledRoot = tempDirs.make("openclaw-cold-channel-");
@@ -87,7 +87,7 @@ describe("Gateway plugin replacement channel ownership", () => {
             name: id,
             type: "commonjs",
             main: "index.js",
-            openclaw: { extensions: ["./index.js"] },
+            openclaw: { extensions: ["./index.js"], runtimeExtensions: ["./index.js"] },
             peerDependencies: { openclaw: ">=2026.1.1" },
           }),
         );
@@ -213,6 +213,17 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
         expect((await probe("cold-chat")).instance).not.toBe(cold.instance);
         expect(await probe("sibling-chat")).toEqual(sibling);
       }
+      // Installing another plugin can rebuild metadata through a different producer.
+      // Reordering an unchanged sibling's package keys must not stop its live account.
+      const siblingPackagePath = path.join(bundledRoot, "sibling-chat-owner", "package.json");
+      const siblingPackage = JSON.parse(await fs.readFile(siblingPackagePath, "utf8"));
+      await fs.writeFile(
+        siblingPackagePath,
+        JSON.stringify({
+          ...siblingPackage,
+          openclaw: { runtimeExtensions: ["./index.js"], extensions: ["./index.js"] },
+        }),
+      );
       const persisted = JSON.parse(await fs.readFile(configPath, "utf8"));
       const committed = await commitConfigWithPendingPluginInstalls({
         nextConfig: {
@@ -238,6 +249,11 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
         .poll(async () => (await probe("cold-chat")).captured?.label)
         .toBe("installed setup");
       expect(await probe("cold-chat")).toMatchObject({ starts: 1, stops: 0, pid: cold.pid });
+      expect(await probe("sibling-chat")).toEqual(sibling);
+      const explicit = await rpcReq(connected, "plugins.reload", {
+        plugins: [{ pluginId: "cold-chat-owner" }],
+      });
+      expect(explicit.ok, explicit.error?.message).toBe(true);
       expect(await probe("sibling-chat")).toEqual(sibling);
       expect(connected.readyState).toBe(connected.OPEN);
       expect(hotReloadRecovery).not.toHaveBeenCalled();
