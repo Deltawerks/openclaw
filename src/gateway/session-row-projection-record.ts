@@ -45,10 +45,44 @@ export const identity = (row: RowTarget) =>
   `${row.agentId}\0${row.storeTarget.storePath}\0${row.key}`;
 export const physical = (storePath: string, key: string) => `physical:${storePath}\0${key}`;
 const logical = (agentId: string, key: string) => `logical:${agentId}\0${key}`;
-export const references = (row: RowTarget) => [
+const references = (row: RowTarget) => [
   logical(row.agentId, row.key),
   physical(row.storeTarget.storePath, row.key),
 ];
+export function dependents(row: Row, byParent: ReadonlyMap<string, Set<string>>) {
+  return new Set(references(row).flatMap((ref) => Array.from(byParent.get(ref) ?? [])));
+}
+export function markRelated(
+  row: Row,
+  indexes: {
+    byParent: ReadonlyMap<string, Set<string>>;
+    byKey: ReadonlyMap<string, Set<string>>;
+  },
+  dirty: Set<string>,
+) {
+  for (const id of dependents(row, indexes.byParent)) {
+    dirty.add(id);
+  }
+  for (const parent of row.parents) {
+    for (const id of indexes.byKey.get(parent) ?? []) {
+      dirty.add(id);
+    }
+  }
+}
+
+/** Mark resident logical owners without changing stored entries, relatives, or backfill. */
+export function markAutomation(
+  rows: Iterable<Row>,
+  agentId: string | undefined,
+  dirty: Set<string>,
+) {
+  for (const row of rows) {
+    if (!agentId || row.agentId === agentId) {
+      dirty.add(identity(row));
+    }
+  }
+}
+
 export function create(target: RowTarget, entry?: SessionEntry): Row {
   return {
     ...target,
