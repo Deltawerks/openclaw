@@ -8,7 +8,6 @@ import { encodeSqliteAuthTransferFrame } from "./sqlite-readonly-auth-transfer.j
 import { releaseSnapshotTempDirectory } from "./sqlite-readonly-location-cleanup.js";
 import {
   createOnlineReadOnlyBackup,
-  inspectSqliteSchemaHeaderInProcess,
   prepareSqliteReadOnlyLocationInProcess,
   prepareSqliteReadOnlyLocationSyncInProcess,
 } from "./sqlite-readonly-location.js";
@@ -38,12 +37,10 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
   const mode = args[0];
   const pathname = args[1];
   const stagingRoot = args[2];
-  const agentSchemaVersionForOwnership = args[3] === undefined ? undefined : Number(args[3]);
   if (
     (mode !== "sync" &&
       mode !== "async" &&
       mode !== "consolidated" &&
-      mode !== "schema-header" &&
       mode !== "reclaim" &&
       !isSqliteSnapshotStagingMode(mode)) ||
     !pathname
@@ -107,21 +104,6 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
         process.stdin.destroy();
       }
       return { ok: true, warnings };
-    }
-    if (mode === "schema-header") {
-      if (
-        agentSchemaVersionForOwnership !== undefined &&
-        (!Number.isSafeInteger(agentSchemaVersionForOwnership) ||
-          agentSchemaVersionForOwnership < 0)
-      ) {
-        throw new Error("SQLite schema header requires a valid supported agent schema version");
-      }
-      const header = await inspectSqliteSchemaHeaderInProcess(
-        pathname,
-        stagingRoot,
-        agentSchemaVersionForOwnership,
-      );
-      return { ok: true, header };
     }
     if (mode === "consolidated") {
       if (!stagingRoot || path.dirname(path.resolve(pathname)) !== path.resolve(stagingRoot)) {
