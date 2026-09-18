@@ -6,6 +6,7 @@ import { Session as InspectorSession } from "node:inspector/promises";
 import { expect, it } from "vitest";
 import type { SessionsCatalogListParams } from "../../../packages/gateway-protocol/src/index.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { retainSessionListForegroundWork } from "../session-projection-work.js";
 import { createComposedCatalogFixture } from "./session-catalog.performance.test-support.js";
 
 function measureHostCpuReference(): number {
@@ -61,6 +62,8 @@ it("measures 100 composed catalog lists against real session and plugin stores",
     { layout: "state-only", prefix: "composed-catalog-" },
     async (state) => {
       const counters = createCatalogIoCounters();
+      // Match request ownership so optional transcript backfill stays outside the measurement.
+      const releaseForegroundWork = retainSessionListForegroundWork();
       let fixture: Awaited<ReturnType<typeof createComposedCatalogFixture>> | undefined;
       try {
         counters.begin();
@@ -213,7 +216,7 @@ it("measures 100 composed catalog lists against real session and plugin stores",
         expect(io.pluginStateWorkerReadOperations).toBe(0);
         expect(io.sessionEntryReads).toBe(0);
         expect(io.sessionPayloadReads).toBe(0);
-        // Each adopted binding needs six reads for freshness, schema admission, and authority.
+        // Revalidate all three adopted bindings without adding work to the resident list path.
         for (const work of workPerList) {
           expect(work).toEqual({
             sqliteReadCalls: 18,
@@ -230,6 +233,7 @@ it("measures 100 composed catalog lists against real session and plugin stores",
         try {
           await fixture?.close();
         } finally {
+          releaseForegroundWork();
           counters.close();
         }
       }

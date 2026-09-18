@@ -1,6 +1,7 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
 import { serveWorkerTasks } from "../infra/worker-task-pool.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
@@ -21,6 +22,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof input.location === "string" &&
     typeof input.checkFreshAdmission === "boolean" &&
     (input.expectedIdentity === undefined || typeof input.expectedIdentity === "string") &&
+    (input.context.existingSchemaPath === undefined ||
+      typeof input.context.existingSchemaPath === "string") &&
     isRecord(environment) &&
     typeof environment.OPENCLAW_STATE_DIR === "string" &&
     (environment.OPENCLAW_SUPERVISOR_MODE === undefined ||
@@ -40,35 +43,42 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
     if (!isReadRequest(input)) {
       throw new Error("Fleet registry reader requires a captured state location and read command");
     }
-    return withStateDatabaseCoordinatorRuntimeDirectory(input.context.coordinatorRuntime, () => {
-      if (input.checkFreshAdmission) {
-        openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
+    return runWithSqliteWorkerStateContext(input.context, () =>
+      withStateDatabaseCoordinatorRuntimeDirectory(input.context.coordinatorRuntime, () => {
+        if (input.checkFreshAdmission) {
+          openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
+            input.databasePath,
+            input.context.environment,
+          );
+        }
+        const { command } = input;
+        if (command.type === "admit") {
+          return { ok: true, type: "admit" };
+        }
+        return withOpenClawStateReadOnlyLocation(
+          ({ db }) => {
+            sourceAdmitted = true;
+            return command.type === "fleet.list"
+              ? {
+                  ok: true,
+                  type: "fleet.list",
+                  sourceAdmitted,
+                  cells: listFleetCellsInDatabase(db),
+                }
+              : {
+                  ok: true,
+                  type: "fleet.get",
+                  sourceAdmitted,
+                  cell: getFleetCellInDatabase(db, command.tenantId),
+                };
+          },
           input.databasePath,
-          input.context.environment,
+          input.location,
+          undefined,
+          input.expectedIdentity,
         );
-      }
-      const { command } = input;
-      if (command.type === "admit") {
-        return { ok: true, type: "admit" };
-      }
-      return withOpenClawStateReadOnlyLocation(
-        ({ db }) => {
-          sourceAdmitted = true;
-          return command.type === "fleet.list"
-            ? { ok: true, type: "fleet.list", sourceAdmitted, cells: listFleetCellsInDatabase(db) }
-            : {
-                ok: true,
-                type: "fleet.get",
-                sourceAdmitted,
-                cell: getFleetCellInDatabase(db, command.tenantId),
-              };
-        },
-        input.databasePath,
-        input.location,
-        undefined,
-        input.expectedIdentity,
-      );
-    });
+      }),
+    );
   } catch (value) {
     const error = toStringifiedError(value);
     return {
