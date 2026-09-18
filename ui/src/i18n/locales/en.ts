@@ -2387,6 +2387,7 @@ export const en: TranslationMap & {
   cloudWorkersPage: {},
   portalsPage: {},
   modelSetup: {
+    discovery: {},
     missingAuth: "No provider credential is configured for this model. Set it up in Model Setup.",
     commandHint: "Try /models or /help.",
     heading: "Connect a verified AI model",
@@ -4741,6 +4742,8 @@ export const en: TranslationMap & {
       skippedCount: "{count} skipped",
       running: "Running",
       completed: "Completed",
+      blocked: "Blocked",
+      outcomeUnknown: "Outcome unknown",
       exitCode: "Exit code {code}",
       failureCount: "{count} failed",
       noOutputFailed: "No output — tool failed.",
