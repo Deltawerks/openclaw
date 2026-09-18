@@ -288,9 +288,16 @@ preparation still retain their existing main-thread behavior.
 Fleet registry reads use a separate read-only worker and remain noncreating;
 listing cells does not join Gateway writable lifecycle admission. The existing
 read owner retains inherited snapshot and disposable-source scopes until the
-worker closes. Reads through a cached native writer use its asynchronous online
-backup, which copies the shared database and adds temporary disk and startup
-cost. Each read validates its selected snapshot. A copied-state error is returned
+worker closes. Ordinary fixed reads observe independently committed database
+state, even when an unrelated cached native cursor still sees an older snapshot.
+The cached writer stays open and retained through read settlement; its captured
+physical identity is checked before and after the reader opens and on result
+acceptance. Explicitly selected snapshots keep their original private source.
+Artifact-preserving, source-exclusion, and canonical-mutation reads keep their
+existing owner-provided preparation, including native snapshot token work.
+Generic native callbacks and prepared-location cleanup contracts are unchanged;
+this cut does not make those preparation paths free of main-thread SQLite work.
+A copied-state error is returned
 to that reader without becoming a confirmed failure of the live cache; native
 access and transaction owners retain their own version checks, failure latching,
 and corruption eviction. Registry mutations and operation-lease changes run in

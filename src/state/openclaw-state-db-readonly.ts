@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { statSync } from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { SqliteCoordinatorError, throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
 import {
@@ -14,6 +13,7 @@ import {
   prepareSqliteReadOnlyLocation,
   prepareSqliteReadOnlyLocationSync,
 } from "../infra/sqlite-snapshot-source.js";
+import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import {
   acquireStateDatabaseHandleLease,
   hasStateDatabaseSourceExclusion,
@@ -229,17 +229,6 @@ export function withSynchronousArtifactPreservingStateSnapshot<T>(operation: () 
 
 type ReusedOpenClawStateReadOnlyDatabase<T> = { reused: false } | { reused: true; value: T };
 
-/** Missing runtime tables are empty only before state grows beyond checkpoint bootstrap. */
-export function hasOpenClawStateTablesBeyondStartupCheckpoint(db: DatabaseSync): boolean {
-  return (
-    /* sqlite-allow-raw -- Read-only startup-checkpoint schema discriminator. */ db
-      .prepare(
-        "SELECT 1 FROM main.sqlite_schema WHERE type = 'table' AND name NOT IN ('schema_meta', 'state_leases') LIMIT 1",
-      )
-      .get() !== undefined
-  );
-}
-
 function resolveReadOnlyPath(options: OpenClawStateDatabaseOptions): string {
   const pathname = path.resolve(
     options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env),
@@ -356,8 +345,9 @@ export function withOpenClawStateReadOnlyLocation<T>(
   pathname: string,
   source: string | PreparedSqliteReadOnlyLocation,
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
+  expectedIdentity?: string,
 ): T {
-  const opened = openOpenClawStateReadConnection(pathname, source);
+  const opened = openOpenClawStateReadConnection(pathname, source, expectedIdentity);
   const errors: unknown[] = [];
   let closeAdmission: (() => void) | undefined;
   let result!: T;
@@ -456,7 +446,7 @@ export function withExistingOpenClawStateDatabaseReadOnly<T>(
     : withFreshOpenClawStateDatabaseReadOnly(operation, options, existingPath);
 }
 
-/** Execute a fixed read command while retaining source selection and cleanup. */
+/** Fixed reads observe committed state unless their owner explicitly selected a snapshot. */
 export function executeExistingOpenClawStateRead(
   options: OpenClawStateDatabaseOptions,
   command: OpenClawStateReadCommand,
@@ -489,6 +479,7 @@ export function executeExistingOpenClawStateRead(
     let borrowed: ReturnType<typeof borrowOpenClawStateDatabaseForAsyncRead>;
     let sourcePin: ReturnType<typeof acquireStateDatabaseHandleLease> | undefined;
     let prepared: PreparedSqliteReadOnlyLocation | undefined;
+    let expectedIdentity: string | undefined;
     let releasePreparedSource: (() => void) | undefined;
     const authority: OpenClawStateReadAuthority = {
       signal: controller.signal,
@@ -501,6 +492,9 @@ export function executeExistingOpenClawStateRead(
           throw new Error("Shared-state source read scope is closed");
         }
         borrowed?.assertCurrent();
+        if (expectedIdentity !== undefined) {
+          assertExistingDatabaseIdentity(pathname, expectedIdentity);
+        }
         if (scopes.some((scope) => !scope.active)) {
           throw new Error("Shared-state read scope is closed");
         }
@@ -591,7 +585,7 @@ export function executeExistingOpenClawStateRead(
         sourcePin = acquireStateDatabaseHandleLease({ databasePath: pathname });
       }
       let location = snapshot?.location ?? pathname;
-      if (borrowed) {
+      if (borrowed && (preserveArtifacts || excluded || mutation)) {
         prepared = await prepareSqliteReadOnlyLocationFromOwnedDatabase(
           borrowed.database.db,
           authority.assertCurrent,
@@ -606,6 +600,10 @@ export function executeExistingOpenClawStateRead(
         });
         location = prepared.location;
       }
+      if (!snapshot && !prepared) {
+        // The native borrow protects custody, not another cursor's implicit snapshot.
+        expectedIdentity = context.admission.identity.key;
+      }
       if (prepared) {
         releasePreparedSource = retainSnapshotTempDirectory(
           prepared.cleanupRoot ?? path.dirname(prepared.location),
@@ -613,7 +611,7 @@ export function executeExistingOpenClawStateRead(
       }
       authority.assertCurrent();
       const outcome = await transport.read(
-        { context, location, checkFreshAdmission: !borrowed },
+        { context, location, checkFreshAdmission: !borrowed, expectedIdentity },
         authority,
       );
       const sourceAdmitted =
