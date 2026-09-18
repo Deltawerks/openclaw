@@ -234,13 +234,7 @@ export async function runAgentsApiAttempt(
       controller.signal,
     );
     const fingerprint = createHash("sha256")
-      .update(
-        JSON.stringify([
-          "gpt-5.5",
-          params.resolvedApiKey,
-          toolSurface.declarations,
-        ]),
-      )
+      .update(JSON.stringify(["gpt-5.5", params.resolvedApiKey, toolSurface.declarations]))
       .digest("hex");
     assertCurrent();
     if (binding && binding.authFingerprint !== fingerprint) {
