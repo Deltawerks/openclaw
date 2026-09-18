@@ -93,7 +93,7 @@ describe("plugin package facts", () => {
     expect(isPathInside(alias, external)).toBe(false);
   });
 
-  it("rebuilds the child beneath the admitted Windows root spelling", () => {
+  it("selects the matching observed Windows root spelling", () => {
     const parent = fs.realpathSync(tempDirs.make("plugin-identity-spelling-"));
     const root = path.join(parent, "canonical-root");
     const alias = path.join(parent, "root-alias");
@@ -105,8 +105,8 @@ describe("plugin package facts", () => {
     const realpath = vi.spyOn(fs, "realpathSync");
 
     expect(resolvePhysicalPathInsideRootSync(alias, source)).toEqual({
-      rootPath: alias,
-      targetPath: path.join(alias, "plugin.js"),
+      rootPath: root,
+      targetPath: source,
     });
     expect(realpath).not.toHaveBeenCalled();
   });
@@ -157,6 +157,29 @@ describe("plugin package facts", () => {
         checkPluginCacheEntry({
           rootDir: alias,
           rootRealPath: root,
+          relativePath: "plugin.js",
+          rejectHardlinks: true,
+        }),
+      ).toMatchObject({ ok: true, exists: true });
+    });
+  });
+
+  it("reopens a long-spelled child beneath an admitted short Windows root", () => {
+    const parent = fs.realpathSync(tempDirs.make("plugin-short-root-entry-"));
+    const root = path.join(parent, "canonical-root");
+    const alias = path.join(parent, "root-alias");
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, "plugin.js"), "export default {};\n");
+    fs.symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    withPluginCache(createPluginCache(), () => {
+      expect(
+        checkPluginCacheEntry({
+          // Mirrors Windows discovery retaining the long child spelling while
+          // native realpath preserves the trusted root's 8.3 alias.
+          rootDir: root,
+          rootRealPath: alias,
           relativePath: "plugin.js",
           rejectHardlinks: true,
         }),

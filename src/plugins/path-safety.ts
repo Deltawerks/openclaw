@@ -29,7 +29,12 @@ export function resolvePhysicalPathInsideRootSync(
     while (true) {
       const candidate = fs.statSync(current, { bigint: true });
       if (candidate.dev === root.dev && candidate.ino === root.ino) {
-        const physicalRoot = path.resolve(rootPath);
+        // Prefer the matching observed spelling unless it is itself a link.
+        // Windows 8.3 aliases are ordinary directory paths; junction roots retain
+        // their already-admitted canonical spelling.
+        const physicalRoot = fs.lstatSync(current).isSymbolicLink()
+          ? path.resolve(rootPath)
+          : current;
         return {
           rootPath: physicalRoot,
           targetPath: path.resolve(physicalRoot, path.relative(current, targetPath)),

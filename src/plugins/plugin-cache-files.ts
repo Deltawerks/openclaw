@@ -176,9 +176,10 @@ export function checkPluginCacheEntry(params: {
   } else {
     // A junction at the admitted root is trusted. Only replace the root spelling
     // when Windows supplied a child through a different (for example 8.3) alias.
-    const physical = isPathInsideLexical(params.rootDir, absolutePath)
+    const admittedRoot = params.rootRealPath ?? params.rootDir;
+    const physical = isPathInsideLexical(admittedRoot, absolutePath)
       ? undefined
-      : resolvePhysicalPathInsideRootSync(params.rootRealPath ?? params.rootDir, absolutePath);
+      : resolvePhysicalPathInsideRootSync(admittedRoot, absolutePath);
     const opened = openRootFileSync({
       absolutePath: physical?.targetPath ?? absolutePath,
       rootPath: physical?.rootPath ?? params.rootDir,
