@@ -77,6 +77,7 @@ vi.mock("./openclaw-state-db-cache.js", () => ({
     return () => mocks.resources.delete(resource);
   },
   borrowOpenClawStateDatabaseForAsyncRead: () => undefined,
+  retainOpenClawStateDatabaseForIndependentRead: () => undefined,
   openClawStateDatabaseCache: {
     getCachedOpenClawStateDatabase: () => undefined,
     assertOpenClawStateDatabaseOpenAllowed() {},
@@ -112,6 +113,7 @@ vi.mock("../infra/node-sqlite.js", () => ({
 }));
 vi.mock("./openclaw-state-db-read-connection.js", () => ({
   openOpenClawStateReadConnection: mocks.forbidden,
+  withOpenClawStateReadOnlyLocation: mocks.forbidden,
 }));
 vi.mock("./openclaw-state-db-schema-version.js", () => ({
   assertSupportedStateSchemaVersion: mocks.forbidden,

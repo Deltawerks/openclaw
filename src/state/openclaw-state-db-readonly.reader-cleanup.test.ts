@@ -1,25 +1,29 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  close: vi.fn<() => boolean>(),
+  close: vi.fn<() => void>(),
   admit: vi.fn<() => void>(),
   schema: vi.fn<() => void>(),
 }));
-vi.mock("./openclaw-state-db-read-connection.js", () => ({
-  openOpenClawStateReadConnection: () => ({
-    database: { db: {}, path: "/fixture/state.sqlite" },
-    close: mocks.close,
-  }),
+vi.mock("../infra/node-sqlite.js", () => ({
+  openNodeSqliteDatabase: () => ({}),
 }));
-vi.mock("./openclaw-state-db-schema-version.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./openclaw-state-db-schema-version.js")>()),
+vi.mock("./openclaw-state-db-cache.js", () => ({
+  openClawStateDatabaseCache: {
+    closeOpenClawStateDatabaseHandle: () => {
+      mocks.close();
+      return [];
+    },
+  },
+}));
+vi.mock("./openclaw-state-db-schema-version.js", () => ({
   assertSupportedStateSchemaVersion: mocks.schema,
 }));
 
-import { withOpenClawStateReadOnlyLocation } from "./openclaw-state-db-readonly.js";
+import { withOpenClawStateReadOnlyLocation } from "./openclaw-state-db-read-connection.js";
 
 beforeEach(() => {
-  mocks.close.mockReset().mockReturnValue(true);
+  mocks.close.mockReset();
   mocks.admit.mockReset();
   mocks.schema.mockReset();
 });

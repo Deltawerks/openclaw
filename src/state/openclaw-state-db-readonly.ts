@@ -25,6 +25,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { observeOpenClawDatabaseMaintenanceResource } from "./openclaw-state-db-async-lifecycle.js";
 import {
   borrowOpenClawStateDatabaseForAsyncRead,
+  retainOpenClawStateDatabaseForIndependentRead,
   captureOpenClawStateDatabaseReadAdmission,
   openClawStateDatabaseCache,
   registerOpenClawStateDatabaseAsyncResource,
@@ -34,7 +35,10 @@ import type {
   OpenClawStateDatabase,
   OpenClawStateSchemaReadAdmission,
 } from "./openclaw-state-db-contract.js";
-import { openOpenClawStateReadConnection } from "./openclaw-state-db-read-connection.js";
+import {
+  openOpenClawStateReadConnection,
+  withOpenClawStateReadOnlyLocation,
+} from "./openclaw-state-db-read-connection.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import {
@@ -340,42 +344,6 @@ function openOpenClawStateReadOnlyLocation(
   return connection;
 }
 
-export function withOpenClawStateReadOnlyLocation<T>(
-  operation: (database: OpenClawStateReadOnlyDatabase) => T,
-  pathname: string,
-  source: string | PreparedSqliteReadOnlyLocation,
-  openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
-  expectedIdentity?: string,
-): T {
-  const opened = openOpenClawStateReadConnection(pathname, source, expectedIdentity);
-  const errors: unknown[] = [];
-  let closeAdmission: (() => void) | undefined;
-  let result!: T;
-  try {
-    closeAdmission = openStateSchemaReadAdmission?.(opened.database.db);
-    assertSupportedStateSchemaVersion(opened.database.db, pathname);
-    result = operation(opened.database);
-    const location = typeof source === "string" ? source : source.location;
-    if (location === pathname && isPromiseLike(result)) {
-      throw new SqliteCoordinatorError("SQLite source read must remain synchronous");
-    }
-  } catch (error) {
-    errors.push(error);
-  }
-  try {
-    closeAdmission?.();
-  } catch (error) {
-    errors.push(error);
-  }
-  try {
-    opened.close();
-  } catch (error) {
-    errors.push(error);
-  }
-  throwSqliteLifecycleErrors(errors, "Shared-state read and reader cleanup failed.");
-  return result;
-}
-
 /** Keep streamed rows on one private reader while callers yield or close the shared writer. */
 export async function* iterateOpenClawStateDatabaseReadOnly<Row, Result>(
   source: OpenClawStateDatabase,
@@ -476,7 +444,7 @@ export function executeExistingOpenClawStateRead(
     let cleaned = false;
     let validated = false;
     const acceptanceErrors: unknown[] = [];
-    let borrowed: ReturnType<typeof borrowOpenClawStateDatabaseForAsyncRead>;
+    let borrowed: ReturnType<typeof retainOpenClawStateDatabaseForIndependentRead>;
     let sourcePin: ReturnType<typeof acquireStateDatabaseHandleLease> | undefined;
     let prepared: PreparedSqliteReadOnlyLocation | undefined;
     let expectedIdentity: string | undefined;
@@ -575,8 +543,15 @@ export function executeExistingOpenClawStateRead(
     }
     const read = async () => {
       authority.assertCurrent();
+      let nativeSource: OpenClawStateDatabase | undefined;
       if (!snapshot) {
-        borrowed = borrowOpenClawStateDatabaseForAsyncRead(pathname);
+        if (preserveArtifacts || excluded || mutation) {
+          const native = borrowOpenClawStateDatabaseForAsyncRead(pathname);
+          borrowed = native;
+          nativeSource = native?.database;
+        } else {
+          borrowed = retainOpenClawStateDatabaseForIndependentRead(pathname);
+        }
       }
       if (!snapshot && !borrowed && !existingPathOrUndefined(pathname)) {
         return undefined;
@@ -585,9 +560,9 @@ export function executeExistingOpenClawStateRead(
         sourcePin = acquireStateDatabaseHandleLease({ databasePath: pathname });
       }
       let location = snapshot?.location ?? pathname;
-      if (borrowed && (preserveArtifacts || excluded || mutation)) {
+      if (nativeSource) {
         prepared = await prepareSqliteReadOnlyLocationFromOwnedDatabase(
-          borrowed.database.db,
+          nativeSource.db,
           authority.assertCurrent,
         );
         location = prepared.location;

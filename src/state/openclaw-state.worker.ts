@@ -20,9 +20,18 @@ import {
   reserveFleetCellInDatabase,
   updateFleetCellImageInDatabase,
 } from "../fleet/registry.kernel.js";
+import {
+  readManagedImageRecordInDatabase,
+  listManagedImageRecordEntriesInDatabase,
+  listManagedImageOriginalMediaIdsInDatabase,
+} from "../gateway/managed-image-record-store.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
+import {
+  readApnsRegistrationFromDatabase,
+  readApnsRegistrationsFromDatabase,
+} from "../infra/push-apns-store.js";
 import { readPersistedVapidKeyPairInDatabase } from "../infra/push-web-store.kernel.js";
 import { executeWebPushCommand } from "../infra/push-web-store.worker.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
@@ -33,6 +42,11 @@ import {
 } from "../infra/sqlite-file-generation.js";
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import {
+  countRecentTelemetrySessionsInDatabase,
+  persistTelemetrySuccessInDatabase,
+  readTelemetryStateInWorker,
+} from "../infra/telemetry-store.kernel.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
@@ -153,6 +167,20 @@ function createSharedStateWorkerBackend(
           path: context.databasePath,
           env: getSqliteWorkerStateContext().environment,
         });
+      }
+      if (command.type === "telemetry.readState") {
+        return readTelemetryStateInWorker({
+          path: context.databasePath,
+          env: getSqliteWorkerStateContext().environment,
+        });
+      }
+      if (command.type === "telemetry.countRecentSessions") {
+        return (
+          withExistingOpenClawStateDatabaseReadOnly(
+            ({ db }) => countRecentTelemetrySessionsInDatabase(db, command.input.sinceMs),
+            { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+          ) ?? 0
+        );
       }
       if (command.type === "webPush.readPersistedVapidKeyPair") {
         return readPersistedVapidKeyPairInDatabase({
@@ -276,6 +304,21 @@ function createSharedStateWorkerBackend(
         );
       }
       const database = open();
+      if (command.type === "managedImages.read") {
+        return readManagedImageRecordInDatabase(database.db, command.input.attachmentId);
+      }
+      if (command.type === "managedImages.entries") {
+        return listManagedImageRecordEntriesInDatabase(database.db, command.input.sessionKey);
+      }
+      if (command.type === "managedImages.originalMediaIds") {
+        return listManagedImageOriginalMediaIdsInDatabase(database.db);
+      }
+      if (command.type === "apns.registration.read") {
+        return readApnsRegistrationFromDatabase(database.db, command.input);
+      }
+      if (command.type === "apns.registrations.read") {
+        return readApnsRegistrationsFromDatabase(database.db, command.input);
+      }
       if (command.type === "plugins.catalogSnapshot.read") {
         return readHostedCatalogSnapshotInDatabase(database.db, command.input.url);
       }
@@ -374,6 +417,14 @@ function createSharedStateWorkerBackend(
         return command.type === "agentProvenance.read"
           ? readAgentProvenanceInDatabase(database.db, command.input.agentId)
           : listAgentProvenanceInDatabase(database.db);
+      }
+      if (command.type === "telemetry.persistSuccess") {
+        return runOpenClawStateWriteTransaction(
+          ({ db }) =>
+            persistTelemetrySuccessInDatabase(db, command.input.state, command.input.updatedAtMs),
+          writeOptions,
+          { operationLabel: "config-machine-state.update" },
+        );
       }
       if (command.type === "sessionState.recordGoalChange") {
         return runOpenClawStateWriteTransaction(

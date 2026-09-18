@@ -28,7 +28,7 @@ type ErrorValue =
   | { undefined: true };
 
 type ErrorIdentity =
-  | { type: "error" | "aggregate" | "ownership" | "newer-schema" | "coordinator" }
+  | { type: "error" | "aggregate" | "ownership" | "newer-schema" | "coordinator" | "range-error" }
   | { type: "coordinator-contention"; family: CoordinatorFamily }
   | { type: "ownership-metadata"; databasePath: string }
   | { type: "external-ownership"; databasePath: string; managerId: string }
@@ -93,6 +93,9 @@ function identifyError(error: Error): ErrorIdentity {
   }
   if (error instanceof StartupMaintenanceRequiredError) {
     return { type: "maintenance", kind: error.kind };
+  }
+  if (error instanceof RangeError) {
+    return { type: "range-error" };
   }
   return { type: error instanceof AggregateError ? "aggregate" : "error" };
 }
@@ -181,6 +184,7 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
     case "ownership":
     case "newer-schema":
     case "coordinator":
+    case "range-error":
       return { type: node.type };
     case "coordinator-contention":
       return node.family === "gateway-lifecycle" ||
@@ -296,6 +300,8 @@ function createError(node: ErrorNode): Error {
   switch (node.type) {
     case "error":
       return new Error(node.message);
+    case "range-error":
+      return new RangeError(node.message);
     case "aggregate":
       return new AggregateError([], node.message);
     case "coordinator":

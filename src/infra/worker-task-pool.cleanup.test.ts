@@ -105,7 +105,13 @@ describe("worker task artifact lifetime", () => {
         } else {
           if (phase === "task-error") {
             expect(await outcome).toMatchObject({
-              error: { message: "original task failed", code: "failed" },
+              error: {
+                cause: failure,
+                errors: [
+                  expect.objectContaining({ message: "original task failed", code: "failed" }),
+                  failure,
+                ],
+              },
             });
           } else {
             expect(await outcome).toEqual({ error: failure });
@@ -220,7 +226,10 @@ describe("worker task artifact lifetime", () => {
             },
           }),
         );
-        const failureAssertion = expect(active).rejects.toBe(original);
+        const failureAssertion = expect(active).rejects.toMatchObject({
+          cause: failure,
+          errors: [original, failure],
+        });
         await hostEntered.promise;
         const rotation = pool.rotate();
         const next = pool.run(queuedFactory, {});

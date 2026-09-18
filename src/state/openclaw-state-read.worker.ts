@@ -4,7 +4,7 @@ import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/regis
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
 import { serveWorkerTasks } from "../infra/worker-task-pool.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
-import { withOpenClawStateReadOnlyLocation } from "./openclaw-state-db-readonly.js";
+import { withOpenClawStateReadOnlyLocation } from "./openclaw-state-db-read-connection.js";
 import type {
   OpenClawStateReadReply,
   OpenClawStateReadRequest,

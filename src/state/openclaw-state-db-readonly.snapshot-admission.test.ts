@@ -34,6 +34,7 @@ vi.mock("./openclaw-state-db-cache.js", async (importOriginal) => {
     captureOpenClawStateDatabaseReadAdmission: mocks.capture,
     registerOpenClawStateDatabaseAsyncResource: () => () => {},
     borrowOpenClawStateDatabaseForAsyncRead: () => undefined,
+    retainOpenClawStateDatabaseForIndependentRead: () => undefined,
     openClawStateDatabaseCache: {
       ...actual.openClawStateDatabaseCache,
       getCachedOpenClawStateDatabase: () => undefined,
@@ -55,6 +56,7 @@ vi.mock("../infra/sqlite-readonly-location-cleanup.js", async (importOriginal) =
 
 vi.mock("./openclaw-state-db-read-connection.js", () => ({
   openOpenClawStateReadConnection: mocks.forbiddenNative,
+  withOpenClawStateReadOnlyLocation: mocks.forbiddenNative,
 }));
 vi.mock("../infra/state-database-coordinator.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/state-database-coordinator.js")>()),
