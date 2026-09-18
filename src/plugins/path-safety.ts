@@ -7,6 +7,7 @@ export { safeRealpathSync, safeStatSync, formatPosixMode } from "../infra/path-s
 
 export type PhysicalPathInsideRoot = {
   rootPath: string;
+  targetPath: string;
 };
 
 /** Resolves matching physical spellings when Windows presents one tree through different aliases. */
@@ -22,14 +23,17 @@ export function resolvePhysicalPathInsideRootSync(
     if (!root.isDirectory() || root.ino === 0n) {
       return undefined;
     }
-    // Preserve the observed target spelling. Windows realpath can return the
-    // root's short-name spelling and erase the long-name ancestor we need to
-    // supply to the descriptor boundary.
+    // Walk the observed target spelling to prove identity, then rebuild the
+    // target beneath the root spelling that the descriptor boundary admits.
     let current = path.resolve(targetPath);
     while (true) {
       const candidate = fs.statSync(current, { bigint: true });
       if (candidate.dev === root.dev && candidate.ino === root.ino) {
-        return { rootPath: current };
+        const physicalRoot = path.resolve(rootPath);
+        return {
+          rootPath: physicalRoot,
+          targetPath: path.resolve(physicalRoot, path.relative(current, targetPath)),
+        };
       }
       const parent = path.dirname(current);
       if (parent === current) {

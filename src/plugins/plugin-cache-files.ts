@@ -180,7 +180,7 @@ export function checkPluginCacheEntry(params: {
       ? undefined
       : resolvePhysicalPathInsideRootSync(params.rootRealPath ?? params.rootDir, absolutePath);
     const opened = openRootFileSync({
-      absolutePath,
+      absolutePath: physical?.targetPath ?? absolutePath,
       rootPath: physical?.rootPath ?? params.rootDir,
       rootRealPath: physical?.rootPath ?? params.rootRealPath,
       boundaryLabel: "plugin package directory",
@@ -248,7 +248,7 @@ export function readPluginCacheFile(params: {
     ? undefined
     : resolvePhysicalPathInsideRootSync(canonicalRoot, absolutePath);
   const opened = openRootFileSync({
-    absolutePath,
+    absolutePath: physical?.targetPath ?? absolutePath,
     rootPath: physical?.rootPath ?? canonicalRoot,
     rootRealPath: physical?.rootPath ?? canonicalRoot,
     boundaryLabel: "plugin root",

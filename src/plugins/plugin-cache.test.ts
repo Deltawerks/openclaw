@@ -93,7 +93,7 @@ describe("plugin package facts", () => {
     expect(isPathInside(alias, external)).toBe(false);
   });
 
-  it("preserves the observed child spelling while reconciling Windows aliases", () => {
+  it("rebuilds the child beneath the admitted Windows root spelling", () => {
     const parent = fs.realpathSync(tempDirs.make("plugin-identity-spelling-"));
     const root = path.join(parent, "canonical-root");
     const alias = path.join(parent, "root-alias");
@@ -104,7 +104,10 @@ describe("plugin package facts", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const realpath = vi.spyOn(fs, "realpathSync");
 
-    expect(resolvePhysicalPathInsideRootSync(alias, source)).toEqual({ rootPath: root });
+    expect(resolvePhysicalPathInsideRootSync(alias, source)).toEqual({
+      rootPath: alias,
+      targetPath: path.join(alias, "plugin.js"),
+    });
     expect(realpath).not.toHaveBeenCalled();
   });
 
