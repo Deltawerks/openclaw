@@ -2760,9 +2760,7 @@ describe("selectAgentHarness", () => {
         requestTransportOverrides: "none",
         runtimePolicy: {
           compatibleIds:
-            api === "openai-responses"
-              ? ["openclaw", "codex", "agentsapi"]
-              : ["openclaw", "codex"],
+            api === "openai-responses" ? ["openclaw", "codex", "agentsapi"] : ["openclaw", "codex"],
         },
       });
     },
