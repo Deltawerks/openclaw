@@ -63,8 +63,8 @@ suite.define(() => {
         try {
           await card.waitFor({ state: "visible" });
           expect(
-            await link.evaluate((element, point) => {
-              const hit = document.elementFromPoint(point.x, point.y);
+            await link.evaluate((element, coordinates) => {
+              const hit = document.elementFromPoint(coordinates.x, coordinates.y);
               return hit !== null && element.contains(hit);
             }, point),
           ).toBe(true);
