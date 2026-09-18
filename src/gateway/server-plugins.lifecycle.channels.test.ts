@@ -117,8 +117,8 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
   const channel = ${JSON.stringify(channel)};
   const captured = api.config.channels?.[channel] ?? null;
   let starts = 0, stops = 0;
-  api.registerGatewayMethod(channel + ".probe", ({ respond }) => {
-    respond(true, { instance, captured, starts, stops, pid: process.pid });
+  api.registerGatewayMethod(channel + ".probe", ({ context, respond }) => {
+    respond(true, { instance, captured, starts, stops, pid: process.pid, reloadSettled: context.isConfigReloadSettled() });
   }, { scope: "operator.read" });
   if (!captured?.enabled) return;
   api.registerChannel({ id: channel,
@@ -187,16 +187,25 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
         starts: number;
         stops: number;
         pid: number;
+        reloadSettled: boolean;
       };
       const probe = async (channel: string) => {
         const result = await rpcReq<Probe>(connected, `${channel}.probe`, {});
         expect(result.ok, result.error?.message).toBe(true);
         assert.ok(result.payload);
-        return result.payload;
+        // Registration is visible before the watcher releases its lifecycle lease.
+        // Wait for the owner's settlement signal, not a retry of a mutating RPC.
+        const { reloadSettled, ...binding } = result.payload;
+        return { binding, reloadSettled };
       };
-      await expect.poll(async () => (await probe("sibling-chat")).starts).toBe(1);
-      const sibling = await probe("sibling-chat");
-      const cold = await probe("cold-chat");
+      const settledProbe = async (channel: string) =>
+        await vi.waitUntil(async () => {
+          const result = await probe(channel);
+          return result.reloadSettled ? result.binding : false;
+        });
+      await expect.poll(async () => (await settledProbe("sibling-chat")).starts).toBe(1);
+      const sibling = await settledProbe("sibling-chat");
+      const cold = await settledProbe("cold-chat");
       expect(cold).toMatchObject({ captured: null, starts: 0, stops: 0, pid: process.pid });
       for (const label of ["first setup", "edited setup"]) {
         const current = await rpcReq<{ hash: string }>(connected, "config.get", {});
@@ -208,10 +217,16 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
         expect(changed.payload).toMatchObject({
           sentinel: { payload: { stats: { requiresRestart: false } } },
         });
-        await expect.poll(async () => (await probe("cold-chat")).captured?.label).toBe(label);
-        expect(await probe("cold-chat")).toMatchObject({ starts: 1, stops: 0, pid: cold.pid });
-        expect((await probe("cold-chat")).instance).not.toBe(cold.instance);
-        expect(await probe("sibling-chat")).toEqual(sibling);
+        await expect
+          .poll(async () => (await settledProbe("cold-chat")).captured?.label)
+          .toBe(label);
+        expect(await settledProbe("cold-chat")).toMatchObject({
+          starts: 1,
+          stops: 0,
+          pid: cold.pid,
+        });
+        expect((await settledProbe("cold-chat")).instance).not.toBe(cold.instance);
+        expect(await settledProbe("sibling-chat")).toEqual(sibling);
       }
       // Installing another plugin can rebuild metadata through a different producer.
       // Reordering an unchanged sibling's package keys must not stop its live account.
@@ -246,15 +261,15 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
       });
       expect(committed.afterWrite.mode).toBe("auto");
       await expect
-        .poll(async () => (await probe("cold-chat")).captured?.label)
+        .poll(async () => (await settledProbe("cold-chat")).captured?.label)
         .toBe("installed setup");
-      expect(await probe("cold-chat")).toMatchObject({ starts: 1, stops: 0, pid: cold.pid });
-      expect(await probe("sibling-chat")).toEqual(sibling);
+      expect(await settledProbe("cold-chat")).toMatchObject({ starts: 1, stops: 0, pid: cold.pid });
+      expect(await settledProbe("sibling-chat")).toEqual(sibling);
       const explicit = await rpcReq(connected, "plugins.reload", {
         plugins: [{ pluginId: "cold-chat-owner" }],
       });
       expect(explicit.ok, explicit.error?.message).toBe(true);
-      expect(await probe("sibling-chat")).toEqual(sibling);
+      expect(await settledProbe("sibling-chat")).toEqual(sibling);
       expect(connected.readyState).toBe(connected.OPEN);
       expect(hotReloadRecovery).not.toHaveBeenCalled();
     },
