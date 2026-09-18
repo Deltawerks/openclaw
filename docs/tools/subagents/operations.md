@@ -17,7 +17,9 @@ Sub-agents use a dedicated in-process queue lane:
 Retained blocked completions also protect the gateway from unbounded fan-out.
 OpenClaw warns when the delivery backlog reaches 25 and blocks new subagent
 spawns at 50 until operators retry or dismiss enough retained deliveries. It
-does not prune results to make room.
+does not prune results to make room. Within a Gateway process, unchanged backlog
+counts do not repeat the warning every sweep. A count change at or above 25, or
+a return to that threshold after recovery, produces a new warning.
 
 ## Liveness and recovery
 
@@ -41,6 +43,14 @@ work owning that session. Stale interrupted runs and other stale unended restore
 runs are finalized without a resume. Orphaned runs settle their background task
 before cleanup, so retained child sessions do not leave phantom running activity.
 If the task update fails, completion remains available for retry.
+
+When a detached cleanup attempt logs `subagent cleanup finalize failed`, its
+retries use bounded backoff in the current Gateway process. If those retries are
+exhausted, the run remains recorded with incomplete cleanup; inspect the warning
+to identify the failing operation. Unrelated
+sub-agent completions do not restart failed cleanup or reset its retry budget.
+Descendant completion still wakes the current requester ancestors waiting on that
+work. These cleanup retries are separate from [completion delivery](/tools/subagents/announce).
 
 An accepted recovery keeps the original task, Task Flow, requester, and child
 session identities. The task returns to `running` as the replacement execution

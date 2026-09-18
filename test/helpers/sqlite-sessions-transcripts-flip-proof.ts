@@ -24,7 +24,7 @@ import {
   appendTranscriptMessage,
   type TranscriptEvent,
 } from "../../src/config/sessions/session-accessor.js";
-import { importSqliteSessionRows } from "../../src/config/sessions/session-accessor.sqlite-import.js";
+import { importSqliteSessionRows } from "../../src/config/sessions/session-accessor.sqlite-import.test-support.js";
 import type { SessionEntry } from "../../src/config/sessions/types.js";
 import { isGatewayProtocolResponseError } from "../../src/gateway/client.js";
 import {
@@ -1704,10 +1704,13 @@ async function waitForAgentRunSettled(client: GatewayClient, runId: string): Pro
   if (result.status === "ok") {
     return;
   }
+  // Deletion can settle through the runtime abort outcome instead of the RPC stop reason.
   const terminalLifecycleStatus = result.status === "timeout" || result.status === "error";
   if (
     terminalLifecycleStatus &&
-    (result.stopReason === "rpc" || result.stopReason === "stop") &&
+    (result.stopReason === "rpc" ||
+      result.stopReason === "stop" ||
+      result.stopReason === "aborted") &&
     typeof result.endedAt === "number"
   ) {
     return;

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { z } from "zod";
 import { ConfigMutationConflictError } from "../config/mutation-conflict.js";
 import {
@@ -65,13 +66,16 @@ const UpdatePostInstallDoctorResultSchema = z.discriminatedUnion("status", [
 export type UpdatePostInstallDoctorResult = z.infer<typeof UpdatePostInstallDoctorResultSchema>;
 
 export class UpdateDoctorError extends Error {
+  readonly exitCode: number | null | undefined;
+
   constructor(
     message: string,
     readonly failureFacts: UpdateFailureFact[],
-    options?: ErrorOptions,
+    options?: ErrorOptions & { exitCode?: number | null },
   ) {
     super(message, options);
     this.name = "UpdateDoctorError";
+    this.exitCode = options?.exitCode;
   }
 }
 
@@ -79,7 +83,7 @@ export class UpdateDoctorError extends Error {
 export function normalizeUpdatePostInstallDoctorWarnings(warnings: readonly string[]): string[] {
   const normalized: string[] = [];
   for (const warning of warnings) {
-    const message = warning.trim().slice(0, 500);
+    const message = truncateUtf16Safe(warning.trim(), 500);
     if (message) {
       normalized.push(message);
       if (normalized.length === 32) {
