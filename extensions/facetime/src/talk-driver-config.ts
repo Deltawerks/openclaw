@@ -8,7 +8,7 @@ import {
   resolveConfiguredRealtimeVoiceProvider,
   type RealtimeVoiceTool,
 } from "openclaw/plugin-sdk/realtime-voice";
-import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/routing";
+import { parseAgentSessionKey, resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/routing";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import type { FaceTimeConfig } from "./config.js";
 
@@ -46,6 +46,9 @@ export function assertAuthenticatedSenderConsultSupport(): void {
 }
 
 export function agentIdFromSessionKey(sessionKey: string, config: OpenClawConfig): string {
+  if (parseAgentSessionKey(sessionKey)) {
+    return resolveAgentIdFromSessionKey(sessionKey);
+  }
   return resolveAgentIdFromSessionKey(sessionKey, resolveDefaultAgentId(config));
 }
 

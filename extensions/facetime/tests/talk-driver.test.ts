@@ -21,6 +21,12 @@ const mocks = vi.hoisted(() => ({
     sessionId: "facetime-consult-session",
   })),
   resolveBootstrapContext: vi.fn(),
+  resolveDefaultAgentId: vi.fn(
+    (config: { agents?: { list?: Array<{ id: string; default?: boolean }> } }) => {
+      const agents = config.agents?.list ?? [];
+      return agents.find((agent) => agent.default)?.id ?? agents[0]?.id ?? "main";
+    },
+  ),
   resolveProvider: vi.fn(() => ({ provider: { id: "openai" }, providerConfig: {} })),
   hangupRequested: vi.fn(async () => {}),
   senderAuthVersion: 1 as number | undefined,
@@ -133,12 +139,7 @@ vi.mock("openclaw/plugin-sdk/realtime-bootstrap-context", () => ({
 }));
 
 vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
-  resolveDefaultAgentId: vi.fn(
-    (config: { agents?: { list?: Array<{ id: string; default?: boolean }> } }) => {
-      const agents = config.agents?.list ?? [];
-      return agents.find((agent) => agent.default)?.id ?? agents[0]?.id ?? "main";
-    },
-  ),
+  resolveDefaultAgentId: mocks.resolveDefaultAgentId,
 }));
 
 vi.mock("../src/audio-pump.js", () => ({
@@ -149,7 +150,10 @@ vi.mock("../src/audio-pump.js", () => ({
 }));
 
 import { resolveFaceTimeConfig } from "../src/config.js";
-import { resolveFaceTimeRealtimeProvider } from "../src/talk-driver-config.js";
+import {
+  agentIdFromSessionKey,
+  resolveFaceTimeRealtimeProvider,
+} from "../src/talk-driver-config.js";
 import { startFaceTimeTalkDriver } from "../src/talk-driver.js";
 
 function startParams(overrides: Record<string, unknown> = {}) {
@@ -204,6 +208,13 @@ describe("FaceTime talk driver lifecycle", () => {
       mocks.sessionParams = params;
       return mocks.bridge;
     });
+  });
+
+  it("uses an explicit agent session key without resolving a default agent", () => {
+    const callsBefore = mocks.resolveDefaultAgentId.mock.calls.length;
+
+    expect(agentIdFromSessionKey("agent:lobster:facetime", {} as never)).toBe("lobster");
+    expect(mocks.resolveDefaultAgentId).toHaveBeenCalledTimes(callsBefore);
   });
 
   it("resolves only the explicitly selected plugin-local provider secret", async () => {
