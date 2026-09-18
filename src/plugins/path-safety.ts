@@ -1,6 +1,7 @@
 /** Plugin-local re-export of shared path safety helpers for plugin install/runtime code. */
 import fs from "node:fs";
 import path from "node:path";
+import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
 import { isPathInside as isPathInsideLexical } from "../infra/path-safety.js";
 
@@ -9,6 +10,7 @@ export { safeRealpathSync, safeStatSync, formatPosixMode } from "../infra/path-s
 export type PhysicalPathInsideRoot = {
   rootPath: string;
   targetPath: string;
+  rootIdentity: Readonly<{ dev: bigint; ino: bigint }>;
 };
 
 /** Resolves matching physical spellings when Windows presents one tree through different aliases. */
@@ -39,6 +41,7 @@ export function resolvePhysicalPathInsideRootSync(
         return {
           rootPath: physicalRoot,
           targetPath: path.resolve(physicalRoot, path.relative(current, targetPath)),
+          rootIdentity: Object.freeze({ dev: root.dev, ino: root.ino }),
         };
       }
       const parent = path.dirname(current);
@@ -59,6 +62,37 @@ export function isPathInside(rootPath: string, targetPath: string): boolean {
   );
 }
 
+function createIdentityBoundRootFileFs(
+  rootPath: string,
+  expected: PhysicalPathInsideRoot["rootIdentity"],
+) {
+  const lstatSync = ((...args: unknown[]) => {
+    // SAFETY: Reflect invokes fs.lstatSync with the original overload arguments.
+    const stat = Reflect.apply(fs.lstatSync, fs, args) as fs.Stats | fs.BigIntStats;
+    if (args[0] === rootPath) {
+      const dev = typeof stat.dev === "bigint" ? stat.dev : BigInt(stat.dev);
+      const ino = typeof stat.ino === "bigint" ? stat.ino : BigInt(stat.ino);
+      if (!stat.isDirectory() || dev !== expected.dev || ino !== expected.ino) {
+        throw new FsSafeError(
+          "path-mismatch",
+          "plugin root identity changed during alias reconciliation",
+        );
+      }
+    }
+    return stat;
+    // SAFETY: The wrapper returns lstatSync results unchanged after identity validation.
+  }) as typeof fs.lstatSync;
+  return {
+    closeSync: fs.closeSync,
+    constants: fs.constants,
+    fstatSync: fs.fstatSync,
+    lstatSync,
+    openSync: fs.openSync,
+    readFileSync: fs.readFileSync,
+    realpathSync: fs.realpathSync,
+  };
+}
+
 /** Opens a runtime plugin artifact after reconciling Windows root aliases. */
 export function openPluginRootFileSync(params: {
   rootPath: string;
@@ -75,5 +109,8 @@ export function openPluginRootFileSync(params: {
     boundaryLabel: "plugin root",
     rejectHardlinks: params.rejectHardlinks,
     skipLexicalRootCheck: true,
+    ioFs: physical
+      ? createIdentityBoundRootFileFs(physical.rootPath, physical.rootIdentity)
+      : undefined,
   });
 }

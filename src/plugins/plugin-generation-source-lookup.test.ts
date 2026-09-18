@@ -36,4 +36,28 @@ describe("plugin generation source lookup", () => {
     expect(lookup.resolve(source)).toBe(source);
     expect(assertModuleAvailable).toHaveBeenCalledWith(source);
   });
+
+  it("keeps canonical source keys when the configured alias has a different depth", () => {
+    const parent = fs.realpathSync(tempDirs.make("plugin-generation-source-depth-"));
+    const sourceRoot = path.join(parent, "packages", "demo");
+    const rootDir = path.join(parent, "plugin-link");
+    const source = path.join(sourceRoot, "setup.js");
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    fs.writeFileSync(source, "export default {};\n");
+    fs.symlinkSync(sourceRoot, rootDir, process.platform === "win32" ? "junction" : "dir");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    const lookup = createPluginGenerationSourceLookup({
+      rootDir,
+      sourceRoot,
+      capturedRoot: sourceRoot,
+      boundaryRoot: sourceRoot,
+      capturedPaths: new Map([[source, source]]),
+      hardlinkedSources: new Set(),
+      assertModuleAvailable: vi.fn(),
+    });
+
+    expect(lookup.hasSource(source)).toBe(true);
+    expect(lookup.resolve(source)).toBe(source);
+  });
 });

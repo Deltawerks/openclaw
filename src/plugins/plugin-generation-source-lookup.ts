@@ -1,13 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isPathInside as isPathInsideLexical } from "../infra/path-safety.js";
 import { isPathInside } from "./path-safety.js";
 import { createPluginSourceCapture } from "./plugin-package-metadata-capture.js";
 
 function canonicalSource(rootDir: string, sourceRoot: string, source: string): string {
   const lexical = path.resolve(source);
-  return isPathInside(path.resolve(rootDir), lexical)
+  return isPathInsideLexical(path.resolve(rootDir), lexical)
     ? path.join(sourceRoot, path.relative(path.resolve(rootDir), lexical))
     : lexical;
+}
+
+function getCapturedSource(
+  sources: ReadonlyMap<string, string>,
+  rootDir: string,
+  sourceRoot: string,
+  source: string,
+): string | undefined {
+  const lexical = path.resolve(source);
+  return sources.get(lexical) ?? sources.get(canonicalSource(rootDir, sourceRoot, lexical));
 }
 
 // A recovery resolver outlives its producer. Its closure contains copied path
@@ -18,7 +29,7 @@ function createRecoverySourceResolver(
   sources: ReadonlyMap<string, string>,
 ) {
   return (source: string) => {
-    const captured = sources.get(canonicalSource(rootDir, sourceRoot, source));
+    const captured = getCapturedSource(sources, rootDir, sourceRoot, source);
     if (!captured) {
       throw new Error("Plugin recovery entry is outside its captured source package");
     }
@@ -88,7 +99,7 @@ export function createPluginGenerationSourceLookup({
   assertModuleAvailable: (filename: string) => void;
 }) {
   const resolveCaptured = (source: string) => {
-    const captured = capturedPaths.get(canonicalSource(rootDir, sourceRoot, source));
+    const captured = getCapturedSource(capturedPaths, rootDir, sourceRoot, source);
     return captured && isPathInside(capturedRoot, captured) ? captured : undefined;
   };
   return {

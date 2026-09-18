@@ -111,6 +111,10 @@ describe("plugin package facts", () => {
     expect(resolvePhysicalPathInsideRootSync(alias, source)).toEqual({
       rootPath: root,
       targetPath: source,
+      rootIdentity: expect.objectContaining({
+        dev: fs.statSync(root, { bigint: true }).dev,
+        ino: fs.statSync(root, { bigint: true }).ino,
+      }),
     });
     expect(realpath).not.toHaveBeenCalled();
   });
@@ -136,6 +140,52 @@ describe("plugin package facts", () => {
       expect(opened.path).toBe(source);
       fs.closeSync(opened.fd);
     }
+  });
+
+  it("rejects an observed root that changes identity before descriptor admission", () => {
+    const parent = fs.realpathSync(tempDirs.make("plugin-runtime-alias-race-"));
+    const trustedContainer = path.join(parent, "trusted");
+    const replacementContainer = path.join(parent, "replacement");
+    const trustedRoot = path.join(trustedContainer, "plugin");
+    const replacementRoot = path.join(replacementContainer, "plugin");
+    const trustedAlias = path.join(parent, "trusted-alias");
+    const observedParent = path.join(parent, "observed-parent");
+    fs.mkdirSync(trustedRoot, { recursive: true });
+    fs.mkdirSync(replacementRoot, { recursive: true });
+    fs.writeFileSync(path.join(trustedRoot, "plugin.js"), "trusted\n");
+    fs.writeFileSync(path.join(replacementRoot, "plugin.js"), "replacement\n");
+    fs.symlinkSync(trustedRoot, trustedAlias, process.platform === "win32" ? "junction" : "dir");
+    fs.symlinkSync(
+      trustedContainer,
+      observedParent,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    const observedRoot = path.join(observedParent, "plugin");
+    const originalLstat = fs.lstatSync;
+    let rootObservations = 0;
+    vi.spyOn(fs, "lstatSync").mockImplementation(((filePath, options) => {
+      if (filePath === observedRoot && ++rootObservations === 2) {
+        fs.unlinkSync(observedParent);
+        fs.symlinkSync(
+          replacementContainer,
+          observedParent,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+      }
+      return originalLstat(filePath, options as never);
+    }) as typeof fs.lstatSync);
+    const openSync = vi.spyOn(fs, "openSync");
+
+    const opened = openPluginRootFileSync({
+      rootPath: trustedAlias,
+      filePath: path.join(observedRoot, "plugin.js"),
+      rejectHardlinks: false,
+    });
+
+    expect(opened).toMatchObject({ ok: false, reason: "validation" });
+    expect(openSync).not.toHaveBeenCalled();
   });
 
   it("reads an aliased Windows plugin root through the descriptor boundary", () => {
