@@ -528,6 +528,7 @@ export type PluginManifestContracts = {
    * plugin instead of every provider plugin.
    */
   externalAuthProviders?: string[];
+  judgmentProviders?: string[];
   embeddingProviders?: string[];
   speechProviders?: string[];
   realtimeTranscriptionProviders?: string[];
