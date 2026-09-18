@@ -5,7 +5,7 @@ import {
   getPreparedModelRuntimeMocks,
   resetPreparedModelRuntimeHarness,
 } from "./prepared-model-runtime.test-harness.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { isPluginRegistryRetired } from "../plugins/registry-lifecycle.js";
@@ -14,10 +14,13 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import {
+  acquireAgentRunPreparedModelRuntime,
   acquirePublishedPreparedModelRuntime,
+  markPreparedModelRuntimeSnapshotsStale,
   prepareModelRuntimeSnapshot,
   refreshPreparedModelRuntimeSnapshots,
 } from "./prepared-model-runtime.js";
+import * as runtimePlugins from "./runtime-plugins.js";
 
 const mocks = getPreparedModelRuntimeMocks();
 let state: OpenClawTestState;
@@ -53,6 +56,52 @@ async function acquireConfiguredRegistryBorrower() {
 }
 
 describe("prepared registry construction borrows", () => {
+  it("retains selected inbound resources until a cancelled initial run inspection settles", async () => {
+    const { registry, input, borrower } = await acquireConfiguredRegistryBorrower();
+    const inspecting = createDeferred();
+    const finishInspection = createDeferred();
+    const acquire = runtimePlugins.acquireAgentRuntimePluginRegistry;
+    mocks.loadAgentRuntimePluginRegistryHandle.mockReturnValueOnce(createEmptyPluginRegistry());
+    const inspection = vi
+      .spyOn(runtimePlugins, "acquireAgentRuntimePluginRegistry")
+      .mockImplementationOnce(async (...args) => {
+        const acquired = await acquire(...args);
+        inspecting.resolve();
+        await finishInspection.promise;
+        return acquired;
+      });
+    const pending = acquireAgentRunPreparedModelRuntime(
+      {
+        ...input,
+        runtimePluginSelections: [{ provider: "custom", modelId: "selected", runtime: "openclaw" }],
+      },
+      { catalogMode: "static", pluginGeneration: borrower.pluginGeneration },
+    );
+    const settled = Promise.allSettled([pending]);
+    try {
+      await Promise.race([
+        inspecting.promise,
+        pending.then(() => {
+          throw new Error("Initial run skipped inspection acquisition");
+        }),
+      ]);
+      markPreparedModelRuntimeSnapshotsStale("configuration replaced during run admission");
+      await borrower[Symbol.asyncDispose]();
+      expect(isPluginRegistryRetired(registry)).toBe(false);
+      finishInspection.resolve();
+      await expect(pending).rejects.toThrow("superseded");
+      expect(isPluginRegistryRetired(registry)).toBe(true);
+    } finally {
+      finishInspection.resolve();
+      const [outcome] = await settled;
+      if (outcome.status === "fulfilled") {
+        await outcome.value[Symbol.asyncDispose]();
+      }
+      await borrower[Symbol.asyncDispose]();
+      inspection.mockRestore();
+    }
+  });
+
   it("keeps a cached registry alive while its configured replacement is preparing", async () => {
     const { registry, config, input, borrower } = await acquireConfiguredRegistryBorrower();
     const preparing = createDeferred();
