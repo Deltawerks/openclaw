@@ -124,6 +124,17 @@ export async function startAgentRunExecution(params: {
     const abortController = abortRegistration.controller;
     const operationalRunInstance = prepared.operationalRunInstance;
     const sessionKey = abortEntry?.sessionKey;
+    const assertTaskSettlementCurrent = () => {
+      params.assertContextCurrent?.();
+      assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
+      // Cancellation closes execution, but its retained producer still records the outcome.
+      if (
+        !leaseActive ||
+        (abortRegistration.registered && !prepared.activeGatewayWorkAdmission.isActive())
+      ) {
+        throw new Error("Agent task settlement no longer owns this Gateway run");
+      }
+    };
     const assertDispatchCurrent = () => {
       params.assertContextCurrent?.();
       abortController.signal.throwIfAborted();
@@ -405,6 +416,7 @@ export async function startAgentRunExecution(params: {
           withAgentRunDispatchExecutionIdentity(
             {
               assertCurrent: assertDispatchCurrent,
+              assertSettlementCurrent: assertTaskSettlementCurrent,
               commandRuntimeContext: {
                 config: prepared.replyDispatchRuntime.config,
                 pluginGeneration: prepared.replyDispatchRuntime.pluginGeneration,
