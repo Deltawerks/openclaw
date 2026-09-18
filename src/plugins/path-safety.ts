@@ -5,35 +5,45 @@ import { isPathInside as isPathInsideLexical } from "../infra/path-safety.js";
 
 export { safeRealpathSync, safeStatSync, formatPosixMode } from "../infra/path-safety.js";
 
-/** Proves containment when Windows presents the same directory through different path aliases. */
-function isPathInsideByIdentitySync(rootPath: string, targetPath: string): boolean {
+export type PhysicalPathInsideRoot = {
+  rootPath: string;
+  targetPath: string;
+};
+
+/** Resolves matching physical spellings when Windows presents one tree through different aliases. */
+export function resolvePhysicalPathInsideRootSync(
+  rootPath: string,
+  targetPath: string,
+): PhysicalPathInsideRoot | undefined {
   if (process.platform !== "win32") {
-    return false;
+    return undefined;
   }
   try {
     const root = fs.statSync(rootPath, { bigint: true });
     if (!root.isDirectory() || root.ino === 0n) {
-      return false;
+      return undefined;
     }
-    let current = targetPath;
+    const physicalTargetPath = fs.realpathSync(targetPath);
+    let current = physicalTargetPath;
     while (true) {
       const candidate = fs.statSync(current, { bigint: true });
       if (candidate.dev === root.dev && candidate.ino === root.ino) {
-        return true;
+        return { rootPath: current, targetPath: physicalTargetPath };
       }
       const parent = path.dirname(current);
       if (parent === current) {
-        return false;
+        return undefined;
       }
       current = parent;
     }
   } catch {
-    return false;
+    return undefined;
   }
 }
 
 export function isPathInside(rootPath: string, targetPath: string): boolean {
   return (
-    isPathInsideLexical(rootPath, targetPath) || isPathInsideByIdentitySync(rootPath, targetPath)
+    isPathInsideLexical(rootPath, targetPath) ||
+    resolvePhysicalPathInsideRootSync(rootPath, targetPath) !== undefined
   );
 }

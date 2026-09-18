@@ -6,6 +6,7 @@ import { resolveRootPathSync } from "../infra/boundary-path.js";
 import { FsSafeError } from "../infra/fs-safe.js";
 import { readRegularFileSync } from "../infra/regular-file.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
+import { resolvePhysicalPathInsideRootSync } from "./path-safety.js";
 import type {
   PluginEntryCheck,
   PluginFileCacheEntry,
@@ -172,10 +173,14 @@ export function checkPluginCacheEntry(params: {
       checked = { ok: false, reason: "validation", error };
     }
   } else {
-    const opened = openRootFileSync({
+    const physical = resolvePhysicalPathInsideRootSync(
+      params.rootRealPath ?? params.rootDir,
       absolutePath,
-      rootPath: params.rootDir,
-      rootRealPath: params.rootRealPath,
+    );
+    const opened = openRootFileSync({
+      absolutePath: physical?.targetPath ?? absolutePath,
+      rootPath: physical?.rootPath ?? params.rootDir,
+      rootRealPath: physical?.rootPath ?? params.rootRealPath,
       boundaryLabel: "plugin package directory",
       rejectHardlinks: params.rejectHardlinks,
     });
@@ -237,10 +242,11 @@ export function readPluginCacheFile(params: {
     return enforceFileSize(canonicalCached, maxBytes);
   }
   const absolutePath = path.resolve(canonicalRoot, params.relativePath);
+  const physical = resolvePhysicalPathInsideRootSync(canonicalRoot, absolutePath);
   const opened = openRootFileSync({
-    absolutePath,
-    rootPath: canonicalRoot,
-    rootRealPath: canonicalRoot,
+    absolutePath: physical?.targetPath ?? absolutePath,
+    rootPath: physical?.rootPath ?? canonicalRoot,
+    rootRealPath: physical?.rootPath ?? canonicalRoot,
     boundaryLabel: "plugin root",
     rejectHardlinks: params.rejectHardlinks,
     maxBytes,
