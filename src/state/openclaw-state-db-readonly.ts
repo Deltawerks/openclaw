@@ -36,10 +36,11 @@ import type {
   OpenClawStateSchemaReadAdmission,
 } from "./openclaw-state-db-contract.js";
 import {
+  assertStateReadSchema,
   openOpenClawStateReadConnection,
   withOpenClawStateReadOnlyLocation,
 } from "./openclaw-state-db-read-connection.js";
-import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
+import { isExistingOpenClawStateSchema } from "./openclaw-state-db-schema-policy.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import {
   mapOpenClawStateReadError,
@@ -247,6 +248,7 @@ function resolveReadOnlyPath(options: OpenClawStateDatabaseOptions): string {
     stateSnapshotReads.getStore(),
     ...(disposableStateReads.getStore() ?? []),
   ]);
+  isExistingOpenClawStateSchema(pathname);
   return pathname;
 }
 
@@ -286,7 +288,7 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
     // is checked on the next physical open so hot reads do not poll metadata.
     // A newer build can migrate this file while the handle stays open, so the
     // forward-compatibility gate still runs before any reused read.
-    assertSupportedStateSchemaVersion(opened.db, pathname);
+    assertStateReadSchema(opened.db, pathname);
     observeOpenClawDatabaseMaintenanceResource(opened.db);
     return { reused: true, value: operation(opened) };
   } catch (error) {
@@ -316,7 +318,7 @@ function withFreshOpenClawStateDatabaseReadOnly<T>(
       );
       readers.set(pathname, opened);
     }
-    assertSupportedStateSchemaVersion(opened.database.db, pathname);
+    assertStateReadSchema(opened.database.db, pathname);
     const result = operation(opened.database);
     if (isPromiseLike(result)) {
       throw new SqliteCoordinatorError("SQLite metadata snapshot read must remain synchronous");
@@ -335,7 +337,7 @@ function openOpenClawStateReadOnlyLocation(
 ) {
   const connection = openOpenClawStateReadConnection(pathname, source);
   try {
-    assertSupportedStateSchemaVersion(connection.database.db, pathname);
+    assertStateReadSchema(connection.database.db, pathname);
   } catch (error) {
     try {
       connection.close();

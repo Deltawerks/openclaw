@@ -60,6 +60,7 @@ export function createOpenClawStateReadTransport(
           context: {
             environment: context.environment,
             coordinatorRuntime: context.coordinatorRuntime,
+            existingSchemaPath: context.existingSchemaPath,
           },
           databasePath: context.admission.databasePath,
           location,
