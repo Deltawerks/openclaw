@@ -9,6 +9,7 @@ import {
   type AgentHarnessAttemptResult,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
+import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { calculateCost, type AssistantMessage } from "openclaw/plugin-sdk/llm";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { AgentsApiClient, type AgentsApiEvent } from "./agentsapi-client.js";
@@ -139,7 +140,7 @@ export async function runAgentsApiAttempt(
         if (submissionError) {
           throw submissionError instanceof Error
             ? submissionError
-            : new Error(String(submissionError), { cause: submissionError });
+            : new Error(formatErrorMessage(submissionError), { cause: submissionError });
         }
       })();
       // The settlement barrier below observes errors; attach immediately to prevent unhandled rejection.
