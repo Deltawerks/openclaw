@@ -164,6 +164,7 @@ it("reads externally created state after an absent read without allocating a wor
   expect(fs.existsSync(pathname)).toBe(false);
   expect(mock.create).not.toHaveBeenCalled();
   expect(mock.runTask).not.toHaveBeenCalled();
+  expect(mock.selectSqlite).not.toHaveBeenCalled();
 
   fs.writeFileSync(pathname, "mock worker source");
   const task = queueTask();

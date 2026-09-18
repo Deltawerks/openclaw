@@ -1,6 +1,9 @@
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { createSqliteLifecycleAggregateError } from "./sqlite-coordinator.js";
-import { createScopedSqliteReadOnlyWorker } from "./sqlite-readonly-worker.js";
+import {
+  captureSqliteReadOnlyWorkerLaunch,
+  createScopedSqliteReadOnlyWorker,
+} from "./sqlite-readonly-worker.js";
 
 /** Private token connections share one process, never a copy/read worker permit. */
 function createStagingOwner() {
@@ -25,14 +28,19 @@ function createStagingOwner() {
     closing = undefined;
   }
   async function session() {
+    const launch = captureSqliteReadOnlyWorkerLaunch();
     if (closing) {
       await closeSession(closing);
     }
     if (worker?.isRetired()) {
       await closeSession(worker);
     }
-    worker ??= createScopedSqliteReadOnlyWorker(false, true);
-    if (!worker.compatible()) {
+    worker ??= createScopedSqliteReadOnlyWorker({
+      ...launch,
+      retainLifetime: false,
+      retainOnOperationError: true,
+    });
+    if (!worker.compatible(launch)) {
       throw new Error(
         "SQLite snapshot staging owner launch context changed; retire its snapshots before retrying",
       );

@@ -8,6 +8,7 @@ const transport = vi.hoisted(() => ({
 }));
 const factory = vi.hoisted(() => vi.fn());
 vi.mock("./sqlite-readonly-worker.js", () => ({
+  captureSqliteReadOnlyWorkerLaunch: () => ({ env: {}, cwd: "/fixture" }),
   createScopedSqliteReadOnlyWorker: factory,
 }));
 
