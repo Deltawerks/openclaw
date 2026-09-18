@@ -252,10 +252,8 @@ function waitForAssertion(assertion: () => void, timeoutMs = 2_000, stepMs = 5) 
   return waitForFast(assertion, { timeout: timeoutMs, interval: stepMs });
 }
 
-async function flushAsyncWork(times = 4) {
-  for (let index = 0; index < times; index += 1) {
-    await Promise.resolve();
-  }
+async function waitForTaskWork() {
+  await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
 }
 
 function expectRecordFields(record: unknown, expected: Record<string, unknown>) {
@@ -336,6 +334,7 @@ async function withTaskRegistryTempDir<T>(
       try {
         return await run(root);
       } finally {
+        await waitForTaskWork();
         // Close both sqlite-backed registries before Windows temp-dir cleanup tries to remove them.
         resetTaskRegistryForTests({ persist: false });
         resetTaskFlowRegistryForTests({ persist: false });
@@ -1929,7 +1928,7 @@ describe("task-registry", () => {
       expect(suspension?.commit()).toBe(true);
 
       await vi.advanceTimersByTimeAsync(5_000);
-      await flushAsyncWork();
+      await waitForTaskWork();
 
       expect(upsertFlow).toHaveBeenCalledTimes(2);
       expect(getActiveGatewayRootWorkCount()).toBe(0);
@@ -3828,7 +3827,7 @@ describe("task-registry", () => {
       stopTaskRegistryMaintenance();
 
       await vi.advanceTimersByTimeAsync(5_000);
-      await flushAsyncWork();
+      await waitForTaskWork();
 
       expectRecordFields(requireTaskById(task.taskId), {
         status: "running",
@@ -3934,7 +3933,7 @@ describe("task-registry", () => {
       try {
         startTaskRegistryMaintenance();
         await vi.advanceTimersByTimeAsync(5_000);
-        await flushAsyncWork();
+        await waitForTaskWork();
         expect(unhandled).toStrictEqual([]);
       } finally {
         process.off("unhandledRejection", onUnhandledRejection);
@@ -4601,7 +4600,7 @@ describe("task-registry", () => {
           endedAt: 250,
         },
       });
-      await flushAsyncWork();
+      await waitForTaskWork();
 
       expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
       expect(peekSystemEvents("agent:main:main")).toEqual([
@@ -4641,7 +4640,7 @@ describe("task-registry", () => {
           error: "Permission denied by ACP runtime",
         },
       });
-      await flushAsyncWork();
+      await waitForTaskWork();
 
       expectRecordFields(sentMessageCall(), {
         channel: "guildchat",
@@ -4684,14 +4683,14 @@ describe("task-registry", () => {
       });
 
       relay.notifyStarted();
-      await flushAsyncWork();
+      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       expectRecordFields(sentMessageCall(), {
         content: "Background task update: ACP background task. Started.",
       });
 
       hoisted.sendMessageMock.mockClear();
       vi.advanceTimersByTime(1_500);
-      await flushAsyncWork();
+      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       expectRecordFields(sentMessageCall(), {
         content:
           "Background task update: ACP background task. No prompt submission observed for 1s after child start.",
