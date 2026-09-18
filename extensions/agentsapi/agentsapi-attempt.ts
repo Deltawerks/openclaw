@@ -622,8 +622,6 @@ export async function runAgentsApiAttempt(
           usage,
           assertCurrent,
         );
-      }
-      if (text) {
         await params.onAssistantMessageStart?.();
       }
       assertCurrent();
