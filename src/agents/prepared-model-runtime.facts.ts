@@ -19,8 +19,11 @@ import {
 import { resolvePreparedProviderStaticConfigs } from "../plugins/provider-discovery.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import { getPluginRegistryInspectionResources } from "../plugins/registry-inspection-resources.js";
-import { capturePluginLifecycleAuthority } from "../plugins/registry-lifecycle.js";
-import type { PluginRegistry } from "../plugins/registry-types.js";
+import {
+  capturePluginLifecycleAuthority,
+  capturePluginRegistryLifecycleEpoch,
+} from "../plugins/registry-lifecycle.js";
+import { disposePluginRegistryInstances } from "../plugins/runtime.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { resolveRuntimeSyntheticAuthProviderRefs } from "../plugins/synthetic-auth.runtime.js";
 import { prepareAmbientAgentCredentialsForDiscovery } from "./agent-auth-discovery.js";
@@ -160,26 +163,6 @@ export async function prepareWorkspaceBuildGroup(
     reusablePluginGeneration?.preferBuiltPluginArtifacts ??
     options.preferBuiltPluginArtifacts === true;
   options.registryResources?.retainGeneration(reusablePluginGeneration);
-  const registryClaims = new Map<PluginRegistry, ReturnType<typeof retainPreparedPluginRegistry>>();
-  await using registryCustody = {
-    retain: (registry: PluginRegistry) => {
-      if (!registryClaims.has(registry)) {
-        // The final generation acquires its own claim before these construction claims release.
-        registryClaims.set(registry, retainPreparedPluginRegistry(registry));
-      }
-    },
-    [Symbol.asyncDispose]: async () => {
-      const results = await Promise.allSettled(
-        [...registryClaims.values()].map(async (release) => await release?.()),
-      );
-      const failures = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      if (failures.length) {
-        throw new AggregateError(failures, "Prepared registry construction cleanup failed");
-      }
-    },
-  };
   const preparingRegistries = prepareWorkspacePluginRegistries(
     input,
     pluginMetadataSnapshot,
@@ -190,10 +173,16 @@ export async function prepareWorkspaceBuildGroup(
     options.basePluginIds,
     options.registryResources,
     options.purpose,
-    registryCustody.retain,
   );
   const { inboundPluginRegistry, runtimePluginRegistry, primaryRegistry } =
     preparingRegistries instanceof Promise ? await preparingRegistries : preparingRegistries;
+  await using registryBorrows = new AsyncDisposableStack();
+  for (const registry of new Set([runtimePluginRegistry, inboundPluginRegistry])) {
+    const release = registry && retainPreparedPluginRegistry(registry);
+    if (release) {
+      registryBorrows.defer(release);
+    }
+  }
   const reuseRuntimeFacts =
     reusablePluginGeneration && runtimePluginRegistry === reusablePluginGeneration.pluginRegistry;
   const resources = primaryRegistry && getPluginRegistryInspectionResources(primaryRegistry);
@@ -536,7 +525,15 @@ export async function prepareWorkspaceBuildGroup(
     }
     return outcome.value;
   } catch (error) {
-    const cleanup = preparedGeneration ? [discardPreparedPluginGeneration(preparedGeneration)] : [];
+    const cleanup = preparedGeneration
+      ? [discardPreparedPluginGeneration(preparedGeneration)]
+      : [...new Set([runtimePluginRegistry, inboundPluginRegistry])].flatMap((registry) =>
+          registry &&
+          !getPluginRegistryInspectionResources(registry) &&
+          !capturePluginRegistryLifecycleEpoch(registry)
+            ? [disposePluginRegistryInstances(registry)]
+            : [],
+        );
     const results = await Promise.allSettled(cleanup);
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
