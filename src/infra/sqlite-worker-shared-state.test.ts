@@ -472,7 +472,6 @@ it("awaits the queued registration caller's two worker writes without host SQL",
         }),
         bindReservation: () => {},
         activate,
-        settleFailedLaunch: () => {},
       });
       expect(entry.queuedLaunch).toBeUndefined();
       expect(createTask).not.toHaveBeenCalled();

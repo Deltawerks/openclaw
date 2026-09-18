@@ -30,6 +30,9 @@ function createFixtureGit(root: string) {
     TMPDIR: root,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
+    // The source template is copied immediately after commits; a detached
+    // repack must not remove loose objects while that copy is reading them.
+    GIT_CONFIG_PARAMETERS: "'maintenance.auto=false' 'gc.auto=0'",
     GIT_ALLOW_PROTOCOL: "file",
     GIT_TERMINAL_PROMPT: "0",
     XDG_CONFIG_HOME: join(home, ".config"),
@@ -389,6 +392,10 @@ exec ${shellQuote(realGit)} "$@"
     prelude +
       `
 event({ kind: 'gh', args });
+if (args[0] === 'api' && args.includes('repos/fixture/repo') &&
+    JSON.stringify(args) !== JSON.stringify(['api', '--hostname', 'github.com', 'repos/fixture/repo', '-H', 'Cache-Control: max-age=0'])) {
+  throw new Error('Unexpected authoritative repository request');
+}
 let value;
 if (args[0] === 'auth') process.exit(1);
 if (args[0] === 'pr' && args[1] === 'view') {

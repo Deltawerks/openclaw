@@ -6,7 +6,6 @@ import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-a
 import { isCliProvider } from "../../agents/model-selection.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
-import { prepareGitHubPublicationAvailability } from "../../gateway/github-publication-availability.js";
 import { revokeMessageActionTurnCapability } from "../../gateway/message-action-turn-capability.js";
 import { clearAgentRunTerminalWriteContext } from "../../infra/agent-run-terminal-writes.js";
 import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
@@ -81,7 +80,6 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
   const bootstrapContextRunKind = turn.opts?.isHeartbeat
     ? ("heartbeat" as const)
     : ("default" as const);
-  let githubPublicationAvailability: Promise<boolean> | undefined;
 
   params.timing.logMilestoneIfSlow({
     runId: params.runId,
@@ -133,6 +131,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
   };
   return params.timing.measure("model_fallback", () =>
     runEmbeddedAgentEntry<EmbeddedAgentRunResult>({
+      preparedRunAdmission: params.preparedRunAdmission,
       selection: {
         cfg: selection.cfg,
         provider: selection.provider,
@@ -189,7 +188,9 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           hasRetryBlockedDelivery:
             turn.blockReplyPipeline?.hasRetryBlockedDelivery() === true ||
             params.directBlockDeliveries.some(hasBlockReplyDeliveryCustody),
-          hasDirectlySentBlockReply: params.directlySentBlockKeys.size > 0,
+          hasDirectlySentBlockReply: params.directBlockDeliveries.some(
+            (delivery) => delivery.terminalDeliveryConfirmed === true,
+          ),
           hasBlockReplyPipelineOutput: Boolean(
             turn.blockReplyPipeline?.hasBuffered() || turn.blockReplyPipeline?.didStream(),
           ),
@@ -323,14 +324,6 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           }
           const candidate = await runEmbeddedFallbackCandidate({
             ...common,
-            githubPublicationAvailable: await (githubPublicationAvailability ??=
-              turn.sessionKey && params.effectiveRun.agentId
-                ? prepareGitHubPublicationAvailability({
-                    sessionId: turn.followupRun.run.sessionId,
-                    sessionKey: turn.sessionKey,
-                    agentId: params.effectiveRun.agentId,
-                  })
-                : Promise.resolve(false)),
             effectiveRun: params.effectiveRun,
             sessionRuntimeOverride: runtime.sessionRuntimeOverride,
             getLifecycleGeneration: () => params.state.lifecycleGeneration,

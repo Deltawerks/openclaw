@@ -48,11 +48,8 @@ export function registerQueuedRegistrationClaimCases(params: {
       f.writes[1]!.gate.resolve();
       await registration;
       const entry = f.runs.get(f.registration.runId)!;
-      const refused = createDeferred();
-      f.options.persistOrThrow.mockImplementationOnce(() => {
-        refused.resolve();
-        throw new Error("terminal write refused");
-      });
+      const finalize = vi.mocked(params.finalizer());
+      const { completeCollectorLaunchCleanup } = await import("./subagent-registry.js");
       const launch = vi.fn(() => {
         const attempt = createDeferred<never>();
         attempt.reject(failure);
@@ -84,14 +81,28 @@ export function registerQueuedRegistrationClaimCases(params: {
       vi.useFakeTimers({ toFake: ["setTimeout"] });
       try {
         activateSwarmRun({ groupId, runId: entry.runId, ...callbacks, onStartFailure: failures });
-        await refused.promise;
+        await vi.waitFor(() => expect(f.writes).toHaveLength(3));
+        expect(f.writes[2]!.snapshot.get(entry.runId)?.queuedLaunch).toBeUndefined();
+        f.writes[2]!.gate.resolve();
+        await vi.waitFor(() => expect(f.writes).toHaveLength(4));
+        expect(finalize).toHaveBeenCalledOnce();
+        f.writes[3]!.gate.reject(
+          new SubagentRegistryWriteError("not-committed", new Error("terminal write refused")),
+        );
         await new Promise<void>((resolve) => {
           setImmediate(resolve);
         });
         expect(entry.execution.status).toBe("queued");
-        expect(f.scope.canLaunch()).toBe(true);
+        expect(f.scope.canLaunch()).toBe(false);
         await vi.advanceTimersByTimeAsync(1_000);
-        expect(f.options.persistOrThrow.mock.calls).toEqual([[entry.runId], [entry.runId]]);
+        await vi.waitFor(() => expect(f.writes).toHaveLength(5));
+        expect(f.writes[4]!.snapshot.get(entry.runId)?.execution.status).toBe("terminal");
+        f.writes[4]!.gate.resolve();
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(f.options.persistOrThrow).not.toHaveBeenCalled();
+        expect(finalize).toHaveBeenCalledOnce();
         expect(failures.mock.calls).toEqual([[failure], [failure]]);
         expect(launch).toHaveBeenCalledOnce();
         expect(cleanup).toHaveBeenCalledOnce();
@@ -101,7 +112,11 @@ export function registerQueuedRegistrationClaimCases(params: {
           outcome: { status: "error", error: summarizeSpawnError(failure) },
         });
         expect(isSwarmRunActive(entry.runId)).toBe(false);
+        expect(completeCollectorLaunchCleanup).toHaveBeenCalledTimes(
+          cleanupResult === "complete" ? 1 : 0,
+        );
       } finally {
+        f.acknowledgeAllWrites();
         await closeSwarmScheduler();
         vi.useRealTimers();
       }
@@ -586,6 +601,7 @@ export function registerQueuedRegistrationClaimCases(params: {
         f.manager.releaseSubagentRunKillClaim({ runId: entry.runId, expected: entry, claim });
       }
       gate.resolve();
+      f.acknowledgeAllWrites();
       await pending;
     }
     expect(rollback).toHaveBeenCalledOnce();

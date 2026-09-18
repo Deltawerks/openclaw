@@ -26,7 +26,12 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
+import {
+  recordRuntimeAuthMaterialization,
+  revokeRuntimeAuthMaterializations,
+} from "./auth-profiles/runtime-materializations.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
+import { getPreparedModelRuntimeAuthMaterializations } from "./prepared-model-runtime-auth.js";
 import {
   getPreparedModelRuntimeSnapshot,
   publishPreparedModelRuntimeSnapshot,
@@ -137,15 +142,53 @@ afterEach(async ({ task }) => {
 });
 
 describe("catalog publication session rows", () => {
-  it("publishes attempt status without rebuilding unchanged resident rows", async () => {
-    const { rows, list, refresh, initial } = await setup();
+  it.each(["bound", "revoked"] as const)(
+    "keeps session rows resident when runtime auth is %s",
+    async (action) => {
+      const { config, rows, list, initial, readCatalog } = await setup(true);
+      const input = { config, agentId: "default", agentDir: state.agentDir("default") };
+      const owner = getPreparedModelRuntimeSnapshot(input)!;
+      const route = {
+        agentDir: input.agentDir,
+        provider: model.provider,
+        modelId: model.id,
+        modelApi: "openai-completions",
+        modelBaseUrl: "https://synthetic.example.test/v1",
+        requestTransportOverrides: "none" as const,
+        authMode: "api-key",
+        runtimeOwnerId: "synthetic",
+      };
+      if (action === "revoked") {
+        expect(recordRuntimeAuthMaterialization(route)).toBe(true);
+        await list();
+      }
+      const before = rows.materializedCount;
+      const catalogReads = readCatalog.mock.calls.length;
+      expect(
+        action === "bound"
+          ? recordRuntimeAuthMaterialization(route)
+          : revokeRuntimeAuthMaterializations(route),
+      ).toBe(true);
+      expect(getPreparedModelRuntimeAuthMaterializations(owner)).toEqual(
+        action === "bound"
+          ? [expect.objectContaining({ provider: model.provider, modelId: model.id })]
+          : [],
+      );
+      expect(rows.dirtyRowCount).toBe(0);
+      expect((await list()).sessions).toEqual(initial.sessions);
+      expect(rows.materializedCount).toBe(before);
+      expect(readCatalog).toHaveBeenCalledTimes(catalogReads);
+    },
+  );
+
+  it("publishes settled attempt status without rebuilding unchanged resident rows", async () => {
+    const { rows, list, refresh, initial, readCatalog } = await setup();
     const before = rows.materializedCount;
+    const catalogReads = readCatalog.mock.calls.length;
     const started = createDeferred();
     const reply = createDeferred<ModelCatalogSnapshot>();
-    const events: string[] = [];
-    const unsubscribe = registerPreparedModelRuntimePublicationListener(({ phase }) =>
-      events.push(phase),
-    );
+    const events = vi.fn<Parameters<typeof registerPreparedModelRuntimePublicationListener>[0]>();
+    const unsubscribe = registerPreparedModelRuntimePublicationListener(events);
     mocks.runPreparedModelCatalogWorker.mockImplementationOnce(async () => {
       started.resolve();
       return reply.promise;
@@ -155,10 +198,14 @@ describe("catalog publication session rows", () => {
       await started.promise;
       expect((await list()).sessions).toEqual(initial.sessions);
       expect(rows.materializedCount - before).toBe(0);
+      expect(rows.dirtyRowCount).toBe(0);
+      expect(readCatalog).toHaveBeenCalledTimes(catalogReads);
       reply.resolve(catalog());
       await pending;
       expect((await list()).sessions).toEqual(initial.sessions);
       expect(rows.materializedCount - before).toBe(0);
+      expect(rows.dirtyRowCount).toBe(0);
+      expect(readCatalog).toHaveBeenCalledTimes(catalogReads);
 
       mocks.runPreparedModelCatalogWorker.mockRejectedValueOnce(new Error("synthetic failure"));
       await expect(refresh()).rejects.toThrow("synthetic failure");
@@ -167,8 +214,17 @@ describe("catalog publication session rows", () => {
       await refresh();
       expect((await list()).sessions).toEqual(initial.sessions);
       expect(rows.materializedCount - before).toBe(0);
-      expect(events.filter((phase) => phase === "catalog-published").length).toBeGreaterThan(2);
-      expect(events).toContain("catalog-failed");
+      expect(rows.dirtyRowCount).toBe(0);
+      expect(readCatalog).toHaveBeenCalledTimes(catalogReads);
+      expect(events.mock.calls.map(([event]) => event)).toEqual([
+        { phase: "catalog-published", modelFactsChanged: false },
+        {
+          phase: "catalog-failed",
+          error: expect.objectContaining({ message: "synthetic failure" }),
+          modelFactsChanged: false,
+        },
+        { phase: "catalog-published", modelFactsChanged: false, refreshStatusChanged: true },
+      ]);
     } finally {
       reply.resolve(catalog());
       await pending;
@@ -295,22 +351,23 @@ describe("catalog publication session rows", () => {
     expect(rows.needsMaterialization).toBe(false);
   });
 
-  it("retries failed catalog reads on the next list after an unchanged publication", async () => {
+  it("serves retained rows after a failed background catalog read and retries on the next list", async () => {
     const { rows, list, refresh, readCatalog } = await setup();
-    const readFailed = createDeferred();
-    readCatalog.mockImplementationOnce(async () => {
-      readFailed.resolve();
-      throw new Error("projection read failure");
-    });
+    const replacement = createDeferred<Awaited<ReturnType<typeof readCatalog>>>();
+    readCatalog.mockReturnValueOnce(replacement.promise);
     mocks.runPreparedModelCatalogWorker.mockResolvedValue(
       catalog({ ...model, contextWindow: 64_000 }),
     );
     await refresh();
-    await readFailed.promise;
-    await expect(rows.ensureMaterialized()).rejects.toThrow("projection read failure");
-    expect(rows.needsMaterialization).toBe(true);
-    await refresh();
-    expect((await list()).sessions.every((row) => row.contextTokens === 64_000)).toBe(true);
-    expect(rows.needsMaterialization).toBe(false);
+    try {
+      expect((await list()).sessions.every((row) => row.contextTokens === 32_000)).toBe(true);
+      replacement.reject(new Error("projection read failure"));
+      await projectionWork.yieldSessionListWork();
+      expect(rows.needsMaterialization).toBe(false);
+      expect((await list()).sessions.every((row) => row.contextTokens === 64_000)).toBe(true);
+      expect(rows.needsMaterialization).toBe(false);
+    } finally {
+      replacement.resolve([]);
+    }
   });
 });

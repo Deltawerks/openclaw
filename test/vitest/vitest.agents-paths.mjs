@@ -114,7 +114,7 @@ export const agentVitestProjectOwners = {
     root: `${embeddedRoot}/run`,
     dir: `${embeddedRoot}/run`,
     include: [`${embeddedRoot}/run/**/*.test.ts`],
-    exclude: [],
+    exclude: databaseWorkerCoreTestFiles,
   },
   support: {
     kind: "agentSupport",

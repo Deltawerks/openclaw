@@ -31,7 +31,6 @@ export function registerRequiredQueuedSubagent(params: {
   ) => ReturnType<typeof captureQueuedSubagentTaskOwner>;
   bindReservation: () => void;
   activate: () => void;
-  settleFailedLaunch: (error: string) => void;
   assertCurrent?: () => void;
   retainOwnership?: (scope: SubagentRegistrationScope) => void;
 }): Promise<void> {
@@ -175,11 +174,7 @@ export function registerRequiredQueuedSubagent(params: {
           }
           recoveryPending = undefined;
         }
-        if (settlementPending || !ownsSession()) {
-          await failIncompleteRegistration(error);
-        } else {
-          params.settleFailedLaunch(error);
-        }
+        await failIncompleteRegistration(error);
       },
     }),
   );
