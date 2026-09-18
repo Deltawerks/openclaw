@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { deserialize } from "node:v8";
 import { Worker, type Transferable } from "node:worker_threads";
 import { expect, it, vi } from "vitest";
@@ -10,6 +10,7 @@ import {
   executeOpenClawStateWorker,
   runOpenClawStateWorkerOperation,
 } from "../state/openclaw-state-worker-store.js";
+import * as nodeSqlite from "./node-sqlite.js";
 import type { SqliteWorkerRequest } from "./sqlite-worker-contract.js";
 import { createSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
 import {
@@ -76,28 +77,32 @@ export function registerSharedStateWorkerAdmissionTests(
 
   it("retains explicitly requested lifecycle custody without a host grant factory", async () => {
     const captured = createContext();
+    const messages = vi.spyOn(Worker.prototype, "postMessage");
     await executeOpenClawStateWorker(captured, {
       type: "flows.list",
       input: { ownerKey: "agent:main:main" },
     });
-    // oxlint-disable-next-line typescript/unbound-method -- The interceptor supplies the emitting worker with .call.
-    const postMessage = Worker.prototype.postMessage;
+    const worker = messages.mock.contexts[0];
+    messages.mockRestore();
+    if (!(worker instanceof Worker)) {
+      throw new Error("Expected the shared-state worker");
+    }
+    const postMessage = worker.postMessage.bind(worker);
     let observed = false;
-    vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
-      this: Worker,
-      request: SqliteWorkerRequest,
-      transferList?: readonly Transferable[],
-    ) {
-      if (request.type === "execute") {
-        const held = withStateDatabaseCoordinatorRuntimeDirectory(captured.coordinatorRuntime, () =>
-          retainHeldStateDatabaseCoordinator(captured.admission.databasePath),
-        );
-        expect(held).toBeDefined();
-        held?.release();
-        observed = true;
-      }
-      return postMessage.call(this, request, transferList);
-    });
+    vi.spyOn(worker, "postMessage").mockImplementation(
+      (request: SqliteWorkerRequest, transferList?: readonly Transferable[]) => {
+        if (request.type === "execute") {
+          const held = withStateDatabaseCoordinatorRuntimeDirectory(
+            captured.coordinatorRuntime,
+            () => retainHeldStateDatabaseCoordinator(captured.admission.databasePath),
+          );
+          expect(held).toBeDefined();
+          held?.release();
+          observed = true;
+        }
+        return postMessage(request, transferList);
+      },
+    );
     await runOpenClawStateWorkerOperation(
       captured,
       (scope) =>
@@ -251,29 +256,37 @@ export function registerSharedStateWorkerAdmissionTests(
         type: "flows.list",
         input: { ownerKey: "agent:main:main" },
       });
+      const nativeOpen = nodeSqlite.openNodeSqliteDatabase;
+      const opened = new Map<string, DatabaseSync>();
+      const openSpy = vi
+        .spyOn(nodeSqlite, "openNodeSqliteDatabase")
+        .mockImplementation((location, ...options) => {
+          const database = nativeOpen(location, ...options);
+          opened.set(location, database);
+          return database;
+        });
       const gateway = withStateDatabaseCoordinatorRuntimeDirectory(
         captured.coordinatorRuntime,
         () => acquireGatewayLifecycleCoordinator({ databasePath: captured.admission.databasePath }),
       );
+      openSpy.mockRestore();
+      const native = opened.get(gateway.path);
+      if (!native) {
+        gateway.release();
+        throw new Error("Expected the native Gateway coordinator");
+      }
       const canceled = new AbortController();
       const stopped = new Error("synthetic cancellation before post");
       let factories = 0;
       let closeAttempts = 0;
       const closeFailure = new Error("synthetic unposted fence close failed");
-      // oxlint-disable-next-line typescript/unbound-method -- Forward the actual native database receiver with .call.
-      const close = DatabaseSync.prototype.close;
-      const closes = vi
-        .spyOn(DatabaseSync.prototype, "close")
-        .mockImplementation(function (this: DatabaseSync) {
-          if (
-            timing === "cleanup-failure" &&
-            this.location() === gateway.path &&
-            ++closeAttempts === 1
-          ) {
-            throw closeFailure;
-          }
-          return close.call(this);
-        });
+      const close = native.close.bind(native);
+      const closes = vi.spyOn(native, "close").mockImplementation(() => {
+        if (timing === "cleanup-failure" && ++closeAttempts === 1) {
+          throw closeFailure;
+        }
+        return close();
+      });
       const posts = vi.spyOn(Worker.prototype, "postMessage");
       try {
         await runOpenClawStateWorkerOperation(
