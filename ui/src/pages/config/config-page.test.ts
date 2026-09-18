@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
+import { changedServerUiPrefs } from "../../app/server-prefs-intent.ts";
 import { createServerPrefsWriter } from "../../app/server-prefs.test-support.ts";
 import {
   applyServerUiPrefs,
-  changedServerUiPrefs,
   flushServerUiPrefs,
   pushServerUiPrefs,
   refreshProfileAppearancePrefs,

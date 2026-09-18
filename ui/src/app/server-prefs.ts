@@ -7,6 +7,7 @@ import type { ConfigPatchAck } from "../lib/config/config-gateway-operations.ts"
 import type { RuntimeConfigCapability } from "../lib/config/runtime-config-capability.ts";
 import type { ApplicationGatewaySnapshot } from "./gateway.ts";
 import { hasOperatorWriteAccess } from "./operator-access.ts";
+import { requestServerUiPrefReset, resetServerUiPrefIntent } from "./server-prefs-intent.ts";
 import {
   loadProfileAppearancePrefs,
   rememberProfileAppearanceIdentity,
@@ -98,38 +99,8 @@ export function resolveServerUiPrefState<K extends SyncedPrefKey>(
     ? { ...state, provenance: "synced" }
     : state;
 }
-/** Synced-key delta between two local settings snapshots, for the push path. */
-export function changedServerUiPrefs(previous: UiSettings, next: UiSettings): ServerUiPrefs | null {
-  const prefs: ServerUiPrefs = {};
-  for (const key of SYNCED_PREF_KEYS) {
-    if (requestedDeviceLocalPrefResets.delete(key)) {
-      continue;
-    }
-    if (requestedServerUiPrefResets.delete(key)) {
-      (prefs as Record<string, unknown>)[key] = null;
-      continue;
-    }
-    const specification = SYNCED_PREFS[key];
-    const previousValue = specification.local(previous);
-    const nextValue = specification.local(next);
-    if (prefValuesEqual(previousValue, nextValue)) {
-      continue;
-    }
-    if (nextValue === undefined) {
-      // JSON merge patch removes keys via explicit null.
-      if (specification.clearable) {
-        (prefs as Record<string, unknown>)[key] = null;
-      }
-      continue;
-    }
-    (prefs as Record<string, unknown>)[key] = nextValue;
-  }
-  return Object.keys(prefs).length > 0 ? prefs : null;
-}
 const CONFLICT_REDRAIN_DELAY_MS = 1_000;
 const MAX_CONFLICT_REDRAINS = 5;
-const requestedServerUiPrefResets = new Set<SyncedPrefKey>();
-const requestedDeviceLocalPrefResets = new Set<SyncedPrefKey>();
 let applyingServerPrefs = false;
 let pendingScope = "";
 let pendingPrefs: ServerUiPrefs | null = null;
@@ -280,8 +251,7 @@ export function resetServerUiPrefsSync() {
   lastReconciledScope = "";
   lastReconciledConfigObject = null;
   resetProfileAppearancePrefs();
-  requestedServerUiPrefResets.clear();
-  requestedDeviceLocalPrefResets.clear();
+  resetServerUiPrefIntent();
 }
 
 export function resetServerUiPref<K extends ResettableServerUiPrefKey>(
@@ -313,10 +283,10 @@ export function resetServerUiPref<K extends ResettableServerUiPrefKey>(
       cancelPendingKeys(scope, [key]);
     }
     updateRetainedLocalKeys(effectiveScope, [key], false);
-    requestedDeviceLocalPrefResets.add(key);
+    requestServerUiPrefReset(key, "device-local");
     return patchSettings(write(state.resetValue));
   }
-  requestedServerUiPrefResets.add(key);
+  requestServerUiPrefReset(key, "server");
   // The resolved state owns the reset target, including the Gateway fallback
   // while the profile is still loading. Config preferences use product defaults.
   if (state) {
