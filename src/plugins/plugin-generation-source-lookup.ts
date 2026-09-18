@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { isPathInside } from "../infra/path-guards.js";
+import { isPathInside } from "./path-safety.js";
 import { createPluginSourceCapture } from "./plugin-package-metadata-capture.js";
 
 function canonicalSource(rootDir: string, sourceRoot: string, source: string): string {
