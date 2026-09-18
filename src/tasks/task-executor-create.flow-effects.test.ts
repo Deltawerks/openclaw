@@ -509,9 +509,11 @@ it("preserves acknowledged cleanup and repairs its flow after a snapshot failure
     throw new Error("Expected a created task");
   }
   f.failSnapshot();
-  expect(
-    await created?.settleUnstarted({ status: "failed", endedAt: Date.now() }, () => true),
-  ).toBe(true);
+  const settlement = created.settleUnstarted({ status: "failed", endedAt: Date.now() }, () => true);
+  expect(created.settleUnstarted({ status: "cancelled", endedAt: Date.now() }, () => true)).toBe(
+    settlement,
+  );
+  expect(await settlement).toBe(true);
   expect(f.store.loadSnapshot().tasks.get(created.task.taskId)?.status).toBe("failed");
   expect(f.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe("running");
   await drainRetry();

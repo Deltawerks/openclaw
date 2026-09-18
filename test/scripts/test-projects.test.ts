@@ -2709,6 +2709,7 @@ describe("scripts/test-projects changed-target routing", () => {
         forwardedArgs: [],
         includePatterns: [
           "src/agents/tools/message-tool.internal-source-reply.integration.test.ts",
+          "src/agents/tools/swarm-tools.integration.test.ts",
           "src/agents/tools/cron-tool.output-contract.test.ts",
         ],
         watchMode: false,

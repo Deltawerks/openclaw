@@ -58,6 +58,7 @@ import {
   createSubagentRunParams,
   createSubagentRunRecord,
   expectRecordFields,
+  findRecordCallArg,
   mockGatewayMethods,
   mockCallArg as getMockCallArg,
   waitForFast,
@@ -82,25 +83,6 @@ import type {
 } from "./subagent-registry.types.js";
 
 const noop = () => {};
-
-function findRecordCallArg(
-  mock: ReturnType<typeof vi.fn>,
-  argIndex: number,
-  label: string,
-  predicate: (record: Record<string, unknown>) => boolean,
-): Record<string, unknown> {
-  for (const call of mock.mock.calls as unknown[][]) {
-    const value = call[argIndex];
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      continue;
-    }
-    const record = value as Record<string, unknown>;
-    if (predicate(record)) {
-      return record;
-    }
-  }
-  throw new Error(`expected ${label}`);
-}
 
 const mocks = vi.hoisted(() => ({
   callGateway:
@@ -270,6 +252,9 @@ vi.mock("./subagent-registry-state.js", () => ({
   getSubagentMaintenanceRunsSnapshotForRead: mocks.getSubagentRunsSnapshotForRead,
   persistSubagentRunsToDisk: mocks.persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow: mocks.persistSubagentRunsToDiskOrThrow,
+  persistSubagentRunsToDiskAsyncOrThrow: async () => {
+    throw new Error("Unexpected required queued registration");
+  },
   restoreSubagentRunsFromDisk: mocks.restoreSubagentRunsFromDisk,
 }));
 
@@ -501,8 +486,19 @@ describe("subagent registry seam flow", () => {
       ...registry,
       addSubagentRunForTests: (entry) =>
         registry.addSubagentRunForTests(createSubagentRunRecord(entry)),
-      registerSubagentRun: (params) =>
-        registry.registerSubagentRun(createSubagentRunParams(params)),
+      registerSubagentRun: (params) => {
+        const registration = createSubagentRunParams(params);
+        if (registration.taskRowOwnership !== "required") {
+          return registry.registerSubagentRun({
+            ...registration,
+            taskRowOwnership: registration.taskRowOwnership,
+          });
+        }
+        if (registration.queued) {
+          throw new Error("Required queued registration belongs in awaited fixtures");
+        }
+        return registry.registerSubagentRun({ ...registration, queued: false });
+      },
     };
   });
 
@@ -2482,6 +2478,9 @@ describe("subagent registry seam flow", () => {
     const runs = new Map([[runId, entry]]);
     const persistOrThrow = vi.fn();
     const manager = createSubagentRunManager({
+      persistAsyncOrThrow: async () => {
+        throw new Error("Unexpected queued registration");
+      },
       runs,
       getRunsForChildSession: () => runs.values(),
       resumedRuns: new Set(),

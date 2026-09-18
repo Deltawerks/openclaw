@@ -1,4 +1,5 @@
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
+import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
@@ -74,6 +75,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       input: undefined;
       output: ReturnType<typeof readSqliteDatabaseBloat>;
     };
+    "subagents.persistChanges": { input: SubagentRegistryWrite; output: { writeId: string } };
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
     "projects.list": { input: undefined; output: ProjectRegistryRecord[] };

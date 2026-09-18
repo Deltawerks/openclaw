@@ -4,6 +4,7 @@ import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worke
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import type {
   DetachedRunningTaskCreateParams,
+  DetachedTaskCreateParams,
   CreatedDetachedTaskRun,
 } from "./detached-task-runtime-contract.js";
 import {
@@ -43,18 +44,49 @@ export type CoreTaskCreation = {
   assertStores: () => void;
 };
 
+type CreatedTaskRunReceipt = {
+  task: TaskRecord;
+  settleUnstarted: (
+    terminal: Parameters<CreatedDetachedTaskRun["settleUnstarted"]>[0] & {
+      suppressDelivery?: boolean;
+      lastEventAt?: number;
+    },
+    canSettle: (task: TaskRecord) => boolean,
+  ) => Promise<TaskRecord | null>;
+};
+
 export async function createRunningTaskRunCoreWithReceiptAsync(
   params: DetachedRunningTaskCreateParams,
   assertCurrent?: () => void,
 ): Promise<CreatedDetachedTaskRun | null> {
   const creation = await createTaskRun({ ...params, status: "running" }, assertCurrent);
-  const acknowledged = cloneTaskRecord(creation.task);
+  const receipt = createTaskRunReceipt(creation);
   let settlement: Promise<boolean> | undefined;
   return {
-    task: cloneTaskRecord(acknowledged),
+    task: receipt.task,
     finalizeActive(terminal, canSettle) {
-      return finalizeActiveTaskRun(creation, acknowledged, terminal, canSettle);
+      return finalizeActiveTaskRun(creation, creation.task, terminal, canSettle);
     },
+    settleUnstarted(terminal, canSettle) {
+      return (settlement ??= receipt
+        .settleUnstarted(terminal, canSettle)
+        .then((task) => task !== null));
+    },
+  };
+}
+
+export async function createQueuedTaskRunCoreWithReceiptAsync(
+  params: DetachedTaskCreateParams,
+  assertCurrent?: () => void,
+): Promise<CreatedTaskRunReceipt> {
+  return createTaskRunReceipt(await createTaskRun({ ...params, status: "queued" }, assertCurrent));
+}
+
+function createTaskRunReceipt(creation: CoreTaskCreation): CreatedTaskRunReceipt {
+  const acknowledged = cloneTaskRecord(creation.task);
+  let settlement: Promise<TaskRecord | null> | undefined;
+  return {
+    task: cloneTaskRecord(acknowledged),
     settleUnstarted(terminal, canSettle) {
       return (settlement ??= settleUnstartedTask(creation, acknowledged, terminal, canSettle));
     },
@@ -150,12 +182,12 @@ async function createTaskRun(
 async function settleUnstartedTask(
   creation: CoreTaskCreation,
   task: TaskRecord,
-  terminal: Parameters<CreatedDetachedTaskRun["settleUnstarted"]>[0],
+  terminal: Parameters<CreatedTaskRunReceipt["settleUnstarted"]>[0],
   canSettle: (task: TaskRecord) => boolean,
-): Promise<boolean> {
+): Promise<TaskRecord | null> {
   creation.assertStores();
   if (!task.runId?.trim() || !canSettle(task)) {
-    return false;
+    return null;
   }
   const assertCurrent = () => {
     creation.assertStores();
@@ -175,13 +207,15 @@ async function settleUnstartedTask(
           endedAt: terminal.endedAt,
           error: terminal.error,
           terminalSummary: terminal.terminalSummary,
+          suppressDelivery: terminal.suppressDelivery,
+          lastEventAt: terminal.lastEventAt,
         },
         now: Date.now(),
       },
     },
     assertCurrent,
   );
-  return settled !== null;
+  return settled ? cloneTaskRecord(settled.task) : null;
 }
 
 async function ensureSingleTaskFlowAsync(
