@@ -14,7 +14,7 @@ export type PhysicalPathInsideRoot = {
 };
 
 /** Resolves matching physical spellings when Windows presents one tree through different aliases. */
-export function resolvePhysicalPathInsideRootSync(
+function resolvePhysicalPathInsideRootSync(
   rootPath: string,
   targetPath: string,
 ): PhysicalPathInsideRoot | undefined {
