@@ -9,6 +9,7 @@ import type {
 } from "../config/io.health-state.types.js";
 import type { CronStoreWorkerOperations } from "../cron/store/load-worker.types.js";
 import type { CronStoreSaveWorkerOperations } from "../cron/store/save-worker.types.js";
+import type { FleetRegistryWriteOperations } from "../fleet/registry.types.js";
 import type {
   ManagedImageRecord,
   ManagedImageRecordEntry,
@@ -57,6 +58,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   UserPreferenceWorkerOperations &
   CronStoreWorkerOperations &
   CronStoreSaveWorkerOperations &
+  FleetRegistryWriteOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
