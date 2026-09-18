@@ -9,7 +9,7 @@ import { discoverConfiguredPluginLoadPaths, discoverOpenClawPlugins } from "./di
 import { resolvePluginDoctorContractArtifact } from "./doctor-contract-artifact.js";
 import { buildInstalledPluginIndexRecords } from "./installed-plugin-index-record-builder.js";
 import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
-import { isPathInside } from "./path-safety.js";
+import { isPathInside, resolvePhysicalPathInsideRootSync } from "./path-safety.js";
 import {
   checkPluginCacheEntry,
   pluginCacheExistsSync,
@@ -91,6 +91,21 @@ describe("plugin package facts", () => {
 
     expect(isPathInside(alias, source)).toBe(true);
     expect(isPathInside(alias, external)).toBe(false);
+  });
+
+  it("preserves the observed child spelling while reconciling Windows aliases", () => {
+    const parent = fs.realpathSync(tempDirs.make("plugin-identity-spelling-"));
+    const root = path.join(parent, "canonical-root");
+    const alias = path.join(parent, "root-alias");
+    const source = path.join(root, "plugin.js");
+    fs.mkdirSync(root);
+    fs.writeFileSync(source, "export default {};\n");
+    fs.symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const realpath = vi.spyOn(fs, "realpathSync");
+
+    expect(resolvePhysicalPathInsideRootSync(alias, source)).toEqual({ rootPath: root });
+    expect(realpath).not.toHaveBeenCalled();
   });
 
   it("reads an aliased Windows plugin root through the descriptor boundary", () => {

@@ -22,8 +22,10 @@ export function resolvePhysicalPathInsideRootSync(
     if (!root.isDirectory() || root.ino === 0n) {
       return undefined;
     }
-    const physicalTargetPath = fs.realpathSync(targetPath);
-    let current = physicalTargetPath;
+    // Preserve the observed target spelling. Windows realpath can return the
+    // root's short-name spelling and erase the long-name ancestor we need to
+    // supply to the descriptor boundary.
+    let current = path.resolve(targetPath);
     while (true) {
       const candidate = fs.statSync(current, { bigint: true });
       if (candidate.dev === root.dev && candidate.ino === root.ino) {
