@@ -139,6 +139,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
         }
       : undefined;
   const optionalMediaTools = resolveOptionalMediaToolFactoryPlan({
+    agentDir: options?.agentDir,
     config: availabilityConfig ?? resolvedConfig,
     workspaceDir,
     authStore: options?.authProfileStore,
@@ -159,6 +160,8 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
       agentDir: options.agentDir,
       workspaceDir,
       modelHasVision: options?.modelHasVision,
+      toolAllowlist: options?.pluginToolAllowlist,
+      toolDenylist: options?.pluginToolDenylist,
       authStore: options?.authProfileStore,
       preparedModelRuntime: options?.preparedModelRuntime,
     })

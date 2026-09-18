@@ -9,9 +9,25 @@ import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.ty
 import { modelTransportRoutesMatch } from "./model-compat-catalog.js";
 import { buildConfiguredModelCatalog } from "./model-selection-shared.js";
 import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
-import type { PreparedModelRuntimeCatalogFacts } from "./prepared-model-runtime.catalog-contract.js";
+import type {
+  PreparedModelRuntimeAgentFacts,
+  PreparedModelRuntimeCatalogFacts,
+} from "./prepared-model-runtime.catalog-contract.js";
 import type { PreparedConfiguredRuntimeModel } from "./prepared-model-runtime.types.js";
-import type { ModelRegistry } from "./sessions/model-registry.js";
+import { ModelRegistry } from "./sessions/model-registry.js";
+
+/** Static host projection deliberately has no file/config-backed credential registry. */
+export function prepareCredentialFreeRuntimeFacts(
+  agentFacts: PreparedModelRuntimeAgentFacts,
+  workspaceFacts: ConfiguredCatalogWorkspaceFacts,
+): PreparedModelRuntimeCatalogFacts {
+  return prepareCapturedRuntimeFacts({
+    agentFacts,
+    workspaceFacts,
+    templateModelRegistry: ModelRegistry.inMemory(agentFacts.templateAuthStorage),
+    configuredRuntimeModels: agentFacts.configuredRuntimeModels,
+  });
+}
 
 type ConfiguredCatalogAgentFacts = {
   input: { config: OpenClawConfig };

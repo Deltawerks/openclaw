@@ -22,7 +22,9 @@ export function prepareAgentFacts(
   includeCredentialProviders = catalogMode === "live",
 ): PreparedModelRuntimeAgentBaseFacts {
   const env = input.env ?? process.env;
-  const preparedStore = loadPreparedModelRuntimeAuthStore(input);
+  const preparedStore = input.skipCredentials
+    ? undefined
+    : loadPreparedModelRuntimeAuthStore(input);
   const authFacts = discoverAuthStorageFacts(input.agentDir, {
     config: input.config,
     // Prepared owners consume only the already-published runtime auth generation. External CLI

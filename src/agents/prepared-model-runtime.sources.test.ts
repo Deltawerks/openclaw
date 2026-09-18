@@ -92,6 +92,69 @@ function fixture(mode: "merge" | "replace" = "merge") {
 }
 
 describe("prepared catalog source composition", () => {
+  it("keeps credential-free projection separate from reusable credential-backed registries", async () => {
+    const { facts, generation } = fixture();
+    const remote = {
+      ...facts,
+      input: { ...facts.input, skipCredentials: true },
+    };
+    const registries: PreparedConfiguredModelRegistries = new Map();
+    const read = vi.spyOn(fs, "readFileSync");
+    try {
+      const result = await prepareConfiguredRuntimeFactsBatch({
+        agentFacts: [remote, facts],
+        pluginGeneration: generation,
+        registries,
+      });
+      expect(
+        read.mock.calls.filter(([file]) => file === path.join(facts.input.agentDir, "models.json")),
+      ).toHaveLength(1);
+      expect(result.catalogs.get(remote.input)!.templateModelRegistry.getAll()).toEqual([]);
+      expect(
+        result.catalogs.get(facts.input)!.templateModelRegistry.find(providerId, "authored-only"),
+      ).toBeDefined();
+      const reused = await prepareConfiguredRuntimeFactsBatch({
+        agentFacts: [facts],
+        pluginGeneration: generation,
+        registries,
+      });
+      expect(reused.registryCount).toBe(0);
+      expect(reused.catalogs.get(facts.input)!.templateModelRegistry).toBe(
+        result.catalogs.get(facts.input)!.templateModelRegistry,
+      );
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it("rechecks credential-free projection authority after yielding before reading sources", async () => {
+    const { facts, generation } = fixture();
+    facts.input.skipCredentials = true;
+    let current = true;
+    const retirement = nextTurn().then(() => {
+      current = false;
+    });
+    const read = vi.spyOn(fs, "readFileSync");
+    try {
+      await expect(
+        prepareConfiguredRuntimeFactsBatch({
+          agentFacts: [facts],
+          pluginGeneration: generation,
+          assertCurrent: () => {
+            if (!current) {
+              throw new Error("retired generation");
+            }
+          },
+        }),
+      ).rejects.toThrow("retired generation");
+      expect(
+        read.mock.calls.filter(([file]) => file === path.join(facts.input.agentDir, "models.json")),
+      ).toHaveLength(0);
+    } finally {
+      await retirement;
+      read.mockRestore();
+    }
+  });
   it("retains inherited catalogs and current request settings without custom model rows", async () => {
     vi.stubEnv("OPENAI_API_KEY", undefined);
     const { facts, staticConfig } = fixture();
