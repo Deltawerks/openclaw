@@ -4,6 +4,7 @@ import path from "node:path";
 import { openRootFileSync, readFileDescriptorBoundedSync } from "../infra/boundary-file-read.js";
 import { resolveRootPathSync } from "../infra/boundary-path.js";
 import { FsSafeError } from "../infra/fs-safe.js";
+import { isPathInside as isPathInsideLexical } from "../infra/path-safety.js";
 import { readRegularFileSync } from "../infra/regular-file.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import { resolvePhysicalPathInsideRootSync } from "./path-safety.js";
@@ -173,10 +174,11 @@ export function checkPluginCacheEntry(params: {
       checked = { ok: false, reason: "validation", error };
     }
   } else {
-    const physical = resolvePhysicalPathInsideRootSync(
-      params.rootRealPath ?? params.rootDir,
-      absolutePath,
-    );
+    // A junction at the admitted root is trusted. Only replace the root spelling
+    // when Windows supplied a child through a different (for example 8.3) alias.
+    const physical = isPathInsideLexical(params.rootDir, absolutePath)
+      ? undefined
+      : resolvePhysicalPathInsideRootSync(params.rootRealPath ?? params.rootDir, absolutePath);
     const opened = openRootFileSync({
       absolutePath,
       rootPath: physical?.rootPath ?? params.rootDir,
@@ -242,7 +244,9 @@ export function readPluginCacheFile(params: {
     return enforceFileSize(canonicalCached, maxBytes);
   }
   const absolutePath = path.resolve(canonicalRoot, params.relativePath);
-  const physical = resolvePhysicalPathInsideRootSync(canonicalRoot, absolutePath);
+  const physical = isPathInsideLexical(canonicalRoot, absolutePath)
+    ? undefined
+    : resolvePhysicalPathInsideRootSync(canonicalRoot, absolutePath);
   const opened = openRootFileSync({
     absolutePath,
     rootPath: physical?.rootPath ?? canonicalRoot,

@@ -11,6 +11,7 @@ import { buildInstalledPluginIndexRecords } from "./installed-plugin-index-recor
 import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
 import { isPathInside } from "./path-safety.js";
 import {
+  checkPluginCacheEntry,
   pluginCacheExistsSync,
   pluginCacheRealpathSync,
   readPluginCacheFile,
@@ -121,6 +122,27 @@ describe("plugin package facts", () => {
           rejectHardlinks: false,
         }).ok,
       ).toBe(false);
+    });
+  });
+
+  it("preserves a trusted Windows junction at the plugin root", () => {
+    const parent = fs.realpathSync(tempDirs.make("plugin-junction-root-"));
+    const root = path.join(parent, "canonical-root");
+    const alias = path.join(parent, "root-alias");
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, "plugin.js"), "export default {};\n");
+    fs.symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    withPluginCache(createPluginCache(), () => {
+      expect(
+        checkPluginCacheEntry({
+          rootDir: alias,
+          rootRealPath: root,
+          relativePath: "plugin.js",
+          rejectHardlinks: true,
+        }),
+      ).toMatchObject({ ok: true, exists: true });
     });
   });
 
