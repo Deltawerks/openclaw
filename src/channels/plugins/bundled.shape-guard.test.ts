@@ -231,6 +231,7 @@ afterEach(() => {
   vi.doUnmock("../../plugins/manifest-registry.js");
   vi.doUnmock("../../plugins/channel-catalog-registry.js");
   vi.doUnmock("../../infra/boundary-file-read.js");
+  vi.doUnmock("./module-loader.js");
   vi.doUnmock("./bundled-root.js");
   vi.doUnmock("jiti");
 });
@@ -1212,13 +1213,16 @@ module.exports = {
         resolveBundledChannelGeneratedPath: () => modulePath,
       };
     });
-    vi.doMock("../../infra/boundary-file-read.js", () => ({
-      openRootFileSync: ({ absolutePath }: { absolutePath: string }) => ({
-        ok: true,
-        path: absolutePath,
-        fd: fs.openSync(absolutePath, "r"),
-      }),
-    }));
+    vi.doMock("./module-loader.js", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("./module-loader.js")>();
+      const { createRequire } = await import("node:module");
+      const requireModule = createRequire(import.meta.url);
+      return {
+        ...actual,
+        loadChannelPluginModule: ({ modulePath: candidatePath }: { modulePath: string }) =>
+          requireModule(candidatePath),
+      };
+    });
     vi.doMock("../../plugins/channel-catalog-registry.js", () => ({
       listChannelCatalogEntries: () => [],
     }));
