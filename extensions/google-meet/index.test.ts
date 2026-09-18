@@ -15,7 +15,6 @@ import {
   createNodeMeetingRealtimeAudioTransport,
   startMeetingAgentRealtimeEngine,
   startMeetingRealtimeEngine,
-  type MeetingRealtimeAudioTransport,
 } from "openclaw/plugin-sdk/meeting-runtime";
 import type { RealtimeTranscriptionProviderPlugin } from "openclaw/plugin-sdk/realtime-transcription";
 import type {
@@ -41,6 +40,7 @@ import {
 } from "./src/meet.js";
 import { handleGoogleMeetNodeHostCommand } from "./src/node-host.js";
 import {
+  createTestMeetRealtimeAudioTransport,
   meetAudioBridge,
   meetBrowserState,
   meetRuntime,
@@ -98,31 +98,6 @@ function createIsolatedTestDir(prefix: string): string {
 type MeetRealtimeAudioSpawn = NonNullable<
   Parameters<typeof createLocalMeetingRealtimeAudioTransport>[0]["spawn"]
 >;
-
-function createTestMeetRealtimeAudioTransport() {
-  let inputHandler: ((audio: Buffer) => void) | undefined;
-  const writeOutput = vi.fn(async () => {});
-  const transport: MeetingRealtimeAudioTransport = {
-    onFatal: vi.fn(),
-    startInput: vi.fn((handler) => {
-      inputHandler = handler;
-    }),
-    stop: vi.fn(async () => {}),
-    writeOutput,
-    clearOutput: vi.fn(async () => {}),
-    dispose: vi.fn(async () => {}),
-  };
-  return {
-    transport,
-    writeOutput,
-    deliverInput: (audio: Buffer) => {
-      if (!inputHandler) {
-        throw new Error("Expected Google Meet realtime input to be started");
-      }
-      inputHandler(audio);
-    },
-  };
-}
 
 type TestMeetVoiceBridgeRequest = Parameters<RealtimeVoiceProviderPlugin["createBridge"]>[0];
 type TestMeetTranscriptionRequest = Parameters<
