@@ -3,7 +3,6 @@ import {
   type AgentHarnessV2,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
-import { AGENTSAPI_MODEL_ID } from "./model.js";
 
 /** Explicit MVP harness; the existing OpenAI runtime defaults remain unchanged. */
 export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
@@ -20,8 +19,8 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
     autoSelection: { providerIds: [] },
     deliveryDefaults: { visibleReplies: "automatic" },
     supports: (ctx) => {
-      if (ctx.provider !== "openai" || ctx.modelId !== AGENTSAPI_MODEL_ID) {
-        return { supported: false, reason: "Agents API MVP requires openai/gpt-6-astra" };
+      if (ctx.provider !== "openai") {
+        return { supported: false, reason: "Agents API requires the OpenAI provider" };
       }
       if (
         ctx.modelProvider?.preparedAuth?.requirement === "subscription" ||

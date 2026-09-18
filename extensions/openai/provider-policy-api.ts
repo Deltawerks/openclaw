@@ -29,7 +29,6 @@ import {
   normalizeOpenAIModelRouteId,
   OPENAI_GPT_56_MODEL_ID,
   OPENAI_GPT_56_SOL_MODEL_ID,
-  OPENAI_GPT_6_ASTRA_MODEL_ID,
 } from "./model-route-contract.js";
 import { isOpenAIGptLiveModel, isSupportedOpenAIGptLiveModel } from "./realtime-quicksilver.js";
 import { resolveUnifiedOpenAIThinkingProfile } from "./thinking-policy.js";
@@ -212,13 +211,12 @@ function codexCanReproduceRoute(
 function withRuntimePolicy(
   candidate: ProviderModelRouteCandidate,
   sourceBaseUrl: unknown = candidate.baseUrl,
-  modelId?: string,
 ): ProviderModelRouteCandidate {
   return {
     ...candidate,
     runtimePolicy: {
       compatibleIds: codexCanReproduceRoute(candidate, sourceBaseUrl)
-        ? candidate.authRequirement === "api-key" && modelId === OPENAI_GPT_6_ASTRA_MODEL_ID
+        ? candidate.authRequirement === "api-key"
           ? [...CODEX_RUNTIME_COMPATIBLE_IDS, "agentsapi"]
           : CODEX_RUNTIME_COMPATIBLE_IDS
         : OPENCLAW_RUNTIME_COMPATIBLE_IDS,
@@ -413,7 +411,6 @@ function resolveSingleObservedModelRoute(
       requestTransportOverrides,
     },
     sourceBaseUrl,
-    modelId,
   );
   const chatGPTRoute = withRuntimePolicy(
     {

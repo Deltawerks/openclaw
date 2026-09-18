@@ -64,11 +64,25 @@ only when you want API-key auth for an agent model.
 The separate Agents API plugin (`@openclaw/agentsapi`) registers the explicit
 `agentsapi` harness, alongside the Codex plugin. The OpenAI provider plugin
 continues to own model routes and API-key authentication.
-Set `agents.defaults.model.primary` to `"openai/gpt-6-astra"` and
-`agents.defaults.models["openai/gpt-6-astra"].agentRuntime.id` to
-`"agentsapi"` and use OpenAI API-key authentication. This experimental MVP fixes
-the model to `gpt-6-astra`, reasoning to `low`, and the environment to an
-OpenAI-hosted Linux VM. It does not change automatic runtime selection.
+Select a model in `agents.defaults.model.primary` and set its
+`agents.defaults.models["openai/<model>"].agentRuntime.id` to `"agentsapi"`.
+Use OpenAI API-key authentication. The harness sends the configured model to the
+Agents API without a model allowlist; unsupported models return the API error.
+Reasoning remains `low`, and execution uses an OpenAI-hosted Linux VM.
+Automatic runtime selection is unchanged.
+
+```json5
+{
+  agents: {
+    defaults: {
+      model: { primary: "openai/gpt-6-astra" },
+      models: {
+        "openai/gpt-6-astra": { agentRuntime: { id: "agentsapi" } },
+      },
+    },
+  },
+}
+```
 
 If `plugins.allow` is configured, include `agentsapi` alongside `openai`.
 The standalone plugin owns its native session bindings. Reset sessions created
