@@ -1,13 +1,12 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { openRootFileSync, readFileDescriptorBoundedSync } from "../infra/boundary-file-read.js";
+import { readFileDescriptorBoundedSync } from "../infra/boundary-file-read.js";
 import { resolveRootPathSync } from "../infra/boundary-path.js";
 import { FsSafeError } from "../infra/fs-safe.js";
-import { isPathInside as isPathInsideLexical } from "../infra/path-safety.js";
 import { readRegularFileSync } from "../infra/regular-file.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
-import { resolvePhysicalPathInsideRootSync } from "./path-safety.js";
+import { openPluginRootFileSync } from "./path-safety.js";
 import type {
   PluginEntryCheck,
   PluginFileCacheEntry,
@@ -176,14 +175,10 @@ export function checkPluginCacheEntry(params: {
   } else {
     // A junction at the admitted root is trusted. Only replace the root spelling
     // when Windows supplied a child through a different (for example 8.3) alias.
-    const admittedRoot = params.rootRealPath ?? params.rootDir;
-    const physical = isPathInsideLexical(admittedRoot, absolutePath)
-      ? undefined
-      : resolvePhysicalPathInsideRootSync(admittedRoot, absolutePath);
-    const opened = openRootFileSync({
-      absolutePath: physical?.targetPath ?? absolutePath,
-      rootPath: physical?.rootPath ?? params.rootDir,
-      rootRealPath: physical?.rootPath ?? params.rootRealPath,
+    const opened = openPluginRootFileSync({
+      filePath: absolutePath,
+      rootPath: params.rootDir,
+      rootRealPath: params.rootRealPath,
       boundaryLabel: "plugin package directory",
       rejectHardlinks: params.rejectHardlinks,
     });
@@ -245,13 +240,10 @@ export function readPluginCacheFile(params: {
     return enforceFileSize(canonicalCached, maxBytes);
   }
   const absolutePath = path.resolve(canonicalRoot, params.relativePath);
-  const physical = isPathInsideLexical(canonicalRoot, absolutePath)
-    ? undefined
-    : resolvePhysicalPathInsideRootSync(canonicalRoot, absolutePath);
-  const opened = openRootFileSync({
-    absolutePath: physical?.targetPath ?? absolutePath,
-    rootPath: physical?.rootPath ?? canonicalRoot,
-    rootRealPath: physical?.rootPath ?? canonicalRoot,
+  const opened = openPluginRootFileSync({
+    filePath: absolutePath,
+    rootRealPath: canonicalRoot,
+    rootPath: canonicalRoot,
     boundaryLabel: "plugin root",
     rejectHardlinks: params.rejectHardlinks,
     maxBytes,

@@ -188,6 +188,63 @@ describe("plugin package facts", () => {
     expect(openSync).not.toHaveBeenCalled();
   });
 
+  it.each(["entry check", "file read"] as const)(
+    "rejects a retargeted observed root during plugin cache %s",
+    (operation) => {
+      const parent = fs.realpathSync(tempDirs.make("plugin-cache-alias-race-"));
+      const trustedContainer = path.join(parent, "trusted");
+      const replacementContainer = path.join(parent, "replacement");
+      const trustedRoot = path.join(trustedContainer, "plugin");
+      const replacementRoot = path.join(replacementContainer, "plugin");
+      const trustedAlias = path.join(parent, "trusted-alias");
+      const observedParent = path.join(parent, "observed-parent");
+      fs.mkdirSync(trustedRoot, { recursive: true });
+      fs.mkdirSync(replacementRoot, { recursive: true });
+      fs.writeFileSync(path.join(trustedRoot, "package.json"), "trusted\n");
+      fs.writeFileSync(path.join(replacementRoot, "package.json"), "replacement\n");
+      fs.symlinkSync(trustedRoot, trustedAlias, process.platform === "win32" ? "junction" : "dir");
+      fs.symlinkSync(
+        trustedContainer,
+        observedParent,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+      const observedRoot = path.join(observedParent, "plugin");
+      const relativePath = path.relative(trustedAlias, path.join(observedRoot, "package.json"));
+      const originalLstat = fs.lstatSync;
+      let rootObservations = 0;
+      vi.spyOn(fs, "lstatSync").mockImplementation(((filePath, options) => {
+        if (filePath === observedRoot && ++rootObservations === 2) {
+          fs.unlinkSync(observedParent);
+          fs.symlinkSync(
+            replacementContainer,
+            observedParent,
+            process.platform === "win32" ? "junction" : "dir",
+          );
+        }
+        return originalLstat(filePath, options as never);
+      }) as typeof fs.lstatSync);
+      const openSync = vi.spyOn(fs, "openSync");
+
+      const result = withPluginCache(createPluginCache(), () =>
+        operation === "entry check"
+          ? checkPluginCacheEntry({
+              rootDir: trustedAlias,
+              relativePath,
+              rejectHardlinks: true,
+            })
+          : readPluginCacheFile({
+              rootDir: trustedAlias,
+              relativePath,
+              rejectHardlinks: true,
+            }),
+      );
+
+      expect(result.ok).toBe(false);
+      expect(openSync).not.toHaveBeenCalled();
+    },
+  );
   it("reads an aliased Windows plugin root through the descriptor boundary", () => {
     const parent = fs.realpathSync(tempDirs.make("plugin-identity-read-"));
     const root = path.join(parent, "canonical-root");

@@ -1,8 +1,8 @@
 /** Plugin-local re-export of shared path safety helpers for plugin install/runtime code. */
 import fs from "node:fs";
 import path from "node:path";
-import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
+import { FsSafeError } from "../infra/fs-safe.js";
 import { isPathInside as isPathInsideLexical } from "../infra/path-safety.js";
 
 export { safeRealpathSync, safeStatSync, formatPosixMode } from "../infra/path-safety.js";
@@ -93,22 +93,27 @@ function createIdentityBoundRootFileFs(
   };
 }
 
-/** Opens a runtime plugin artifact after reconciling Windows root aliases. */
+/** Opens a plugin artifact after reconciling Windows root aliases. */
 export function openPluginRootFileSync(params: {
   rootPath: string;
+  rootRealPath?: string;
   filePath: string;
   rejectHardlinks: boolean;
+  boundaryLabel?: string;
+  maxBytes?: number;
 }) {
-  const physical = isPathInsideLexical(params.rootPath, params.filePath)
+  const admittedRoot = params.rootRealPath ?? params.rootPath;
+  const physical = isPathInsideLexical(admittedRoot, params.filePath)
     ? undefined
-    : resolvePhysicalPathInsideRootSync(params.rootPath, params.filePath);
+    : resolvePhysicalPathInsideRootSync(admittedRoot, params.filePath);
   return openRootFileSync({
     absolutePath: physical?.targetPath ?? params.filePath,
     rootPath: physical?.rootPath ?? params.rootPath,
-    rootRealPath: physical?.rootPath,
-    boundaryLabel: "plugin root",
+    rootRealPath: physical?.rootPath ?? params.rootRealPath,
+    boundaryLabel: params.boundaryLabel ?? "plugin root",
     rejectHardlinks: params.rejectHardlinks,
-    skipLexicalRootCheck: true,
+    maxBytes: params.maxBytes,
+    skipLexicalRootCheck: physical ? true : undefined,
     ioFs: physical
       ? createIdentityBoundRootFileFs(physical.rootPath, physical.rootIdentity)
       : undefined,
