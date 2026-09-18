@@ -10,10 +10,10 @@ import { ensureTaskRegistryReady, getTaskById } from "../../../tasks/runtime-int
 import { publishTaskRecordAfterAtomicStore } from "../../../tasks/task-registry.js";
 import { resetTaskRegistryForTests } from "../../../tasks/task-runtime.test-helpers.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
+import { upsertSubagentRunRowInDatabase } from "../registry/subagent-registry.store.kernel.js";
 import {
   bindSubagentRunRecord,
   loadSubagentRegistryFromSqlite,
-  upsertSubagentRunRowInDatabase,
 } from "../registry/subagent-registry.store.sqlite.js";
 import { settleSubagentCompletionDelivery } from "./subagent-completion-admission.store.js";
 import {

@@ -326,12 +326,8 @@ describe("spawn context-engine resource custody", () => {
           throw new GatewayDrainingError();
         }
         if (mode === "draining") {
-          if (launches === 1) {
-            throw new GatewayDrainingError();
-          }
           retryStarted.resolve();
-          await retryGate.promise;
-          fixture.read();
+          throw new GatewayDrainingError();
         }
         return { runId: request.params?.idempotencyKey, status: "accepted" };
       },
@@ -399,6 +395,13 @@ describe("spawn context-engine resource custody", () => {
             await Promise.resolve();
             expect(closed).toBe(false);
             expect(fixture.database.isOpen).toBe(true);
+          } else if (mode === "draining") {
+            await new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            });
+            expect(launches).toBe(1);
+            expect(settleLaunchFailure).not.toHaveBeenCalled();
+            closing = scheduler.closeSwarmScheduler();
           }
           retryGate.resolve();
           await closing;
