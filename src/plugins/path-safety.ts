@@ -7,7 +7,6 @@ export { safeRealpathSync, safeStatSync, formatPosixMode } from "../infra/path-s
 
 export type PhysicalPathInsideRoot = {
   rootPath: string;
-  targetPath: string;
 };
 
 /** Resolves matching physical spellings when Windows presents one tree through different aliases. */
@@ -28,7 +27,7 @@ export function resolvePhysicalPathInsideRootSync(
     while (true) {
       const candidate = fs.statSync(current, { bigint: true });
       if (candidate.dev === root.dev && candidate.ino === root.ino) {
-        return { rootPath: current, targetPath: physicalTargetPath };
+        return { rootPath: current };
       }
       const parent = path.dirname(current);
       if (parent === current) {

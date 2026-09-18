@@ -97,9 +97,10 @@ describe("plugin package facts", () => {
     const root = path.join(parent, "canonical-root");
     const nested = path.join(root, "nested");
     const alias = path.join(parent, "root-alias");
+    const source = path.join(nested, "plugin.js");
     const external = path.join(parent, "external.js");
     fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(path.join(nested, "plugin.js"), "export default {};\n");
+    fs.writeFileSync(source, "export default {};\n");
     fs.writeFileSync(external, "external\n");
     fs.symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
     fs.symlinkSync(external, path.join(root, "external-link.js"));
@@ -108,7 +109,8 @@ describe("plugin package facts", () => {
     withPluginCache(createPluginCache(), () => {
       const file = readPluginCacheFile({
         rootDir: alias,
-        relativePath: "nested/plugin.js",
+        // Mirror short-root/long-child records produced by Windows discovery.
+        relativePath: path.relative(alias, source),
         rejectHardlinks: false,
       });
       expect(file.ok && file.contents.toString("utf8")).toBe("export default {};\n");
