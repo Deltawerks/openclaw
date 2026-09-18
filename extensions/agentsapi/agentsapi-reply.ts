@@ -68,8 +68,7 @@ export function createAgentsApiSnapshotEmitter(params: AgentHarnessAttemptParams
 
 export function selectAgentsApiReplyText(items: AgentsApiItem[]): string {
   const completedMessages = items.filter(
-    (item) =>
-      item.type === "message" && item.role === "assistant" && item.status === "completed",
+    (item) => item.type === "message" && item.role === "assistant" && item.status === "completed",
   );
   const finalItems = completedMessages.filter((item) => item.phase === "final_answer");
   const visibleItems = finalItems.length

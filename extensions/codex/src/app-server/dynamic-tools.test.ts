@@ -1007,7 +1007,11 @@ describe("createCodexDynamicToolBridge", () => {
 
     expect(result).toEqual(expectInputText("Child launch recorded."));
     expect(bridge.telemetry.acceptedSessionSpawns).toEqual([
-      { runId: "run_compacted", childSessionKey: "child-compacted", expectsCompletionMessage: false },
+      {
+        runId: "run_compacted",
+        childSessionKey: "child-compacted",
+        expectsCompletionMessage: false,
+      },
     ]);
   });
 
@@ -2160,7 +2164,11 @@ describe("createCodexDynamicToolBridge", () => {
           expect(bridge.telemetry.successfulCronAdds).toBe(1);
         } else {
           expect(bridge.telemetry.acceptedSessionSpawns).toEqual([
-            { runId: "child-run", childSessionKey: "child-session", expectsCompletionMessage: false },
+            {
+              runId: "child-run",
+              childSessionKey: "child-session",
+              expectsCompletionMessage: false,
+            },
           ]);
         }
       } finally {

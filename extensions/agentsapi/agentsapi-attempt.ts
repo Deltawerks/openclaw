@@ -13,7 +13,6 @@ import { calculateCost, type AssistantMessage } from "openclaw/plugin-sdk/llm";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { AgentsApiClient, type AgentsApiEvent } from "./agentsapi-client.js";
 import { collectOutputs, prepareInputs, uploadInputs } from "./agentsapi-files.js";
-import { buildAgentsApiToolSurface } from "./agentsapi-tools.js";
 import {
   commitAgentsApiAssistant,
   createAgentsApiSnapshotEmitter,
@@ -22,6 +21,7 @@ import {
   selectAgentsApiReplyText,
   updateAgentsApiUsage,
 } from "./agentsapi-reply.js";
+import { buildAgentsApiToolSurface } from "./agentsapi-tools.js";
 
 type SessionBinding = { sessionId: string; authFingerprint: string };
 
@@ -724,4 +724,3 @@ export async function runAgentsApiAttempt(
     },
   };
 }
-
