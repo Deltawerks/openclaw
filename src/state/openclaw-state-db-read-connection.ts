@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import {
@@ -14,7 +15,9 @@ import {
   type OpenClawStateDatabase,
   type OpenClawStateSchemaReadAdmission,
 } from "./openclaw-state-db-contract.js";
+import { assertExistingOpenClawStateRuntimeSchema } from "./openclaw-state-db-existing-schema.js";
 import { openTrackedStateDatabase } from "./openclaw-state-db-handle.js";
+import { isExistingOpenClawStateSchema } from "./openclaw-state-db-schema-policy.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import type { OpenClawStateReadOnlyDatabase } from "./openclaw-state-read.types.js";
 
@@ -24,6 +27,14 @@ export type OpenClawStateReadConnection = {
 };
 
 class SnapshotCleanupIncompleteError extends Error {}
+
+export function assertStateReadSchema(database: DatabaseSync, pathname: string): void {
+  if (isExistingOpenClawStateSchema(pathname, database)) {
+    assertExistingOpenClawStateRuntimeSchema(database, pathname);
+  } else {
+    assertSupportedStateSchemaVersion(database, pathname);
+  }
+}
 
 export function withOpenClawStateReadOnlyLocation<T>(
   operation: (database: OpenClawStateReadOnlyDatabase) => T,
@@ -39,7 +50,7 @@ export function withOpenClawStateReadOnlyLocation<T>(
   let result!: T;
   try {
     closeAdmission = openStateSchemaReadAdmission?.(opened.database.db);
-    assertSupportedStateSchemaVersion(opened.database.db, pathname);
+    assertStateReadSchema(opened.database.db, pathname);
     result = operation(opened.database);
     const location = typeof source === "string" ? source : source.location;
     if (location === pathname && isPromiseLike(result)) {
@@ -68,7 +79,7 @@ export function openOpenClawStateReadOnlyLocation(
 ) {
   const connection = openOpenClawStateReadConnection(pathname, source);
   try {
-    assertSupportedStateSchemaVersion(connection.database.db, pathname);
+    assertStateReadSchema(connection.database.db, pathname);
   } catch (error) {
     try {
       connection.close();

@@ -6,6 +6,7 @@ export const SQLITE_READONLY_WORKER_MAX_BUFFER = 1024 * 1024;
 export type SqliteReadOnlyWorkerMode =
   | "sync"
   | "async"
+  | "consolidated"
   | "schema-header"
   | "reclaim"
   | "staging-create"
