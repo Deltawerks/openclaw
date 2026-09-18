@@ -1,8 +1,10 @@
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { SQLITE_READONLY_CHILD_ARG } from "./runtime-process-entrypoints.js";
 import { formatSqliteErrorCodeSuffix } from "./sqlite-error-diagnostics.js";
+import { encodeSqliteAuthTransferFrame } from "./sqlite-readonly-auth-transfer.js";
 import { releaseSnapshotTempDirectory } from "./sqlite-readonly-location-cleanup.js";
 import {
   createOnlineReadOnlyBackup,
@@ -12,6 +14,7 @@ import {
 } from "./sqlite-readonly-location.js";
 import {
   SQLITE_READONLY_WORKER_MAX_BUFFER,
+  isSqliteSnapshotStagingMode,
   type SqliteReadOnlyWorkerResult,
 } from "./sqlite-readonly-worker-protocol.js";
 import {
@@ -19,6 +22,12 @@ import {
   reclaimAbandonedSqliteSnapshots,
   reconcileSqliteSnapshotRetirement,
 } from "./sqlite-snapshot-staging.js";
+import { assertExistingDatabaseIdentity } from "./sqlite-worker-identity.js";
+import { createSqliteWorkerTransferOwner } from "./sqlite-worker-transfer.js";
+import {
+  acquireStateDatabaseHandleLease,
+  withStateDatabaseCoordinatorRuntimeDirectory,
+} from "./state-database-coordinator.js";
 
 const stagingTokens = new Map<string, (retiring?: boolean) => void>();
 
@@ -36,10 +45,7 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
       mode !== "consolidated" &&
       mode !== "schema-header" &&
       mode !== "reclaim" &&
-      mode !== "staging-create" &&
-      mode !== "staging-create-legacy" &&
-      mode !== "staging-reconcile" &&
-      mode !== "staging-retire") ||
+      !isSqliteSnapshotStagingMode(mode)) ||
     !pathname
   ) {
     return {
@@ -143,14 +149,124 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
 
 function runSession(): void {
   let busy = false;
+  const transfers = createSqliteWorkerTransferOwner();
+  const sourceLeases = new Set<ReturnType<typeof acquireStateDatabaseHandleLease>>();
+  let activeTransfer: { requestId: number; transferId: number } | undefined;
+  const send = (id: number, result: unknown, failed = false) => {
+    process.send?.({ id, result }, (error) => {
+      if (error || failed) {
+        transfers.close();
+        process.exit(1);
+      }
+    });
+  };
+  const fail = (id: number, error: unknown) => {
+    transfers.close();
+    send(
+      id,
+      { ok: false, message: `${coerceErrorMessage(error)}${formatSqliteErrorCodeSuffix(error)}` },
+      true,
+    );
+  };
   process.once("disconnect", () => {
     if (busy) {
+      transfers.close();
       process.exit(1);
     }
   });
   process.on("message", (message: unknown) => {
     if (message === "close" && !busy) {
+      transfers.close();
       process.disconnect?.();
+      return;
+    }
+    if (
+      isRecord(message) &&
+      activeTransfer &&
+      message.id === activeTransfer.requestId &&
+      isRecord(message.transfer)
+    ) {
+      const { requestId, transferId } = activeTransfer;
+      try {
+        if (message.transfer.transferId !== transferId) {
+          throw new Error("Auth profile transfer identity changed");
+        }
+        if (message.transfer.type === "next") {
+          send(requestId, {
+            type: "frame",
+            frame: encodeSqliteAuthTransferFrame(transfers.next(transferId)),
+          });
+        } else if (message.transfer.type === "end") {
+          transfers.end(transferId);
+          activeTransfer = undefined;
+          busy = false;
+          send(requestId, { type: "complete" });
+        } else {
+          throw new Error("Invalid auth profile transfer command");
+        }
+      } catch (error) {
+        fail(requestId, error);
+      }
+      return;
+    }
+    if (
+      !busy &&
+      isRecord(message) &&
+      typeof message.id === "number" &&
+      Number.isSafeInteger(message.id) &&
+      Array.isArray(message.args) &&
+      message.args.length === 2 &&
+      message.args[0] === "auth-profile-rows" &&
+      typeof message.args[1] === "string"
+    ) {
+      const id = message.id;
+      const pathname = message.args[1];
+      const auth = message.auth;
+      busy = true;
+      void (async () => {
+        if (
+          !isRecord(auth) ||
+          typeof auth.expectedIdentity !== "string" ||
+          !auth.expectedIdentity.startsWith("file:") ||
+          !isRecord(auth.coordinatorRuntime) ||
+          typeof auth.coordinatorRuntime.directory !== "string" ||
+          typeof auth.coordinatorRuntime.keepAlive !== "boolean"
+        ) {
+          throw new Error("Auth profile read requires captured physical ownership");
+        }
+        const { expectedIdentity } = auth;
+        const runtime = {
+          directory: auth.coordinatorRuntime.directory,
+          keepAlive: auth.coordinatorRuntime.keepAlive,
+        };
+        // Domain code stays child-only; importing it from the host would reverse storage ownership.
+        const { readAuthProfileRowsReadOnly } =
+          await import("../agents/auth-profiles/sqlite-json.js");
+        const rows = withStateDatabaseCoordinatorRuntimeDirectory(runtime, () => {
+          const lease = acquireStateDatabaseHandleLease({
+            databasePath: pathname,
+            busyTimeoutMs: 0,
+          });
+          sourceLeases.add(lease);
+          assertExistingDatabaseIdentity(pathname, expectedIdentity);
+          const result = readAuthProfileRowsReadOnly(pathname);
+          assertExistingDatabaseIdentity(pathname, expectedIdentity);
+          // Parent loss cannot retire admission during a synchronous query. A failed
+          // kernel close retains this child's lease until its existing error exit.
+          lease.release();
+          sourceLeases.delete(lease);
+          return result;
+        });
+        const handle = transfers.start(
+          [
+            { kind: "store", value: rows.store },
+            { kind: "state", value: rows.state },
+          ].values(),
+          { kinds: ["store", "state"] },
+        );
+        activeTransfer = { requestId: id, transferId: handle.id };
+        send(id, { type: "start", handle });
+      })().catch((error: unknown) => fail(id, error));
       return;
     }
     if (
@@ -163,20 +279,14 @@ function runSession(): void {
       !Number.isSafeInteger(message.id) ||
       !("args" in message) ||
       !Array.isArray(message.args) ||
-      ![
-        "sync",
-        "staging-create",
-        "staging-create-legacy",
-        "staging-reconcile",
-        "staging-retire",
-      ].includes(message.args[0]) ||
+      (message.args[0] !== "sync" && !isSqliteSnapshotStagingMode(message.args[0])) ||
       !message.args.every((arg): arg is string => typeof arg === "string")
     ) {
       process.exit(1);
     }
     busy = true;
     const id = message.id;
-    const staging = message.args[0] !== "sync";
+    const staging = isSqliteSnapshotStagingMode(message.args[0]);
     void inspect(message.args).then((inspected) => {
       const result: SqliteReadOnlyWorkerResult =
         Buffer.byteLength(JSON.stringify(inspected)) > SQLITE_READONLY_WORKER_MAX_BUFFER

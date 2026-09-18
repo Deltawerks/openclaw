@@ -1,3 +1,4 @@
+import { ensureSqliteLibrarySelected } from "../infra/bun-sqlite-library.js";
 import { resolveRuntimeProcessEntrypointUrl } from "../infra/runtime-process-url.js";
 import { WorkerTaskPool } from "../infra/worker-task-pool.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -46,15 +47,18 @@ export function createOpenClawStateReadTransport(
     snapshotRoot?: string,
   ) => {
     authority.assertCurrent();
-    pool ??= new WorkerTaskPool({
-      workerUrl: resolveRuntimeProcessEntrypointUrl("stateRead"),
-      maxWorkers: 1,
-      onRetirementFailure(error) {
-        interruptedTask ??= currentTask;
-        failedRetirement.reject(error);
-        onRetirementFailure(error);
-      },
-    });
+    if (!pool) {
+      ensureSqliteLibrarySelected();
+      pool = new WorkerTaskPool({
+        workerUrl: resolveRuntimeProcessEntrypointUrl("stateRead"),
+        maxWorkers: 1,
+        onRetirementFailure(error) {
+          interruptedTask ??= currentTask;
+          failedRetirement.reject(error);
+          onRetirementFailure(error);
+        },
+      });
+    }
     const task = pool
       .run(
         {
