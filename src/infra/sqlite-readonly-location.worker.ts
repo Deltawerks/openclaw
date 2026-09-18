@@ -13,7 +13,13 @@ import {
   SQLITE_READONLY_WORKER_MAX_BUFFER,
   type SqliteReadOnlyWorkerResult,
 } from "./sqlite-readonly-worker-protocol.js";
-import { reclaimAbandonedSqliteSnapshots } from "./sqlite-snapshot-staging.js";
+import {
+  createSqliteSnapshotStagingTokenSync,
+  reclaimAbandonedSqliteSnapshots,
+  reconcileSqliteSnapshotRetirement,
+} from "./sqlite-snapshot-staging.js";
+
+const stagingTokens = new Map<string, (retiring?: boolean) => void>();
 
 // The sync strategy raw-copies without attaching SQLite to the source, so sync
 // callers stay byte-neutral on the live family; the async strategy holds a read
@@ -24,7 +30,14 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
   const stagingRoot = args[2];
   const agentSchemaVersionForOwnership = args[3] === undefined ? undefined : Number(args[3]);
   if (
-    (mode !== "sync" && mode !== "async" && mode !== "schema-header" && mode !== "reclaim") ||
+    (mode !== "sync" &&
+      mode !== "async" &&
+      mode !== "schema-header" &&
+      mode !== "reclaim" &&
+      mode !== "staging-create" &&
+      mode !== "staging-create-legacy" &&
+      mode !== "staging-reconcile" &&
+      mode !== "staging-retire") ||
     !pathname
   ) {
     return {
@@ -33,6 +46,28 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
     };
   }
   try {
+    if (mode === "staging-reconcile") {
+      reconcileSqliteSnapshotRetirement(pathname);
+      return { ok: true, location: pathname };
+    }
+    if (mode === "staging-create" || mode === "staging-create-legacy") {
+      const owned = createSqliteSnapshotStagingTokenSync(
+        pathname,
+        mode === "staging-create-legacy",
+        false,
+      );
+      stagingTokens.set(owned.directory, owned.release);
+      return { ok: true, location: owned.directory };
+    }
+    if (mode === "staging-retire") {
+      const token = stagingTokens.get(pathname);
+      if (!token) {
+        throw new Error("SQLite snapshot token is not owned by this worker");
+      }
+      token(true);
+      stagingTokens.delete(pathname);
+      return { ok: true, location: pathname };
+    }
     if (mode === "reclaim") {
       const warnings: string[] = [];
       const directories = reclaimAbandonedSqliteSnapshots(pathname, (message, error) => {
@@ -114,23 +149,30 @@ function runSession(): void {
       !Number.isSafeInteger(message.id) ||
       !("args" in message) ||
       !Array.isArray(message.args) ||
-      message.args[0] !== "sync" ||
+      ![
+        "sync",
+        "staging-create",
+        "staging-create-legacy",
+        "staging-reconcile",
+        "staging-retire",
+      ].includes(message.args[0]) ||
       !message.args.every((arg): arg is string => typeof arg === "string")
     ) {
       process.exit(1);
     }
     busy = true;
     const id = message.id;
+    const staging = message.args[0] !== "sync";
     void inspect(message.args).then((inspected) => {
       const result: SqliteReadOnlyWorkerResult =
         Buffer.byteLength(JSON.stringify(inspected)) > SQLITE_READONLY_WORKER_MAX_BUFFER
           ? { ok: false, message: "exceeded its output buffer" }
           : inspected;
-      if (result.ok) {
+      if (result.ok || staging) {
         busy = false;
       }
       process.send?.({ id, result }, (error) => {
-        if (error || !result.ok) {
+        if (error || (!result.ok && !staging)) {
           // A failed inspection may still own a native handle and admission.
           process.exit(1);
         }

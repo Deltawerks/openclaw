@@ -6,8 +6,56 @@ import { setLoggerOverride } from "../logging/logger.js";
 import { testApi } from "../logging/logger.test-support.js";
 import {
   adoptPreparedLocation,
+  registerAsyncSnapshotTempDirectory,
+  retainSnapshotTempDirectory,
   type CleanupFailureReport,
 } from "./sqlite-readonly-location-cleanup.js";
+import { prepareSqliteReadOnlyLocation } from "./sqlite-snapshot-source.js";
+import * as staging from "./sqlite-snapshot-staging.js";
+
+it("preserves failed cleanup over cancellation in the public preparation contract", async () => {
+  const directory = path.join(root, "cancelled-preparation");
+  await fs.promises.mkdir(directory);
+  const prepared = adoptPreparedLocation(path.join(directory, "database.sqlite"), directory);
+  const controller = new AbortController();
+  vi.spyOn(staging, "createSqliteSnapshotStagingDirectory").mockImplementation(async () => {
+    controller.abort(new Error("caller cancelled"));
+    return directory;
+  });
+  const remove = vi.spyOn(fs.promises, "rm").mockRejectedValueOnce(new Error("snapshot busy"));
+  try {
+    await expect(
+      prepareSqliteReadOnlyLocation(path.join(root, "unused.sqlite"), {
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("snapshot cleanup failed");
+    expect(fs.existsSync(directory)).toBe(true);
+  } finally {
+    remove.mockRestore();
+    expect(await prepared.cleanupAsync()).toBe(true);
+  }
+});
+
+it("retains async token custody through failed retirement before retrying removal", async () => {
+  const directory = path.join(root, "async-retirement");
+  await fs.promises.mkdir(directory);
+  const location = path.join(directory, "database.sqlite");
+  await fs.promises.writeFile(location, "retained snapshot");
+  let attempts = 0;
+  registerAsyncSnapshotTempDirectory(directory, async () => {
+    attempts++;
+    if (attempts === 1) {
+      throw new Error("retirement was not acknowledged");
+    }
+  });
+  const prepared = adoptPreparedLocation(location, directory);
+  expect(await prepared.cleanupAsync()).toBe(false);
+  expect(fs.readFileSync(location, "utf8")).toBe("retained snapshot");
+  expect(() => retainSnapshotTempDirectory(directory)).toThrow("retirement has started");
+  expect(await prepared.cleanupAsync()).toBe(true);
+  expect(attempts).toBe(2);
+  expect(fs.existsSync(directory)).toBe(false);
+});
 
 // chmod-based denial only works on POSIX where the process is not root
 // (root bypasses mode bits, and Windows chmod does not revoke deletion ACLs).

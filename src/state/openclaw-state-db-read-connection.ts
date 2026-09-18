@@ -6,6 +6,7 @@ import {
   throwSqliteLifecycleErrors,
 } from "../infra/sqlite-coordinator.js";
 import type { PreparedSqliteReadOnlyLocation } from "../infra/sqlite-readonly-location.types.js";
+import { acquireSqliteSnapshotReadToken } from "../infra/sqlite-snapshot-staging.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
 import {
@@ -30,8 +31,9 @@ export function withOpenClawStateReadOnlyLocation<T>(
   source: string | PreparedSqliteReadOnlyLocation,
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
   expectedIdentity?: string,
+  snapshotRoot?: string,
 ): T {
-  const opened = openOpenClawStateReadConnection(pathname, source, expectedIdentity);
+  const opened = openOpenClawStateReadConnection(pathname, source, expectedIdentity, snapshotRoot);
   const errors: unknown[] = [];
   let closeAdmission: (() => void) | undefined;
   let result!: T;
@@ -60,11 +62,33 @@ export function withOpenClawStateReadOnlyLocation<T>(
   return result;
 }
 
+export function openOpenClawStateReadOnlyLocation(
+  pathname: string,
+  source: string | PreparedSqliteReadOnlyLocation,
+) {
+  const connection = openOpenClawStateReadConnection(pathname, source);
+  try {
+    assertSupportedStateSchemaVersion(connection.database.db, pathname);
+  } catch (error) {
+    try {
+      connection.close();
+    } catch (cleanupError) {
+      throwSqliteLifecycleErrors(
+        [error, cleanupError],
+        "Shared-state reader admission and cleanup failed.",
+      );
+    }
+    throw error;
+  }
+  return connection;
+}
+
 /** Own one native reader; callers retain their runtime or maintenance schema policy. */
 export function openOpenClawStateReadConnection(
   pathname: string,
   source: string | PreparedSqliteReadOnlyLocation,
   expectedIdentity?: string,
+  snapshotRoot?: string,
 ): OpenClawStateReadConnection {
   const snapshot = typeof source === "string" ? undefined : source;
   const location = typeof source === "string" ? source : source.location;
@@ -74,12 +98,14 @@ export function openOpenClawStateReadConnection(
   // The first catalog read needs the busy handler; installing a later PRAGMA is too late.
   const options = { readOnly: true, timeout: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS };
   let db: OpenClawStateDatabase["db"];
+  const releaseToken = snapshotRoot ? acquireSqliteSnapshotReadToken(snapshotRoot) : undefined;
   try {
     db =
       location === pathname
         ? openTrackedStateDatabase(pathname, options)
         : openNodeSqliteDatabase(location, options);
   } catch (error) {
+    releaseToken?.();
     snapshot?.cleanup();
     throw error;
   }
@@ -88,6 +114,7 @@ export function openOpenClawStateReadConnection(
     db,
     path: pathname,
     afterClose: (): undefined => {
+      releaseToken?.();
       if (snapshot && !snapshot.cleanup()) {
         throw new SnapshotCleanupIncompleteError("Shared-state snapshot cleanup is incomplete.");
       }

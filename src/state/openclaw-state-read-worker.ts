@@ -43,6 +43,7 @@ export function createOpenClawStateReadTransport(
     operation: OpenClawStateReadRequest["command"],
     authority: OpenClawStateReadAuthority,
     expectedIdentity?: string,
+    snapshotRoot?: string,
   ) => {
     authority.assertCurrent();
     pool ??= new WorkerTaskPool({
@@ -65,6 +66,7 @@ export function createOpenClawStateReadTransport(
           location,
           checkFreshAdmission,
           expectedIdentity,
+          snapshotRoot,
           command: operation,
         },
         { signal: authority.signal },
@@ -109,6 +111,7 @@ export function createOpenClawStateReadTransport(
         command,
         authority,
         source.expectedIdentity,
+        source.snapshotRoot,
       ),
     async close(): Promise<void> {
       await pool?.close();

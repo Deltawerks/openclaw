@@ -10,6 +10,7 @@ export type OpenClawStateReadLocation = {
   location: string;
   checkFreshAdmission: boolean;
   expectedIdentity?: string;
+  snapshotRoot?: string;
 };
 
 export type OpenClawStateReadAuthority = {
@@ -26,6 +27,7 @@ export type OpenClawStateReadRequest = {
   location: string;
   checkFreshAdmission: boolean;
   expectedIdentity?: string;
+  snapshotRoot?: string;
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply =

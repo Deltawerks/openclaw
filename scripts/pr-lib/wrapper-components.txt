@@ -662,6 +662,7 @@ src/infra/sqlite-schema-header.ts
 src/infra/sqlite-schema-issues.ts
 src/infra/sqlite-schema-sql.ts
 src/infra/sqlite-snapshot-source.ts
+src/infra/sqlite-snapshot-staging-owner.ts
 src/infra/sqlite-snapshot-staging.ts
 src/infra/sqlite-source-handle.ts
 src/infra/sqlite-strict.ts

@@ -8,11 +8,13 @@ import {
   SqliteSnapshotCleanupError,
 } from "./sqlite-readonly-location-cleanup.js";
 import {
-  createSqliteSnapshotStagingDirectory,
   prepareSqliteReadOnlyLocationInProcess,
   prepareSqliteReadOnlyLocationSyncInProcess,
 } from "./sqlite-readonly-location.js";
-import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
+import type {
+  AsyncPreparedSqliteReadOnlyLocation,
+  PreparedSqliteReadOnlyLocation,
+} from "./sqlite-readonly-location.types.js";
 import {
   resolveSqliteInspectionSignal,
   runSqliteReadOnlyWorker,
@@ -22,7 +24,10 @@ import {
   readSqliteSchemaHeaderFromSnapshotAsync,
   type SqliteSchemaHeader,
 } from "./sqlite-schema-header.js";
-import { createSqliteSnapshotStagingDirectorySync } from "./sqlite-snapshot-staging.js";
+import {
+  createSqliteSnapshotStagingDirectory,
+  createSqliteSnapshotStagingDirectorySync,
+} from "./sqlite-snapshot-staging.js";
 import { withSqliteSourceHandleAsync } from "./sqlite-source-handle.js";
 import {
   hasStateDatabaseSourceExclusion,
@@ -87,7 +92,6 @@ export async function prepareSqliteReadOnlyLocation(
   options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal } = {},
 ): Promise<PreparedSqliteReadOnlyLocation> {
   const signal = resolveSqliteInspectionSignal(options.signal);
-  let stagingRoot: string | undefined;
   try {
     signal?.throwIfAborted();
     const ownedSnapshot = prepareStateDatabaseMutationSnapshot(pathname, signal);
@@ -113,10 +117,48 @@ export async function prepareSqliteReadOnlyLocation(
         throw error;
       }
     }
-    // A stopped worker may never publish its random snapshot path. Allocate its
-    // private parent first so cancellation can join the child and remove all copies.
+    // The worker path already preserves cleanup failures ahead of cancellation.
+    return prepareWorkerSnapshot(pathname, options, signal, false);
+  } catch (error) {
     signal?.throwIfAborted();
-    stagingRoot = await createSqliteSnapshotStagingDirectory(undefined, false, signal);
+    throw error;
+  }
+}
+
+/** Fixed worker readers hold their own token until their private native reader closes. */
+export function prepareSqliteReadOnlyLocationAsync(
+  pathname: string,
+  options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal } = {},
+): Promise<AsyncPreparedSqliteReadOnlyLocation> {
+  if (
+    prepareStateDatabaseCanonicalMutation(pathname) ||
+    hasStateDatabaseSourceExclusion(pathname)
+  ) {
+    throw new Error("SQLite source requires its existing snapshot owner");
+  }
+  return prepareWorkerSnapshot(
+    pathname,
+    options,
+    resolveSqliteInspectionSignal(options.signal),
+    true,
+  );
+}
+
+async function prepareWorkerSnapshot(
+  pathname: string,
+  options: { preserveSourceArtifacts?: boolean; signal?: AbortSignal },
+  signal: AbortSignal | undefined,
+  asynchronousCleanup: boolean,
+): Promise<PreparedSqliteReadOnlyLocation> {
+  let stagingRoot: string | undefined;
+  try {
+    signal?.throwIfAborted();
+    stagingRoot = await createSqliteSnapshotStagingDirectory(
+      undefined,
+      false,
+      signal,
+      asynchronousCleanup,
+    );
     signal?.throwIfAborted();
     const location = await runSqliteReadOnlyWorker(pathname, {
       mode: options.preserveSourceArtifacts ? "sync" : "async",
@@ -124,17 +166,19 @@ export async function prepareSqliteReadOnlyLocation(
       stagingRoot,
     });
     signal?.throwIfAborted();
-    // Cancellable maintenance must retain its fence on cleanup failure; ordinary
-    // read-only handles report false so their owner can retry close.
     return adoptPreparedLocation(location, stagingRoot, options.signal !== undefined);
   } catch (error) {
     if (stagingRoot && !(await removeTempDirectoryAsync(stagingRoot))) {
       throw new Error(
         `${coerceErrorMessage(error)}; SQLite snapshot cleanup failed: ${stagingRoot}`,
-        {
-          cause: error,
-        },
+        { cause: error },
       );
+    }
+    if (
+      error instanceof SqliteSnapshotCleanupError ||
+      (asynchronousCleanup && error instanceof AggregateError)
+    ) {
+      throw error;
     }
     signal?.throwIfAborted();
     throw error;

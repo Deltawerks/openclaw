@@ -288,7 +288,15 @@ function readSqliteReadOnlyWorkerValue(
   if (mode === "schema-header" && "header" in result) {
     return result.header;
   }
-  if ((mode === "sync" || mode === "async") && "location" in result) {
+  if (
+    (mode === "sync" ||
+      mode === "async" ||
+      mode === "staging-create" ||
+      mode === "staging-create-legacy" ||
+      mode === "staging-reconcile" ||
+      mode === "staging-retire") &&
+    "location" in result
+  ) {
     return result.location;
   }
   if (mode === "reclaim" && "warnings" in result) {
@@ -322,7 +330,10 @@ function sqliteReadOnlyWorkerArgv(pathname: string, options: SqliteReadOnlyWorke
   ];
 }
 
-function createScopedSqliteReadOnlyWorker() {
+export function createScopedSqliteReadOnlyWorker(
+  retainLifetime = true,
+  retainOnOperationError = false,
+) {
   const env = { ...resolveNodeCompileCacheEnv() };
   const cwd = process.cwd();
   const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sqliteReadOnly);
@@ -356,7 +367,9 @@ function createScopedSqliteReadOnlyWorker() {
     }
     child.kill("SIGKILL");
   };
-  void retainSnapshotWork(closed, () => retire(new Error("SQLite snapshot owner stopped")));
+  if (retainLifetime) {
+    void retainSnapshotWork(closed, () => retire(new Error("SQLite snapshot owner stopped")));
+  }
   child.on("error", (error) => retire(error));
   child.once("close", (code, signal) => {
     retired = true;
@@ -411,12 +424,27 @@ function createScopedSqliteReadOnlyWorker() {
       request.cleanup();
       request.resolve(value);
     } catch (error) {
+      if (
+        pending &&
+        retainOnOperationError &&
+        isSqliteReadOnlyWorkerResult(message.result) &&
+        !message.result.ok
+      ) {
+        const request = pending;
+        pending = undefined;
+        request.cleanup();
+        request.reject(error);
+        return;
+      }
       // A failed native close can retain a source lease. Do not reject the
       // request (and let its staging directory disappear) until process close.
       retire(error);
     }
   });
   return {
+    isRetired() {
+      return retired;
+    },
     compatible() {
       const currentEnv = resolveNodeCompileCacheEnv();
       const keys = Object.keys(currentEnv);
@@ -428,6 +456,9 @@ function createScopedSqliteReadOnlyWorker() {
       );
     },
     run(pathname: string, options: SqliteReadOnlyWorkerOptions) {
+      if (retired) {
+        return Promise.reject(new Error("SQLite read-only worker is closed"));
+      }
       return new Promise<SqliteReadOnlyWorkerValue>((resolve, reject) => {
         const { timeoutMs, size } = readSqliteInspectionBudget("read-only snapshot", pathname);
         stderr = "";

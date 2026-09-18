@@ -26,11 +26,11 @@ import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-wor
 import { resolvePrivateSqliteSnapshotStagingRoot } from "./sqlite-private-directory.js";
 import { removeTempDirectory } from "./sqlite-readonly-location-cleanup.js";
 import {
-  createSqliteSnapshotStagingDirectory,
   inspectSqliteSchemaHeaderInProcess,
   prepareSqliteReadOnlyLocationSyncInProcess,
 } from "./sqlite-readonly-location.js";
 import { resolveAggregateSqliteInspectionTimeoutMs } from "./sqlite-readonly-worker.js";
+import { createSqliteSnapshotStagingDirectory } from "./sqlite-snapshot-staging.js";
 import { readSqliteUserVersion } from "./sqlite-user-version.js";
 import { withUpdateCandidateIoBudget } from "./update-candidate-io.js";
 import {
