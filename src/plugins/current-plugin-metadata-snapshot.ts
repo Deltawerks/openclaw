@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
@@ -94,28 +95,9 @@ function resolvePluginMetadataControlPlaneFingerprint(
   return resolvePluginControlPlaneFingerprint({ config, ...options });
 }
 
-function resolveConfiguredAgentWorkspaceFingerprint(config?: OpenClawConfig): string {
-  const rawEntries: unknown = config?.agents?.entries;
-  const entries =
-    rawEntries && typeof rawEntries === "object" && !Array.isArray(rawEntries)
-      ? Object.entries(rawEntries)
-          .map(([id, entry]) => projectAgentWorkspaceEntry(id, entry))
-          .toSorted(([left], [right]) => String(left).localeCompare(String(right)))
-      : [];
-  const rawLegacyEntries: unknown = config?.agents?.list;
-  const legacyEntries = (Array.isArray(rawLegacyEntries) ? rawLegacyEntries : [])
-    .map((entry) => projectAgentWorkspaceEntry(undefined, entry))
-    .toSorted(([left], [right]) => String(left).localeCompare(String(right)));
-  return JSON.stringify([config?.agents?.defaults?.workspace ?? null, entries, legacyEntries]);
-}
-
-function projectAgentWorkspaceEntry(id: unknown, entry: unknown) {
-  const entryId = entry && typeof entry === "object" && "id" in entry ? entry.id : undefined;
-  const entryWorkspace =
-    entry && typeof entry === "object" && "workspace" in entry ? entry.workspace : undefined;
-  const resolvedId = typeof id === "string" ? id : typeof entryId === "string" ? entryId : null;
-  const workspace = typeof entryWorkspace === "string" ? entryWorkspace : null;
-  return [resolvedId, workspace] as const;
+function resolveAgentWorkspaceFingerprint(config: OpenClawConfig, env?: NodeJS.ProcessEnv): string {
+  // Discovery order determines schema precedence; retain the canonical resolver's order.
+  return JSON.stringify(listAgentWorkspaceDirs(config, env));
 }
 
 function prepareCurrentPluginMetadataSnapshotPublication(
@@ -143,6 +125,9 @@ function prepareCurrentPluginMetadataSnapshotPublication(
     snapshot.configFingerprint === defaultDiscoveryConfigFingerprint ||
     Boolean(compatibleConfigFingerprints?.includes(defaultDiscoveryConfigFingerprint));
   const envFingerprint = resolvePluginMetadataEnvFingerprint(options.env);
+  const agentWorkspaceFingerprint = options.config
+    ? resolveAgentWorkspaceFingerprint(options.config, options.env)
+    : undefined;
   const configIdentities = [...(options.compatibleConfigs ?? [])];
   if (options.config) {
     const policyHash = resolveInstalledPluginIndexPolicyHash(options.config, options.env);
@@ -169,7 +154,7 @@ function prepareCurrentPluginMetadataSnapshotPublication(
       owner,
       envFingerprint,
       defaultDiscoveryCompatible,
-      options.config,
+      agentWorkspaceFingerprint,
     );
     for (const config of configIdentities) {
       currentPluginMetadataConfigIdentityCache.add(config);
@@ -410,7 +395,7 @@ export function getCompatibleProcessGatewayPluginMetadataSnapshot(
     snapshot,
     owner,
     configFingerprint,
-    publicationConfig,
+    agentWorkspaceFingerprint,
     envFingerprint,
     defaultDiscoveryCompatible,
     compatiblePolicyHashes,
@@ -421,9 +406,8 @@ export function getCompatibleProcessGatewayPluginMetadataSnapshot(
   }
   if (
     params.requireAgentWorkspaceCompatibility === true &&
-    params.config &&
-    resolveConfiguredAgentWorkspaceFingerprint(publicationConfig) !==
-      resolveConfiguredAgentWorkspaceFingerprint(params.config)
+    (!params.config ||
+      agentWorkspaceFingerprint !== resolveAgentWorkspaceFingerprint(params.config, params.env))
   ) {
     return undefined;
   }

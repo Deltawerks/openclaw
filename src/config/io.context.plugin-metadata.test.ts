@@ -32,6 +32,10 @@ const {
   resolveConfigWidePluginManifestRegistry,
 } = await import("./io.plugin-metadata.js");
 
+const { migratePersistedImplicitMainRoster } = await import("./legacy.roster.js");
+const { validateConfigObjectWithPlugins, validateConfigObjectWithPluginsAsync } =
+  await import("./validation.js");
+
 const agents = {
   ownership: "explicit" as const,
   entries: {
@@ -225,6 +229,88 @@ describe("config IO plugin metadata snapshots", () => {
       }),
     );
     expect(mocks.resolvePluginMetadataSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["sync", "async"] as const)(
+    "reuses Gateway metadata through %s config validation",
+    async (mode) => {
+      const config: OpenClawConfig = {
+        agents: { entries: { ops: { workspace: "/srv/ops" } } },
+        logging: { level: "info" },
+      };
+      const prepared = manifestRecord({ id: "prepared", source: "/srv/ops/prepared" });
+      const snapshot = workspaceSnapshot(
+        "/srv/ops",
+        [prepared],
+        [],
+        resolveInstalledPluginIndexPolicyHash(config, {}),
+      );
+      setGatewayPluginMetadataSnapshot(snapshot, { config, env: {} });
+      mocks.resolvePluginMetadataSnapshot.mockReturnValue(snapshot);
+      const nextConfig = { ...config, logging: { level: "debug" } };
+      const loader = createConfigIoContext({
+        env: {},
+        observe: false,
+      }).createValidationPluginMetadataSnapshotLoader({ effectiveConfigRaw: nextConfig, env: {} });
+
+      const result = await withPluginCache(createPluginCache(), () =>
+        mode === "sync"
+          ? validateConfigObjectWithPlugins(nextConfig, {
+              env: {},
+              loadPluginMetadataSnapshot: loader.load,
+            })
+          : validateConfigObjectWithPluginsAsync(nextConfig, {
+              env: {},
+              loadPluginMetadataSnapshotAsync: loader.loadAsync,
+            }),
+      );
+
+      expect(result.ok).toBe(true);
+      expect(loader.getSnapshot()).toBe(snapshot);
+      expect(mocks.resolvePluginMetadataSnapshot).not.toHaveBeenCalled();
+    },
+  );
+
+  it("discovers the new workspace when reload changes legacy default ownership", async () => {
+    const legacyConfig = (defaultAgent: "ops" | "research") => ({
+      agents: {
+        defaults: { workspace: "/srv/base" },
+        entries: {
+          ops: { default: defaultAgent === "ops" },
+          research: { default: defaultAgent === "research" },
+        },
+      },
+    });
+    const config = migratePersistedImplicitMainRoster(legacyConfig("ops")).config as OpenClawConfig;
+    const policyHash = resolveInstalledPluginIndexPolicyHash(config, {});
+    const initial = workspaceSnapshot("/srv/base", [], [], policyHash);
+    setGatewayPluginMetadataSnapshot(initial, { config, env: {} });
+    const added = manifestRecord({ id: "new-workspace-plugin", source: "/srv/base/ops/plugin" });
+    const snapshots = new Map([
+      ["/srv/base", workspaceSnapshot("/srv/base", [], [], policyHash)],
+      ["/srv/base/ops", workspaceSnapshot("/srv/base/ops", [added], [], policyHash)],
+    ]);
+    mocks.resolvePluginMetadataSnapshot.mockImplementation(
+      ({ workspaceDir }: { workspaceDir: string }) => snapshots.get(workspaceDir),
+    );
+    const nextConfig = legacyConfig("research");
+    const loader = createConfigIoContext({
+      env: {},
+      observe: false,
+    }).createValidationPluginMetadataSnapshotLoader({ effectiveConfigRaw: nextConfig, env: {} });
+
+    const result = await withPluginCache(createPluginCache(), () =>
+      validateConfigObjectWithPluginsAsync(nextConfig, {
+        env: {},
+        loadPluginMetadataSnapshotAsync: loader.loadAsync,
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(loader.getSnapshot()?.plugins.map((plugin) => plugin.id)).toEqual([added.id]);
+    expect(
+      mocks.resolvePluginMetadataSnapshot.mock.calls.map(([params]) => params.workspaceDir),
+    ).toEqual(["/srv/base/ops", "/srv/base"]);
   });
 
   it("rejects Gateway metadata when the configured workspace set changes", async () => {
