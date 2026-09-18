@@ -21,7 +21,7 @@ vi.mock("../fleet/registry.kernel.js", () => ({
 vi.mock("./openclaw-state-db-cache.js", () => ({
   openClawStateDatabaseCache: { assertOpenClawStateDatabaseFreshOpenAllowedAtPath() {} },
 }));
-vi.mock("./openclaw-state-db-readonly.js", () => ({
+vi.mock("./openclaw-state-db-read-connection.js", () => ({
   withOpenClawStateReadOnlyLocation: (operation: (source: { db: object }) => unknown) => {
     mock.admit();
     return operation({ db: {} });

@@ -6,12 +6,14 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/chat-display-projection.cron.test.ts",
   "src/gateway/config-reload.activation.integration.test.ts",
   "src/gateway/config-reload.test.ts",
+  "src/gateway/config-reload.transcripts.test.ts",
   "src/gateway/gateway-code-mode-clock.test.ts",
   "src/gateway/gateway.chat-redaction.test.ts",
   "src/gateway/health/collector.queue-health.test.ts",
   "src/gateway/local-request-context.session-tools.test.ts",
   "src/gateway/local-request-context.test.ts",
   "src/gateway/managed-image-attachments.test.ts",
+  "src/gateway/server-methods/agent.create-event.test.ts",
   "src/gateway/server-methods/chat-send-synthetic-repair.integration.test.ts",
   "src/gateway/server-methods/cron.list-scoped.test.ts",
   "src/gateway/server-methods/cron.runs.test.ts",
@@ -74,6 +76,7 @@ export const gatewayServerBackedHttpTestFiles = [
 // Gateway methods needing native process state or a private module graph keep
 // the shared methods runner in isolated forks.
 export const gatewayMethodsIsolatedTestFiles = [
+  "src/gateway/server-methods/agent.task-runtime.test.ts",
   "src/gateway/server-methods/agent.test.ts",
   "src/gateway/server-methods/board.runtime-boundaries.test.ts",
   "src/gateway/server-methods/chat.reset-visible-yield.test.ts",

@@ -9,7 +9,7 @@ import {
 } from "../plugin-state/plugin-blob-store.sqlite.js";
 import { isPluginBlobReadCommand } from "../plugin-state/plugin-blob-worker-contract.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
-import { withOpenClawStateReadOnlyLocation } from "./openclaw-state-db-readonly.js";
+import { withOpenClawStateReadOnlyLocation } from "./openclaw-state-db-read-connection.js";
 import type {
   OpenClawStateReadReply,
   OpenClawStateReadRequest,
@@ -25,6 +25,7 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof input.databasePath === "string" &&
     typeof input.location === "string" &&
     typeof input.checkFreshAdmission === "boolean" &&
+    (input.expectedIdentity === undefined || typeof input.expectedIdentity === "string") &&
     isRecord(environment) &&
     typeof environment.OPENCLAW_STATE_DIR === "string" &&
     (environment.OPENCLAW_SUPERVISOR_MODE === undefined ||
@@ -101,6 +102,8 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
         },
         input.databasePath,
         input.location,
+        undefined,
+        input.expectedIdentity,
       );
     });
   } catch (value) {

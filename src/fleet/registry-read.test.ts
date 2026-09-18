@@ -90,6 +90,56 @@ it.each(["cached", "fresh"] as const)(
   },
 );
 
+it("reads current committed registry rows while a cached native iterator retains older rows", async () => {
+  expect(isMainThread).toBe(true);
+  const { root, env } = fixture();
+  const alpha = await seed(env, root);
+  const beta = await reserveFleetCell(env, {
+    tenantId: "beta",
+    createdAtMs: 2,
+    image: "fixture:original",
+    runtime: "docker",
+    containerName: "fixture-beta",
+    dataDir: path.join(root, "beta"),
+  });
+  const source = openOpenClawStateDatabase({ env });
+  // sqlite-allow-raw -- Exercise SQLite's implicit cursor snapshot outside explicit transactions.
+  const cursor = source.db
+    .prepare("SELECT tenant_id, image FROM fleet_cells ORDER BY tenant_id")
+    .iterate();
+  try {
+    expect(cursor.next()).toMatchObject({
+      done: false,
+      value: { tenant_id: alpha.tenantId, image: alpha.image },
+    });
+    expect(source.db.isTransaction).toBe(false);
+    await updateFleetCellImage(env, beta.tenantId, "fixture:committed");
+    expect(source.db.isTransaction).toBe(false);
+    // sqlite-allow-raw -- Verify this exact native handle still owns the earlier read view.
+    expect(
+      source.db.prepare("SELECT image FROM fleet_cells WHERE tenant_id = ?").get(beta.tenantId),
+    ).toEqual({ image: beta.image });
+    const calls = watchNativeSql();
+    try {
+      const committed = { ...beta, image: "fixture:committed" };
+      expect(await listFleetCells(env)).toEqual([alpha, committed]);
+      expect(await getFleetCell(env, beta.tenantId)).toEqual(committed);
+      expect(calls.reduce((total, call) => total + call.mock.calls.length, 0)).toBe(0);
+      expect(source.db.isOpen).toBe(true);
+      expect(source.db.isTransaction).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(cursor.next()).toMatchObject({
+      done: false,
+      value: { tenant_id: beta.tenantId, image: beta.image },
+    });
+  } finally {
+    cursor.return?.();
+  }
+  expect(source.db.isOpen).toBe(true);
+});
+
 it("commits a complete leased registry operation off the main thread and reopens its result", async () => {
   expect(isMainThread).toBe(true);
   const { root, env } = fixture();

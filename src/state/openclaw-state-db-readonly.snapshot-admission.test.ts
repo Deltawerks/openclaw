@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
+import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
@@ -47,9 +48,15 @@ vi.mock("../infra/sqlite-snapshot-source.js", async (importOriginal) => ({
   prepareSqliteReadOnlyLocation: mocks.prepare,
   prepareSqliteReadOnlyLocationSync: mocks.forbiddenNative,
 }));
+vi.mock("../infra/sqlite-readonly-location-cleanup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/sqlite-readonly-location-cleanup.js")>()),
+  // Preparation is mocked; this fixture has no private directory to retain.
+  retainSnapshotTempDirectory: () => () => {},
+}));
 
 vi.mock("./openclaw-state-db-read-connection.js", () => ({
   openOpenClawStateReadConnection: mocks.forbiddenNative,
+  withOpenClawStateReadOnlyLocation: mocks.forbiddenNative,
 }));
 vi.mock("../infra/state-database-coordinator.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/state-database-coordinator.js")>()),
@@ -88,7 +95,7 @@ beforeEach(() => {
   mocks.cleanup.mockReset().mockResolvedValue(true);
   mocks.capture.mockReset().mockImplementation((databasePath) => ({
     databasePath,
-    identity: { key: databasePath, canonicalPath: databasePath },
+    identity: readDatabasePathIdentitySync(databasePath),
     assertCurrent: mocks.assertCurrent,
   }));
   mocks.prepare.mockReset().mockResolvedValue({

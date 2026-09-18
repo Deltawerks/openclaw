@@ -1,9 +1,20 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
 import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { StateDatabaseReadAdmissionInvalidatedError } from "./openclaw-state-db-async-lifecycle.js";
 import { registerOpenClawStateDatabaseAsyncResource } from "./openclaw-state-db-cache.js";
 import type { RetainedReadScope } from "./openclaw-state-read.types.js";
+
+/** Normal drainage and explicit abort retain the selected callback's context. */
+export function bindRetainedReadScope(scope: RetainedReadScope) {
+  const context = scope.work.run(() => AsyncLocalStorage.snapshot());
+  return {
+    run: <T>(operation: () => Promise<T>): Promise<T> =>
+      context(() => runRetainedReadScope(scope, () => scope.work.track(operation))),
+    abort: (reason: unknown) => context(() => scope.work.beginClose(reason)),
+  };
+}
 
 /** Closing retains custody for accepted readers, but never admits a new reader. */
 export function assertRetainedReadScopeAdmission(

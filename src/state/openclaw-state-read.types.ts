@@ -13,6 +13,7 @@ export type OpenClawStateReadLocation = {
   context: OpenClawStateWorkerContext;
   location: string;
   checkFreshAdmission: boolean;
+  expectedIdentity?: string;
 };
 
 export type OpenClawStateReadAuthority = {
@@ -29,6 +30,7 @@ export type OpenClawStateReadRequest = {
   databasePath: string;
   location: string;
   checkFreshAdmission: boolean;
+  expectedIdentity?: string;
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply =

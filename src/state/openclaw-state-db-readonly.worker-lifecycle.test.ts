@@ -40,6 +40,11 @@ vi.mock("../infra/sqlite-snapshot-source.js", async (importOriginal) => ({
     cleanupAsync: mock.cleanup,
   }),
 }));
+vi.mock("../infra/sqlite-readonly-location-cleanup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/sqlite-readonly-location-cleanup.js")>()),
+  // Preparation is mocked; this fixture has no private directory to retain.
+  retainSnapshotTempDirectory: () => () => {},
+}));
 
 import { createOpenClawDatabaseMaintenanceScope } from "./openclaw-state-db-async-lifecycle.js";
 import {

@@ -78,3 +78,26 @@ it.each([false, true])(
     expect(mock.run).toHaveBeenCalledTimes(1);
   },
 );
+
+it("reads externally created state after an absent read without resetting admission", async () => {
+  mock.run.mockReset();
+  mock.close.mockReset().mockResolvedValue();
+  const root = tempDirs.make("openclaw-read-first-creation-");
+  const pathname = path.join(root, "source.sqlite");
+  const options = { path: pathname, env: { OPENCLAW_STATE_DIR: root } };
+  const command = { type: "fleet.list" } as const;
+  expect(await executeExistingOpenClawStateRead(options, command)).toBeUndefined();
+  expect(fs.existsSync(pathname)).toBe(false);
+  expect(mock.run).not.toHaveBeenCalled();
+
+  // Only file identity is real; creation does not publish a native cache handle.
+  fs.writeFileSync(pathname, "mock worker source");
+  const reply: OpenClawStateReadReply = {
+    ok: true,
+    type: "fleet.list",
+    sourceAdmitted: true,
+    cells: [],
+  };
+  mock.run.mockResolvedValue(reply);
+  expect(await executeExistingOpenClawStateRead(options, command)).toEqual(reply);
+});
