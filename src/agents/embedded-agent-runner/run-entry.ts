@@ -693,6 +693,7 @@ async function runEmbeddedAgentEntryInternal<T extends EmbeddedAgentRunResult>(
       if (fallbackResult.result.turnAttempt) {
         if (acceptedTerminal) {
           await finalizeAcceptedContextEngineTurn({
+            config: params.selection.cfg,
             facts: fallbackResult.result.turnAttempt,
             lease: contextEngineLogicalTurnLease,
           });
