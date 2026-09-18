@@ -61,11 +61,7 @@ export function pluginCacheExistsSync(targetPath: string): boolean {
 function resolveRealpath(targetPath: string): string {
   const absolute = path.resolve(targetPath);
   try {
-    if (
-      process.platform !== "win32" &&
-      absolute === targetPath &&
-      fs.realpathSync.native(targetPath) === targetPath
-    ) {
+    if (absolute === targetPath && fs.realpathSync.native(targetPath) === targetPath) {
       return targetPath;
     }
   } catch {

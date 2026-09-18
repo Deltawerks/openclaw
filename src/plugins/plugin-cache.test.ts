@@ -9,6 +9,7 @@ import { discoverConfiguredPluginLoadPaths, discoverOpenClawPlugins } from "./di
 import { resolvePluginDoctorContractArtifact } from "./doctor-contract-artifact.js";
 import { buildInstalledPluginIndexRecords } from "./installed-plugin-index-record-builder.js";
 import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
+import { isPathInside } from "./path-safety.js";
 import {
   pluginCacheExistsSync,
   pluginCacheRealpathSync,
@@ -74,17 +75,21 @@ describe("plugin package facts", () => {
     });
   });
 
-  it("expands Windows aliases even when native realpath preserves the lexical path", () => {
-    const lexicalPath = path.resolve(tempDirs.make("plugin-realpath-windows-alias-"));
-    const canonicalPath = `${lexicalPath}-canonical`;
+  it("proves aliased root containment by physical directory identity", () => {
+    const parent = fs.realpathSync(tempDirs.make("plugin-identity-containment-"));
+    const root = path.join(parent, "canonical-root");
+    const nested = path.join(root, "nested");
+    const alias = path.join(parent, "root-alias");
+    const source = path.join(nested, "plugin.js");
+    const external = path.join(parent, "external.js");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(source, "export default {};\n");
+    fs.writeFileSync(external, "export default {};\n");
+    fs.symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    vi.spyOn(fs.realpathSync, "native").mockReturnValue(lexicalPath);
-    const javascriptRealpath = vi.spyOn(fs, "realpathSync").mockReturnValue(canonicalPath);
 
-    withPluginCache(createPluginCache(), () => {
-      expect(pluginCacheRealpathSync(lexicalPath)).toBe(canonicalPath);
-    });
-    expect(javascriptRealpath).toHaveBeenCalledWith(lexicalPath);
+    expect(isPathInside(alias, source)).toBe(true);
+    expect(isPathInside(alias, external)).toBe(false);
   });
 
   it.each(["native", "javascript"] as const)(
