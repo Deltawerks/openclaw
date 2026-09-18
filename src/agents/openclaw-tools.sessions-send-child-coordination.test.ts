@@ -13,6 +13,11 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import { resolveGatewaySessionStoreTargetWithStore } from "../gateway/session-utils-store-lookup.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 
+const agentCommandFromIngress = vi.hoisted(() =>
+  vi.fn<typeof import("../commands/agent.js").agentCommandFromIngress>(),
+);
+vi.mock("../commands/agent.js", () => ({ agentCommandFromIngress }));
+
 const { config, callGatewayMock, readAcpSessionMetaMock, readAcpSessionMetaForEntryMock } =
   vi.hoisted(() => ({
     config: {
@@ -57,7 +62,6 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
-import { testing as agentStepTesting } from "./tools/agent-step.test-support.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -108,17 +112,15 @@ describe("sessions_send child coordination", () => {
       .mockReset()
       .mockImplementation((params: unknown) => readAcpSessionMetaMock(params));
     setActivePluginRegistry(createSessionConversationTestRegistry());
-    agentStepTesting.setDepsForTest({
-      agentCommandFromIngress: async () => ({
-        payloads: [{ text: "ANNOUNCE_SKIP", mediaUrl: null }],
-        meta: { durationMs: 1 },
-      }),
+    agentCommandFromIngress.mockReset().mockResolvedValue({
+      payloads: [{ text: "ANNOUNCE_SKIP", mediaUrl: null }],
+      meta: { durationMs: 1 },
     });
   });
   afterEach(async () => {
     await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
     resetGatewayWorkAdmission();
-    agentStepTesting.setDepsForTest();
+    agentCommandFromIngress.mockReset();
     closeOpenClawStateDatabaseForTest();
     await state.cleanup();
   });
@@ -410,7 +412,7 @@ describe("sessions_send child coordination", () => {
         payloads: [{ text: "ANNOUNCE_SKIP", mediaUrl: null }],
         meta: { durationMs: 1 },
       }));
-      agentStepTesting.setDepsForTest({ agentCommandFromIngress: finalAnnounce });
+      agentCommandFromIngress.mockImplementation(finalAnnounce);
       const tool = createSendTool(requesterKey);
       const result = await tool.execute("child-coordination", {
         sessionKey: targetKey,
