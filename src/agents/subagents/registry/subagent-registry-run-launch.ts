@@ -26,9 +26,9 @@ import { createSubagentRegistrationRecord } from "./subagent-registry-run-launch
 import { SubagentRecoveryManager } from "./subagent-registry-run-recovery.js";
 import { captureQueuedSubagentTaskOwner } from "./subagent-registry-task-owner.js";
 import type {
+  RegisterSubagentRunOptions,
   RegisterSubagentRunParams,
   SubagentRunRecord,
-  SubagentRegistrationScope,
 } from "./subagent-registry.types.js";
 import {
   compareSubagentRunGeneration,
@@ -71,10 +71,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
 
   readonly registerSubagentRun = (
     registerParams: RegisterSubagentRunParams,
-    options: {
-      assertCurrent?: () => void;
-      retainOwnership?: (scope: SubagentRegistrationScope) => void;
-    } = {},
+    options: RegisterSubagentRunOptions = {},
   ): void | Promise<void> => {
     const runId = registerParams.runId.trim();
     const childSessionKey = registerParams.childSessionKey.trim();

@@ -117,7 +117,7 @@ afterEach(() => {
   }
 });
 
-it("retains the same loaded plugin instance across registry adoption", () => {
+it("retains the same loaded plugin instance across registry adoption", async () => {
   const selected = registered();
   const owner = withPluginRuntimeRegistryScope(selected.original, () =>
     captureQueuedSubagentTaskOwner(params, () => {}),
@@ -132,9 +132,9 @@ it("retains the same loaded plugin instance across registry adoption", () => {
   markPluginRegistryRetired(selected.original);
 
   expect(selected.instance.acceptingCalls).toBe(true);
-  withPluginRuntimeRegistryScope(adopted, () => {
-    expect(owner.create()?.taskId).toBe(task.taskId);
-    expect(owner.finalize(task.taskId, 2, "launch failed")).toMatchObject([
+  await withPluginRuntimeRegistryScope(adopted, async () => {
+    expect((await owner.create())?.taskId).toBe(task.taskId);
+    expect(await owner.finalize(task.taskId, 2, "launch failed")).toMatchObject([
       { taskId: task.taskId, status: "failed" },
     ]);
   });
@@ -187,7 +187,7 @@ it.each(["record revoked", "registry retired", "contribution replaced", "run ret
   },
 );
 
-it("retains the original bound methods and refuses an empty task selector", () => {
+it("retains the original bound methods and refuses an empty task selector", async () => {
   const selected = registered();
   const owner = withPluginRuntimeRegistryScope(selected.original, () =>
     captureQueuedSubagentTaskOwner(params, () => {}),
@@ -195,10 +195,10 @@ it("retains the original bound methods and refuses an empty task selector", () =
   const replacement = backend();
   selected.runtime.createQueuedTaskRun = replacement.create;
   selected.runtime.finalizeTaskRunByRunId = replacement.finalize;
-  expect(owner.create()?.taskId).toBe(task.taskId);
+  expect((await owner.create())?.taskId).toBe(task.taskId);
   expect(() => owner.finalize(" ", 2, "failed")).toThrow(/exact task ID/);
   expect(selected.finalize).not.toHaveBeenCalled();
-  owner.finalize(task.taskId, 2, "failed");
+  await owner.finalize(task.taskId, 2, "failed");
   expect(selected.create).toHaveBeenCalledOnce();
   expect(selected.finalize).toHaveBeenCalledOnce();
   expect(replacement.create).not.toHaveBeenCalled();
@@ -225,28 +225,37 @@ it.each(["task", "flow"] as const)("rejects original core %s store replacement",
   expect(replacement.loadSnapshot().tasks.size).toBe(0);
 });
 
-it("keeps the captured core backend when a plugin becomes selected", () => {
+it("keeps the captured core backend when a plugin becomes selected", async () => {
   const original = registry();
   markPluginRegistryActive(original);
-  const store = createInMemoryTaskRegistryStore();
+  const flows = createInMemoryTaskFlowRegistryStore();
+  const store = createInMemoryTaskRegistryStore(undefined, flows);
+  configureTaskFlowRegistryRuntime({ store: flows });
   configureTaskRegistryRuntime({ store });
   const owner = withPluginRuntimeRegistryScope(original, () =>
-    captureQueuedSubagentTaskOwner(params, () => {}),
+    captureQueuedSubagentTaskOwner({ ...params, deliveryStatus: "pending" }, () => {}),
   );
   const replacement = backend();
   const record = createPluginRecord({ id: "newly-selected" });
   original.plugins.push(record);
   original.detachedTaskRuntimes.push({ pluginId: record.id, runtime: replacement.runtime });
   markPluginRegistryActive(original);
-  withPluginRuntimeRegistryScope(original, () => {
-    const created = owner.create();
+  await withPluginRuntimeRegistryScope(original, async () => {
+    const created = await owner.create();
     expect(created).not.toBeNull();
     if (!created) {
       throw new Error("Expected the captured core task");
     }
     expect(store.loadSnapshot().tasks.get(created.taskId)?.status).toBe("queued");
-    expect(owner.finalize(created.taskId, 2, "failed")).toMatchObject([
-      { taskId: created.taskId, status: "failed" },
+    expect(await owner.finalize(created.taskId, 2, "failed")).toMatchObject([
+      {
+        taskId: created.taskId,
+        status: "failed",
+        endedAt: 2,
+        lastEventAt: 2,
+        error: "failed",
+        deliveryStatus: "not_applicable",
+      },
     ]);
     expect(store.loadSnapshot().tasks.get(created.taskId)?.status).toBe("failed");
   });

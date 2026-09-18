@@ -24,6 +24,14 @@ and publishes the result. Avoid exposing a generic SQL callback to application
 code or adding an asynchronous wrapper around an existing asynchronous facade.
 The plugin KV API already has asynchronous methods over its SQLite owner.
 
+Managed outgoing image metadata lookups and cleanup inventories read through the
+shared-state worker, retaining their writable, creating database-open behavior.
+Typed columns, ordering, cleanup claims, and original-media references are unchanged.
+Downloads retain ticket or owner authorization and current transcript membership;
+verified descriptors and post-render thumbnail checks remain in place. Inserts, message-commit
+promotion, cleanup claim/deletion transactions, Doctor imports, and native session
+metadata reads keep their existing owners and remain separate worker migrations.
+
 Required queued collector registration writes its named registry rows through the
 shared-state worker. The host captures those rows and deletions before waiting,
 retains the original database admission, and authorizes the transaction again
@@ -70,9 +78,15 @@ An unacknowledged descriptor write may already be durable. Local launch stays
 withheld and resources remain retained; restoration examines that durable row
 without repeating task creation.
 
-Task creation, subsequent launch and finalization, ordinary subagent registration,
-full registry replacement, and cross-owner atomic transactions retain their
-synchronous owners. The stored representation, recovery entry point, schema version,
+Required queued task creation and failed-registration settlement use the initial-task
+worker owner. Creation retains its selected backend and checks the original caller
+and Gateway at write admission. After a known task commit, the existing task/registry
+owner governs the descriptor handoff even if the parent has closed. Failure settlement
+uses the exact creation receipt, preserves the returned terminal timestamp and error,
+and suppresses delivery. Registered external synchronous task runtimes
+retain their captured compatibility methods. Subsequent launch and finalization,
+ordinary subagent registration, full registry replacement, and cross-owner atomic
+transactions retain their synchronous owners. The stored representation, recovery entry point, schema version,
 and retention are unchanged.
 
 Explicit promotion notice and claim annotations execute in the shared-state
@@ -288,6 +302,48 @@ classification stays with the pure record types, so decoding does not load
 provider or plugin runtime ownership. Kernels and their transaction callbacks
 remain synchronous. The asynchronous task and flow read facade runs these read
 kernels in the shared-state worker.
+
+Synchronous task creation and managed-flow worker creation share one create/reuse
+operation. Each adapter keeps its selection order and transaction boundaries.
+Filling a missing delivery origin commits before optional metadata changes; that
+later stage rereads the selected task and revalidates its parent flow and backing.
+Run-scoped native transitions retain their initial ordered task selection, reread
+each exact identity, and finish its publication before processing the next sibling.
+Equivalent terminal updates still repair linked flows and publish observations.
+
+Managed-flow worker mutations publish only their acknowledged task records. Canonical
+reads and cache installation share one ordered owner; native writes and transaction
+commits fence delayed snapshots, including changes that return to the same value.
+Flow publication follows the same read-phase rule. A failed refresh leaves its scope
+dirty for the existing refresh owner without replaying the settled mutation.
+
+Default Gateway task persistence awaits initial creation in the shared-state worker
+before activating its run. Synchronous duplicate selection keeps process insertion
+order; worker selection uses persisted creation time and task ID. Automatic one-task
+flow creation, linking, and compensation remain separate best-effort stages after
+the task commit; compensation preserves a flow that changed or acquired another
+task reference.
+
+Modern creation captures its database target and selected plugin registry activation
+and registration before waiting. Transaction admission rechecks that owner and the
+original Gateway run. Confirmed task results survive later owner retirement. If
+activation fails, exact receipt cleanup uses the original database owner and refuses
+a task adopted by another run. Successful immediate flow publication precedes task
+observation. A failed projection read or known pre-dispatch cancellation overload
+retains required flow follow-up on the existing retry schedule and budget.
+An unadmitted worker-capacity refusal leaves cold registry preparation retryable;
+it does not become a permanent restore failure.
+Task observation waits for each acknowledged row's required flow effects.
+Acknowledged task mutations are never replayed.
+
+An externally registered legacy runtime preserves synchronous creation before
+Gateway setup and synchronous run-scoped terminal finalization, including command
+failure before execution starts. This operation retains the original live registration;
+retirement or replacement stops it with a warning. Its shipped run-scoped semantics
+do not become an exact-task cleanup guarantee. Worker failures never switch to a
+legacy creator. Coordinator SQL remains on the host. Ordinary subagent registration, subsequent launch and finalization, and other
+detached lifecycle operations retain their synchronous paths until their complete
+admission and settlement owners migrate.
 
 Routine status reads stream task audit metadata through the same shared worker
 and return fixed-size history aggregates plus candidates for live reconciliation.

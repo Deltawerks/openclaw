@@ -235,6 +235,13 @@ export function registerRequiredQueuedSubagent(params: {
   try {
     taskOwner = params.captureTaskOwner(() => {
       assertRegistryCurrent();
+      // A committed task's cleanup no longer depends on its spawning caller.
+      if (!createdTaskId) {
+        params.assertCurrent?.();
+        if (!gatewayCurrent()) {
+          throw new Error("Queued registration lost its original Gateway owner");
+        }
+      }
       if (
         !exactEntry() ||
         entry.execution.status !== "queued" ||
@@ -418,7 +425,7 @@ export function registerRequiredQueuedSubagent(params: {
           return;
         }
         finalizationInvoked = true;
-        const tasks = taskOwner.finalize(createdTaskId, endedAt, message);
+        const tasks = await taskOwner.finalize(createdTaskId, endedAt, message);
         const finalized = tasks.find(
           (task) => task.taskId === createdTaskId && task.status === "failed",
         );
@@ -561,19 +568,15 @@ export function registerRequiredQueuedSubagent(params: {
       }
     }
     try {
-      params.assertCurrent?.();
       assertLaunchCurrent();
-      if (!gatewayCurrent()) {
-        throw new Error("Queued registration lost its original Gateway owner");
-      }
       taskOwner.assertCurrent();
     } catch (error) {
       await failIncompleteRegistration(error);
       throw error;
     }
-    let task: ReturnType<typeof taskOwner.create>;
+    let task: Awaited<ReturnType<typeof taskOwner.create>>;
     try {
-      task = taskOwner.create();
+      task = await taskOwner.create();
       if (task) {
         if (!task.taskId.trim()) {
           throw new Error("Queued task creation returned no task ID");
@@ -620,6 +623,8 @@ export function registerRequiredQueuedSubagent(params: {
           );
           if (persistenceUncertain) {
             recoveryPending = { kind: "restore", error: failure };
+          } else if (ownsQueuedIntent() && isDeepStrictEqual(entry, intent)) {
+            params.activate();
           }
           throw failure;
         }

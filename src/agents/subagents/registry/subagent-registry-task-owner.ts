@@ -5,8 +5,8 @@ import {
 import { requireActivePluginRegistry } from "../../../plugins/runtime.js";
 import type { DetachedTaskCreateParams } from "../../../tasks/detached-task-runtime-contract.js";
 import { getDetachedTaskLifecycleRuntime } from "../../../tasks/detached-task-runtime.js";
+import { createQueuedTaskRunCoreWithReceiptAsync } from "../../../tasks/task-executor-create.async.js";
 import { getTaskFlowRegistryStore } from "../../../tasks/task-flow-registry.store.js";
-import { withTaskRegistryMutation } from "../../../tasks/task-registry-state.js";
 import { getTaskRegistryStore } from "../../../tasks/task-registry.store.js";
 import type { TaskRecord } from "../../../tasks/task-registry.types.js";
 
@@ -16,8 +16,12 @@ export function captureQueuedSubagentTaskOwner(
   assertRunCurrent: () => void,
 ): {
   assertCurrent: () => void;
-  create: () => TaskRecord | null;
-  finalize: (taskId: string, endedAt: number, error: string) => TaskRecord[];
+  create: () => TaskRecord | null | Promise<TaskRecord | null>;
+  finalize: (
+    taskId: string,
+    endedAt: number,
+    error: string,
+  ) => TaskRecord[] | Promise<TaskRecord[]>;
 } {
   const params = structuredClone(taskParams);
   const runId = params.runId?.trim();
@@ -67,23 +71,20 @@ export function captureQueuedSubagentTaskOwner(
     assertRunCurrent();
     assertBackendCurrent();
   };
-  const invoke = <T>(operation: () => T): T => {
-    assertCurrent();
-    if (registration) {
-      return operation();
-    }
-    return withTaskRegistryMutation(() => {
-      // A cold restore or coordinator admission can synchronously retire this run.
-      assertCurrent();
-      return operation();
-    });
-  };
+  let receipt: Awaited<ReturnType<typeof createQueuedTaskRunCoreWithReceiptAsync>> | undefined;
   assertCurrent();
   return {
     assertCurrent,
     create() {
       // Publication observers may retire the run after its task commits.
-      return invoke(() => create(params));
+      assertCurrent();
+      if (registration) {
+        return create(params);
+      }
+      return createQueuedTaskRunCoreWithReceiptAsync(params, assertCurrent).then((created) => {
+        receipt = created;
+        return created.task;
+      });
     },
     finalize(taskId, endedAt, error) {
       const selectedTaskId = taskId.trim();
@@ -101,7 +102,19 @@ export function captureQueuedSubagentTaskOwner(
         error,
         suppressDelivery: true,
       };
-      return invoke(() => (finalize ? finalize(terminal) : fail(terminal)));
+      assertCurrent();
+      if (registration) {
+        return finalize ? finalize(terminal) : fail(terminal);
+      }
+      if (!receipt || receipt.task.taskId !== selectedTaskId) {
+        throw new Error("Queued subagent task settlement requires its original creation receipt");
+      }
+      return receipt
+        .settleUnstarted(terminal, () => {
+          assertCurrent();
+          return true;
+        })
+        .then((task) => (task ? [task] : []));
     },
   };
 }

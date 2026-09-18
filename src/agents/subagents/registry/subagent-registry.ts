@@ -53,7 +53,7 @@ import {
   createSubagentRegistrySweeper,
   retireSupersededSubagentRun as retireSupersededSubagentRunForSweep,
 } from "./subagent-registry-sweeper.js";
-import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import type { RegisterSubagentRunOptions, SubagentRunRecord } from "./subagent-registry.types.js";
 import {
   resolveSubagentRunOrphanReason,
   resolveSubagentSessionCompletion,
@@ -562,15 +562,15 @@ export const releaseSubagentRunKillClaim = subagentRunManager.releaseSubagentRun
 export function registerSubagentRun(
   params: RegisterSubagentRunParams &
     ({ queued?: false } | { taskRowOwnership?: "gateway_best_effort" }),
-  options?: Parameters<typeof subagentRunManager.registerSubagentRun>[1],
+  options?: RegisterSubagentRunOptions,
 ): void;
 export function registerSubagentRun(
   params: RegisterSubagentRunParams,
-  options?: Parameters<typeof subagentRunManager.registerSubagentRun>[1],
+  options?: RegisterSubagentRunOptions,
 ): void | Promise<void>;
 export function registerSubagentRun(
   params: RegisterSubagentRunParams,
-  options?: Parameters<typeof subagentRunManager.registerSubagentRun>[1],
+  options?: RegisterSubagentRunOptions,
 ): void | Promise<void> {
   return subagentRunManager.registerSubagentRun(
     {

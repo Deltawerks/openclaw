@@ -242,6 +242,11 @@ export type SubagentRegistrationScope = {
   readonly settleFailedLaunch: (error: string) => Promise<void>;
 };
 
+export type RegisterSubagentRunOptions = {
+  assertCurrent?: () => void;
+  retainOwnership?: (scope: SubagentRegistrationScope) => void;
+};
+
 export type RegisterSubagentRunParams = {
   runId: string;
   requesterTurnRunId?: string;

@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
+import { revokePluginRecord } from "../../../plugins/registry-lifecycle.js";
+import { requireActivePluginRegistry } from "../../../plugins/runtime.js";
+import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import {
   markGatewayRestartDraining,
   resetGatewayWorkAdmission,
@@ -7,6 +11,10 @@ import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import * as databaseLifecycle from "../../../state/openclaw-state-db-cache.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import type { DetachedTaskLifecycleRuntime } from "../../../tasks/detached-task-runtime-contract.js";
+import {
+  setDetachedTaskLifecycleRuntime,
+  resetDetachedTaskLifecycleRuntimeForTests,
+} from "../../../tasks/detached-task-runtime.test-support.js";
 import { configureTaskRegistryRuntime } from "../../../tasks/task-registry.store.js";
 import type { TaskRecord } from "../../../tasks/task-registry.types.js";
 import {
@@ -36,13 +44,7 @@ const mocks = vi.hoisted(() => ({
   databaseListeners: new Set<
     Parameters<typeof databaseLifecycle.registerOpenClawStateDatabaseLifecycleListener>[0]
   >(),
-  runtime: undefined as
-    | Pick<
-        DetachedTaskLifecycleRuntime,
-        "createQueuedTaskRun" | "finalizeTaskRunByRunId" | "failTaskRunByRunId"
-      >
-    | undefined,
-  selectRuntime: vi.fn(),
+  runtime: undefined as DetachedTaskLifecycleRuntime | undefined,
   createTask: vi.fn<typeof import("../../../tasks/detached-task-runtime.js").createQueuedTaskRun>(),
   lifecycle: "original",
   database: "original-db",
@@ -70,7 +72,7 @@ vi.mock("../../../state/openclaw-state-worker-context.js", () => ({
   }),
 }));
 vi.mock("../../../tasks/detached-task-runtime.js", () => ({
-  getDetachedTaskLifecycleRuntime: mocks.selectRuntime,
+  getDetachedTaskLifecycleRuntime: () => mocks.runtime,
   createQueuedTaskRun: mocks.createTask,
   createRunningTaskRun: mocks.createTask,
   finalizeTaskRunByRunId: vi.fn(),
@@ -125,6 +127,12 @@ beforeEach(() => {
   mocks.createTask.mockReset().mockReturnValue(makeTask());
   mocks.runtime = {
     createQueuedTaskRun: mocks.createTask,
+    createRunningTaskRun: mocks.createTask,
+    startTaskRunByRunId: () => [],
+    recordTaskRunProgressByRunId: () => [],
+    completeTaskRunByRunId: () => [],
+    setDetachedTaskDeliveryStatusByRunId: () => [],
+    cancelDetachedTaskRunById: async () => ({ found: false, cancelled: false }),
     finalizeTaskRunByRunId: vi.fn<
       NonNullable<DetachedTaskLifecycleRuntime["finalizeTaskRunByRunId"]>
     >((params) => [
@@ -134,7 +142,7 @@ beforeEach(() => {
       { ...makeTask(), status: "failed", endedAt: params.endedAt, error: params.error },
     ]),
   };
-  mocks.selectRuntime.mockReset().mockImplementation(() => mocks.runtime);
+  setDetachedTaskLifecycleRuntime(mocks.runtime, "queued-registration-fixture");
   mocks.context = {
     admission: {
       databasePath: "/synthetic/state.sqlite",
@@ -148,6 +156,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetDetachedTaskLifecycleRuntimeForTests();
   vi.restoreAllMocks();
   resetGatewayWorkAdmission();
   resetTaskRegistryForTests({ persist: false });
@@ -790,11 +799,12 @@ it("preserves a same-entry Stop raised by the captured finalizer observer", asyn
 
 it("rolls back an unpersisted registration when task-owner capture fails", () => {
   const f = fixture();
-  const error = new Error("task backend owner retired");
-  mocks.selectRuntime.mockImplementationOnce(() => {
-    throw error;
-  });
-  expect(() => f.register()).toThrow(error);
+  const registry = requireActivePluginRegistry();
+  const record = registry.plugins.find(
+    (candidate) => candidate.id === "queued-registration-fixture",
+  )!;
+  revokePluginRecord(registry, record);
+  expect(() => f.register()).toThrow("no longer active");
   expect(f.runs.has(f.registration.runId)).toBe(false);
   expect(f.writes).toHaveLength(0);
   expect(mocks.createTask).not.toHaveBeenCalled();
@@ -919,3 +929,55 @@ it("retains its own acknowledged terminal error until a different confirmed Stop
   await expect(f.scope.settleFailedLaunch("confirmed Stop")).resolves.toBeUndefined();
   expect(f.writes).toHaveLength(4);
 });
+
+it.each(["caller", "Gateway"] as const)(
+  "refuses queued task creation when its %s retires during worker admission",
+  async (retired) => {
+    resetDetachedTaskLifecycleRuntimeForTests();
+    const flows = createInMemoryTaskFlowRegistryStore();
+    const store = createInMemoryTaskRegistryStore(undefined, flows);
+    configureTaskRegistryRuntime({ store, observers: null });
+    configureTaskFlowRegistryRuntime({ store: flows });
+    const entered = vi.fn();
+    const release = createDeferred();
+    const mutate = store.runInitialMutationAsync.bind(store);
+    store.runInitialMutationAsync = async (context, command, assertCurrent) => {
+      if (command.type === "tasks.createRecord") {
+        entered();
+        await release.promise;
+      }
+      return mutate(context, command, assertCurrent);
+    };
+    const f = fixture();
+    let active = true;
+    const completion = Promise.resolve(
+      f.register(() => {
+        if (!active) {
+          throw new Error("Spawning caller retired before task creation");
+        }
+      }),
+    ).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    f.writes[0]!.gate.resolve();
+    try {
+      await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+      if (retired === "caller") {
+        active = false;
+      } else {
+        bindGatewayContextResolver(f.runs.get(f.registration.runId)!, () => {
+          throw new Error("Replacement Gateway must not be used");
+        });
+      }
+    } finally {
+      release.resolve();
+      f.acknowledgeAllWrites();
+      await completion;
+    }
+    expect(await completion).toMatchObject({ ok: false, error: expect.any(Error) });
+    expect(store.loadSnapshot().tasks.size).toBe(0);
+    expect(f.writes).toHaveLength(1);
+    expect(f.scope.canLaunch()).toBe(false);
+  },
+);

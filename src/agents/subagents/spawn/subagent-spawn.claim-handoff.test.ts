@@ -15,6 +15,8 @@ let spawn: typeof import("./subagent-spawn.js").spawnSubagentDirect;
 let createCallbacks: typeof import("./subagent-spawn-collector.js").createCollectorLaunchCallbacks;
 let resetScheduler: () => void;
 let isActive: typeof import("../swarm/swarm-scheduler.js").isSwarmRunActive;
+let tryBeginSuspension: typeof import("../../../process/gateway-work-admission.js").tryBeginGatewaySuspendAdmission;
+let outsideRoot: typeof import("../../../process/gateway-work-admission.js").runOutsideGatewayRootWorkAdmission;
 
 beforeAll(async () => {
   ({ spawnSubagentDirect: spawn } = await loadSubagentSpawnModuleForTest({
@@ -33,6 +35,10 @@ beforeAll(async () => {
     testing: { reset: resetScheduler },
   } = await import("../swarm/swarm-scheduler.test-support.js"));
   ({ isSwarmRunActive: isActive } = await import("../swarm/swarm-scheduler.js"));
+  ({
+    tryBeginGatewaySuspendAdmission: tryBeginSuspension,
+    runOutsideGatewayRootWorkAdmission: outsideRoot,
+  } = await import("../../../process/gateway-work-admission.js"));
 });
 
 beforeEach(() => {
@@ -85,6 +91,61 @@ async function nextTurn() {
     setImmediate(resolve);
   });
 }
+
+it.each(["preparing", "draining", "prepared"] as const)(
+  "keeps one collector launch pending through reversible Gateway %s suspension",
+  async (phase) => {
+    const f = claimFixture();
+    f.release();
+    const suspension = tryBeginSuspension(() => {});
+    if (!suspension) {
+      throw new Error("Expected a fresh suspension admission");
+    }
+    if (phase === "draining") {
+      expect(suspension.drain()).toBe(true);
+    } else if (phase === "prepared") {
+      expect(suspension.commit()).toBe(true);
+    }
+    const launch = vi.fn(async () => ({ response: { runId: "original", status: "accepted" } }));
+    const cleanup = vi.fn(async () => ({ attachmentsRemoved: true, sessionDeleted: true }));
+    const callbacks = createCallbacks({
+      childRunId: "original",
+      childSessionKey: "agent:main:subagent:original",
+      requesterSessionKey: "agent:main:main",
+      registrationScope: f.scope,
+      preparation: { rollback: f.rollback, dispose: f.dispose },
+      provisionalSessionIdentity: {},
+      launchChildRun: launch,
+      recordParticipant: vi.fn(),
+      emitSpawnLifecycleHooks: async () => {},
+      cleanupFailedSpawn: cleanup,
+    });
+    const first = outsideRoot(() => callbacks.start());
+    const duplicate = outsideRoot(() => callbacks.start());
+    let settled = false;
+    const observed = Promise.allSettled([first, duplicate]).then(() => {
+      settled = true;
+    });
+    try {
+      await nextTurn();
+      expect(settled).toBe(false);
+      expect(launch).not.toHaveBeenCalled();
+      expect(phase === "preparing" ? suspension.rollback() : suspension.release()).toBe(true);
+      await Promise.all([first, duplicate]);
+      await callbacks.start();
+      expect(launch).toHaveBeenCalledOnce();
+      expect(startQueuedRun).toHaveBeenCalledOnce();
+      expect(f.dispose).toHaveBeenCalledOnce();
+      expect(f.rollback).not.toHaveBeenCalled();
+      expect(f.settle).not.toHaveBeenCalled();
+      expect(cleanup).not.toHaveBeenCalled();
+    } finally {
+      suspension.rollback();
+      suspension.release();
+      await observed;
+    }
+  },
+);
 
 it.each([false, true])(
   "closes a claim-free failure scope with dispatchAttempted=%s",

@@ -7,6 +7,7 @@ import { getActiveGatewayRootWorkCount } from "../../../process/gateway-work-adm
 import {
   createQueuedTaskRun,
   createRunningTaskRun,
+  getDetachedTaskLifecycleRuntime,
   startTaskRunByRunId,
 } from "../../../tasks/detached-task-runtime.js";
 import { reloadTaskRuntimeStateFromStore } from "../../../tasks/runtime-internal.js";
@@ -23,6 +24,7 @@ import {
   resetDetachedTaskLifecycleRuntimeForTests,
   resetTaskFlowRegistryForTests,
   resetTaskRegistryForTests,
+  setDetachedTaskLifecycleRuntime,
 } from "../../../tasks/task-runtime.test-helpers.js";
 import { observeMainThreadSql } from "../../../test-utils/main-thread-sql-spies.js";
 import {
@@ -32,6 +34,7 @@ import {
 import { subagentRegistryDeps } from "./subagent-registry-deps.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
+import { getLatestLiveSubagentRunByChildSessionKey } from "./subagent-registry-read.js";
 import { createSubagentRegistryRestorer } from "./subagent-registry-restore.js";
 import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
 import type { SubagentManagerOptions } from "./subagent-registry-run-wait.js";
@@ -126,6 +129,130 @@ function createRegistrationFixture() {
   const manager = createSubagentRunManager(options);
   return { stored, persist, options, manager };
 }
+
+it("supersedes retired cancellation ownership after a known refused no-task rollback", async () => {
+  const { stored, persist, options, manager } = createRegistrationFixture();
+  const childSessionKey = "agent:main:subagent:retained-ownership";
+  const successorId = "durably-retained-successor";
+  const ancestor: SubagentRunRecord = {
+    runId: "retired-ancestor",
+    childSessionKey,
+    requesterSessionKey: "agent:main:main",
+    controllerSessionKey: "agent:main:main",
+    requesterAgentId: "main",
+    requesterDisplayKey: "main",
+    task: "retired ancestor",
+    cleanup: "keep",
+    generation: 1,
+    createdAt: 1,
+    execution: {
+      status: "terminal",
+      endedAt: 2,
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+    },
+    killReconciliation: { killedAt: 2 },
+  };
+  subagentRuns.set(ancestor.runId, ancestor);
+  subagentRuns.commitOwnership(ancestor);
+  persist(ancestor.runId);
+  const retirement = subagentRuns.captureRetirement(
+    ancestor,
+    (candidate) => getLatestLiveSubagentRunByChildSessionKey(childSessionKey) === candidate,
+  );
+  subagentRuns.delete(ancestor.runId);
+  persist(ancestor.runId);
+  subagentRuns.confirmRetirement(ancestor);
+  expect(retirement.observation).toMatchObject({ entry: ancestor, state: "retired" });
+  const rollbackRefusal = new SubagentRegistryWriteError(
+    "not-committed",
+    new Error("deletion refused before commit"),
+  );
+  let registryWrites = 0;
+  options.persistAsyncOrThrow = async (_context, publication, ...runIds) => {
+    publication.assertCurrent();
+    registryWrites += 1;
+    if (!subagentRuns.has(successorId)) {
+      expect(stored.has(successorId)).toBe(true);
+      throw rollbackRefusal;
+    }
+    persist(...runIds);
+    await Promise.resolve();
+    publication.onCommitted?.();
+  };
+  const createTask = vi.fn(() => {
+    expect(stored.get(successorId)).toMatchObject({ execution: { status: "queued" } });
+    expect(stored.get(successorId)?.queuedLaunch).toBeUndefined();
+    return null;
+  });
+  setDetachedTaskLifecycleRuntime({
+    ...getDetachedTaskLifecycleRuntime(),
+    createQueuedTaskRun: createTask,
+  });
+  const taskWrite = vi.spyOn(taskStore, "upsertTaskWithDeliveryState");
+  const transport = vi.spyOn(options, "callGateway");
+  const sql = observeMainThreadSql();
+  let scope: SubagentRegistrationScope | undefined;
+  try {
+    await expect(
+      manager.registerSubagentRun(
+        {
+          runId: successorId,
+          childSessionKey,
+          requesterSessionKey: "agent:main:main",
+          requesterAgentId: "main",
+          requesterDisplayKey: "main",
+          task: "successor with failed rollback",
+          cleanup: "keep",
+          queued: true,
+          taskRowOwnership: "required",
+          expectsCompletionMessage: false,
+        },
+        {
+          retainOwnership: (value) => {
+            scope = value;
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      message: "Queued registration rollback failed",
+      errors: [
+        expect.objectContaining({
+          message: `detached task runtime created no task row for run ${successorId}`,
+        }),
+        rollbackRefusal,
+      ],
+    });
+    const successor = expectDefined(subagentRuns.get(successorId), "restored durable intent");
+    expect(stored.get(successorId)).toEqual(successor);
+    expect(successor.execution.status).toBe("queued");
+    expect(successor.queuedLaunch).toBeUndefined();
+    expect(expectDefined(scope, "retained scope").canLaunch()).toBe(false);
+    expect(createTask).toHaveBeenCalledOnce();
+    expect(taskWrite).not.toHaveBeenCalled();
+    expect(taskStore.loadSnapshot().tasks.size).toBe(0);
+    expect(findTaskByRunId(successorId)).toBeUndefined();
+    expect(registryWrites).toBe(2);
+    const observationBeforeRelease = retirement.observation.state;
+    manager.releaseSubagentRun(successorId);
+    expect(stored.has(successorId)).toBe(false);
+    expect(subagentRuns.has(successorId)).toBe(false);
+    expect(observationBeforeRelease).toBe("superseded");
+    expect(retirement.observation.state).toBe("superseded");
+    expect(createTask).toHaveBeenCalledOnce();
+    expect(taskWrite).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+    sql.expectIdle();
+  } finally {
+    retirement.release();
+    taskWrite.mockRestore();
+    transport.mockRestore();
+    try {
+      sql.expectIdle();
+    } finally {
+      sql.restore();
+    }
+  }
+});
 
 it.each(["restart", "restart with newer sibling", "confirmed Stop"] as const)(
   "reconciles a retained descriptorless registration through %s",
