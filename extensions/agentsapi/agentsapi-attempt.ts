@@ -16,6 +16,7 @@ import { appendSessionTranscriptMessageByIdentityStrict } from "openclaw/plugin-
 import { AgentsApiClient, type AgentsApiEvent } from "./agentsapi-client.js";
 import { collectOutputs, prepareInputs, uploadInputs } from "./agentsapi-files.js";
 import { buildAgentsApiToolSurface } from "./agentsapi-tools.js";
+import { AGENTSAPI_MODEL_ID } from "./model.js";
 
 type SessionBinding = { sessionId: string; authFingerprint: string };
 
@@ -234,7 +235,7 @@ export async function runAgentsApiAttempt(
       controller.signal,
     );
     const fingerprint = createHash("sha256")
-      .update(JSON.stringify(["gpt-5.5", params.resolvedApiKey, toolSurface.declarations]))
+      .update(JSON.stringify([AGENTSAPI_MODEL_ID, params.resolvedApiKey, toolSurface.declarations]))
       .digest("hex");
     assertCurrent();
     if (binding && binding.authFingerprint !== fingerprint) {
@@ -443,7 +444,7 @@ export async function runAgentsApiAttempt(
         params.onRunProgress?.({
           reason: event.type,
           provider: "openai",
-          model: "gpt-5.5",
+          model: AGENTSAPI_MODEL_ID,
           backend: "agentsapi",
         });
         if (rootTurn && event.type === "agent.session.idle") {
@@ -655,7 +656,7 @@ export async function runAgentsApiAttempt(
           content: [{ type: "text", text }],
           api: "openai-responses",
           provider: "openai",
-          model: "gpt-5.5",
+          model: AGENTSAPI_MODEL_ID,
           usage,
           stopReason: "stop",
           timestamp: Date.now(),

@@ -61,11 +61,18 @@ only when you want API-key auth for an agent model.
 
 ## Agents API MVP
 
-The bundled OpenAI plugin also registers the explicit `agentsapi` harness.
-Set `agents.defaults.models["openai/gpt-5.5"].agentRuntime.id` to
+The separate Agents API plugin (`@openclaw/agentsapi`) registers the explicit
+`agentsapi` harness, alongside the Codex plugin. The OpenAI provider plugin
+continues to own model routes and API-key authentication.
+Set `agents.defaults.model.primary` to `"openai/gpt-6-astra"` and
+`agents.defaults.models["openai/gpt-6-astra"].agentRuntime.id` to
 `"agentsapi"` and use OpenAI API-key authentication. This experimental MVP fixes
-the model to `gpt-5.5`, reasoning to `low`, and the environment to an
+the model to `gpt-6-astra`, reasoning to `low`, and the environment to an
 OpenAI-hosted Linux VM. It does not change automatic runtime selection.
+
+If `plugins.allow` is configured, include `agentsapi` alongside `openai`.
+The standalone plugin owns its native session bindings. Reset sessions created
+by the earlier in-provider prototype once when switching to this package.
 
 A restricted API key needs Agents and Responses read/write plus Models read
 permission so the service can retrieve the selected model when creating a session.

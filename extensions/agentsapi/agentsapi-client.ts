@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
+import { AGENTSAPI_MODEL_ID } from "./model.js";
 
 const usageSchema = z.object({
   input_tokens: z.number(),
@@ -103,7 +104,7 @@ export class AgentsApiClient {
   ): Promise<string> {
     const response = await this.request("", "POST", signal, {
       agent: {
-        model: "gpt-5.5",
+        model: AGENTSAPI_MODEL_ID,
         instructions,
         reasoning: { effort: "low" },
         multi_agent: { enabled: false },
