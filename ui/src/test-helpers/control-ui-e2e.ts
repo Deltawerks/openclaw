@@ -30,6 +30,7 @@ import {
   installControlUiE2eUnhandledRejectionRing,
   type ControlUiE2eDiagnosticEvent,
 } from "./control-ui-e2e-diagnostics.ts";
+import { controlUiE2eWaitTimeoutMs } from "./control-ui-e2e-readiness.ts";
 import type { NativeControlUiPluginFixture } from "./control-ui-plugin-fixture.ts";
 import {
   createControlUiSessionFixtures,
@@ -40,20 +41,21 @@ export {
   captureControlUiE2eFailureDiagnostics,
   installControlUiRpcDiagnostics,
 } from "./control-ui-e2e-diagnostics.ts";
+export { controlUiE2eWaitTimeoutMs, waitForConfirmModal } from "./control-ui-e2e-readiness.ts";
 
 export function controlUiSessionPath(
   sessionKey: string,
   basePath = "",
   namespace: "chat" | "dashboard" = "chat",
 ): string {
-  return (
-    buildControlUiSessionPath({
-      namespace,
-      sessionKey,
-      fallbackAgentId: sessionKey.split(":")[1] || "main",
-      basePath,
-    }) ?? `${basePath}/chat`
-  );
+  const pathname = buildControlUiSessionPath({
+    namespace,
+    sessionKey,
+    fallbackAgentId: sessionKey.split(":")[1] || "main",
+    basePath,
+    shortIdLength: 32,
+  });
+  return pathname ?? `${basePath}/chat`;
 }
 
 export function controlUiSessionUrl(
@@ -253,12 +255,6 @@ type ControlUiRouteTarget = {
 // wait browser-local, but allow enough time for the router to finish committing.
 const CONTROL_UI_ROUTE_TIMEOUT_MS = 60_000;
 
-// Loaded CI runners regularly stall real Chromium renders past 10s; the larger
-// CI budget trades failure latency, not coverage (mirrors the ui-e2e vitest
-// config's expect.poll budget). Local runs keep the snappy 10s deadline.
-export const controlUiE2eWaitTimeoutMs =
-  process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true" ? 30_000 : 10_000;
-
 /**
  * Wait for the browser router to commit a route, not merely update the URL.
  * Browser-local polling keeps readiness independent of host-side CDP scheduling.
@@ -361,22 +357,6 @@ export async function clickBoardWidgetControl(page: Page, control: Locator): Pro
     await page.waitForTimeout(100);
   }
   await control.click();
-}
-
-/**
- * Wait for the settled in-app confirmation modal. Control UI routes destructive
- * confirms through `showConfirmDialog`, so no native browser dialog ever fires;
- * waiting for full opacity keeps the click from landing mid-animation.
- */
-export async function waitForConfirmModal(page: Page): Promise<Locator> {
-  await page.waitForFunction(() => {
-    const modal = [...document.querySelectorAll("openclaw-modal-dialog")].at(-1);
-    const dialog = modal?.shadowRoot
-      ?.querySelector("wa-dialog")
-      ?.shadowRoot?.querySelector("dialog");
-    return Boolean(dialog) && getComputedStyle(dialog as Element).opacity === "1";
-  });
-  return page.locator("openclaw-modal-dialog").last();
 }
 
 export async function waitForControlUiSettingsTakeover(
@@ -1332,10 +1312,13 @@ function installControlUiMockGateway(
   } catch {
     // The scenario remains authoritative when browser storage is unavailable.
   }
-  const sessions = createSessions({
-    rows: canonicalSessionRows,
-    mainKey: scenario.mainSessionKey,
-  });
+  const sessions = createSessions(
+    {
+      rows: canonicalSessionRows,
+      mainKey: scenario.mainSessionKey,
+    },
+    isRecord,
+  );
   if (hasCanonicalSessionsOverride) {
     // Persisted explicit snapshots bypass scenario-default enrichment so reload
     // preserves the same exact owner rows used by CAS, describe, and startup.
@@ -1747,7 +1730,14 @@ function installControlUiMockGateway(
       return {};
     }
     const transcript: Record<string, unknown> = {};
-    for (const field of ["messages", "sessionId", "sessionInfo", "inFlightRun", "thinkingLevel"]) {
+    for (const field of [
+      "messages",
+      "activity",
+      "sessionId",
+      "sessionInfo",
+      "inFlightRun",
+      "thinkingLevel",
+    ]) {
       if (hasOwn(configured, field)) {
         transcript[field] = configured[field];
       }
@@ -2003,55 +1993,6 @@ function installControlUiMockGateway(
     });
   }
 
-  function applySessionPatches(response: unknown, params: unknown): unknown {
-    if (!isRecord(response) || !Array.isArray(response.sessions)) {
-      return response;
-    }
-    const archivedFilter =
-      isRecord(params) && params.archived === "all"
-        ? "all"
-        : isRecord(params) && params.archived === true
-          ? "archived"
-          : "active";
-    const projectedSessions = sessions.list(response.sessions).map((row) => {
-      if (!isRecord(row)) {
-        return row;
-      }
-      const next = Object.assign({}, row);
-      // Replay group renames/deletes over static fixtures: the real gateway
-      // rewrites member categories server-side before the next sessions.list.
-      let category = typeof next.category === "string" ? next.category : undefined;
-      for (const rename of groupsState.renames) {
-        if (category === rename.from) {
-          category = rename.to ?? undefined;
-        }
-      }
-      if (category === undefined) {
-        delete next.category;
-      } else {
-        next.category = category;
-      }
-      return next;
-    });
-    if (!scenario.sessionArchiveFiltering) {
-      return {
-        ...response,
-        ...(sessions.materializedCount() > 0 ? { count: projectedSessions.length } : {}),
-        sessions: projectedSessions,
-      };
-    }
-    const filteredSessions = projectedSessions.filter(
-      (row) =>
-        isRecord(row) &&
-        (archivedFilter === "all" || (row.archived === true) === (archivedFilter === "archived")),
-    );
-    return {
-      ...response,
-      count: filteredSessions.length,
-      sessions: filteredSessions,
-    };
-  }
-
   function stopRepeatingSessionEvents(): void {
     if (sessionMessageEventTimer !== null) {
       window.clearInterval(sessionMessageEventTimer);
@@ -2204,7 +2145,10 @@ function installControlUiMockGateway(
     if (configured.found) {
       const configuredValue = applyScenarioAgentModel(method, configured.value);
       return method === "sessions.list"
-        ? applySessionPatches(configuredValue, params)
+        ? sessions.listResponse(configuredValue, params, {
+            renames: groupsState.renames,
+            archiveFiltering: scenario.sessionArchiveFiltering,
+          })
         : configuredValue;
     }
     switch (method) {
@@ -2555,7 +2499,7 @@ function installControlUiMockGateway(
         return response;
       }
       case "sessions.list":
-        return applySessionPatches(
+        return sessions.listResponse(
           {
             count: sessions.list().length,
             defaults: {
@@ -2568,6 +2512,7 @@ function installControlUiMockGateway(
             ts: Date.now(),
           },
           params,
+          { renames: groupsState.renames, archiveFiltering: scenario.sessionArchiveFiltering },
         );
       case "sessions.search":
         return { results: [] };
