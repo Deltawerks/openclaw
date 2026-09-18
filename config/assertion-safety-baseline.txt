@@ -1827,7 +1827,7 @@ src/agents/provider-model-route.ts	1
 src/agents/provider-request-config.ts	6
 src/agents/provider-secret-egress.ts	3
 src/agents/provider-tool-policy.ts	1
-src/agents/provider-transport-fetch.ts	4
+src/agents/provider-transport-fetch.ts	2
 src/agents/run-termination.ts	3
 src/agents/run-wait.ts	2
 src/agents/runtime-plan/build.ts	4
@@ -2186,7 +2186,7 @@ src/cli/command-secret-targets.ts	2
 src/cli/completion-runtime.ts	4
 src/cli/config-cli-input.ts	2
 src/cli/config-cli-path.ts	5
-src/cli/config-cli-runner.ts	3
+src/cli/config-cli-runner.ts	2
 src/cli/config-cli.ts	8
 src/cli/config-model-validation.ts	7
 src/cli/config-set-input.ts	1
@@ -2556,7 +2556,7 @@ src/cron/session-reaper.ts	1
 src/cron/stagger.ts	1
 src/cron/store/delivery-codec.ts	2
 src/cron/store/quarantine.ts	1
-src/cron/store/row-codec.ts	4
+src/cron/store/row-codec.ts	3
 src/cron/task-run-detail.ts	2
 src/daemon/arg-split.ts	2
 src/daemon/launchd-install.ts	6

@@ -23,7 +23,6 @@ import {
   type SqliteAuthProfileRows,
 } from "./sqlite-readonly-worker-protocol.js";
 import { createSqliteReadOnlyWorkerSession } from "./sqlite-readonly-worker-session.js";
-import type { SqliteSchemaHeader } from "./sqlite-schema-header.js";
 
 const SLOW_HARDWARE_HEADROOM = 10;
 const SQLITE_INSPECTION_TIMEOUT_MS = 30_000 * SLOW_HARDWARE_HEADROOM;
@@ -173,12 +172,7 @@ function sqliteReadOnlyWorkerRequestArgs(pathname: string, options: SqliteReadOn
   return [
     options.mode,
     path.resolve(pathname),
-    ...(options.stagingRoot || options.agentSchemaVersionForOwnership !== undefined
-      ? [options.stagingRoot ?? ""]
-      : []),
-    ...(options.agentSchemaVersionForOwnership !== undefined
-      ? [String(options.agentSchemaVersionForOwnership)]
-      : []),
+    ...(options.stagingRoot ? [options.stagingRoot] : []),
   ];
 }
 
@@ -217,15 +211,6 @@ export function runSqliteReadOnlyWorker(
 ): Promise<SqliteAuthProfileRows>;
 export function runSqliteReadOnlyWorker(
   pathname: string,
-  options: {
-    mode: "schema-header";
-    stagingRoot?: string;
-    signal?: AbortSignal;
-    agentSchemaVersionForOwnership?: number;
-  },
-): Promise<SqliteSchemaHeader>;
-export function runSqliteReadOnlyWorker(
-  pathname: string,
   options: { mode: "sync" | "async"; stagingRoot?: string; signal?: AbortSignal },
 ): Promise<string>;
 export function runSqliteReadOnlyWorker(
@@ -258,8 +243,8 @@ export function runSqliteReadOnlyWorker(
       : scope.controller.signal,
   };
   // Native backup promises can stall with a persistent IPC handle on Node 26.
-  // Header inspection may also need a backup during recovery. Keep both modes
-  // one-shot; concurrent raw reads need separate processes for POSIX lock isolation.
+  // Keep async backups one-shot; concurrent raw reads need separate processes
+  // for POSIX lock isolation.
   // Bun retains native statements after close, so auth reads still need process exit.
   const useScopedWorker =
     (options.mode === "sync" || (options.mode === "auth-profile-rows" && !process.versions.bun)) &&
