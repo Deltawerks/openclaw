@@ -67,6 +67,7 @@ import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contr
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
 import { executeTranscriptRead } from "../transcripts/store-worker-read.js";
+import { appendTranscriptInWorker } from "../transcripts/store-worker-write.js";
 import {
   listAgentProvenanceInDatabase,
   readAgentProvenanceBatchInDatabase,
@@ -297,6 +298,16 @@ function createSharedStateWorkerBackend(
         );
       }
       const database = open();
+      if (command.type === "transcripts.append") {
+        const options = {
+          database,
+          path: context.databasePath,
+          env: getSqliteWorkerStateContext().environment,
+          readOnly: command.input.readOnly,
+        };
+        ensureMeetingTranscriptsSchema(options);
+        return appendTranscriptInWorker(command.input, options);
+      }
       switch (command.type) {
         case "transcripts.sessionEntries":
         case "transcripts.matches":

@@ -82,6 +82,61 @@ it("keeps cold transcript reads on the canonical worker and preserves store crea
   expect(existsSync(exportRoot)).toBe(false);
 });
 
+it("appends immutable speech on the canonical worker with exact-id deduplication and sequence order", async () => {
+  const { store } = fixture();
+  const session: TranscriptSessionDescriptor = {
+    sessionId: "append-worker",
+    startedAt: "2026-09-18T12:00:00.000Z",
+    source: { providerId: "manual-transcript" },
+    metadata: { hostOnly: () => undefined },
+  };
+  await store.writeSession(session);
+  await closeOpenClawStateDatabaseAsync();
+  closeOpenClawStateDatabaseForTest();
+  const toJSON = vi.fn(() => ({ language: "en", nested: [1, null, "🦞"] }));
+  const utterance: TranscriptUtterance = {
+    id: "first",
+    text: "First speech",
+    speaker: { id: "speaker", label: "Sam" },
+    metadata: { toJSON },
+    final: true,
+  };
+  await withoutParentSql(async () => {
+    const writing = store.appendUtteranceForSession(session, utterance);
+    utterance.text = "Caller changed speech";
+    utterance.speaker!.label = "Caller changed speaker";
+    await writing;
+    await store.appendUtteranceForSession(session, {
+      id: "first",
+      text: "First speech",
+      speaker: { id: "speaker", label: "Sam" },
+      metadata: { language: "en", nested: [1, null, "🦞"] },
+      final: true,
+    });
+    await store.appendUtteranceForSession(session, { text: "Second speech" });
+  });
+  expect(toJSON).toHaveBeenCalledOnce();
+  expect(await store.readUtterancesForSession(session)).toEqual([
+    {
+      id: "first",
+      sessionId: session.sessionId,
+      text: "First speech",
+      speaker: { id: "speaker", label: "Sam" },
+      metadata: { language: "en", nested: [1, null, "🦞"] },
+      final: true,
+    },
+    { sessionId: session.sessionId, text: "Second speech" },
+  ]);
+  const revision = await store.readSummaryInputRevision(session);
+  expect(JSON.parse(revision!).next_utterance_seq).toBe(2);
+  await closeOpenClawStateDatabaseAsync();
+  closeOpenClawStateDatabaseForTest();
+  expect((await store.readUtterancesForSession(session)).map((entry) => entry.text)).toEqual([
+    "First speech",
+    "Second speech",
+  ]);
+});
+
 it("reads populated transcripts after existing-only status and through reopen without parent SQL", async () => {
   const { env, store } = fixture();
   const databasePath = resolveOpenClawStateSqlitePath(env);
