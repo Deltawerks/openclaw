@@ -9,7 +9,11 @@ import { discoverConfiguredPluginLoadPaths, discoverOpenClawPlugins } from "./di
 import { resolvePluginDoctorContractArtifact } from "./doctor-contract-artifact.js";
 import { buildInstalledPluginIndexRecords } from "./installed-plugin-index-record-builder.js";
 import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
-import { isPathInside, resolvePhysicalPathInsideRootSync } from "./path-safety.js";
+import {
+  isPathInside,
+  openPluginRootFileSync,
+  resolvePhysicalPathInsideRootSync,
+} from "./path-safety.js";
 import {
   checkPluginCacheEntry,
   pluginCacheExistsSync,
@@ -109,6 +113,29 @@ describe("plugin package facts", () => {
       targetPath: source,
     });
     expect(realpath).not.toHaveBeenCalled();
+  });
+
+  it("opens a runtime entry when Windows reports the child through another root alias", () => {
+    const parent = fs.realpathSync(tempDirs.make("plugin-runtime-alias-open-"));
+    const root = path.join(parent, "canonical-root");
+    const alias = path.join(parent, "root-alias");
+    const source = path.join(root, "plugin.js");
+    fs.mkdirSync(root);
+    fs.writeFileSync(source, "export default {};\n");
+    fs.symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+
+    const opened = openPluginRootFileSync({
+      rootPath: alias,
+      filePath: source,
+      rejectHardlinks: false,
+    });
+
+    expect(opened.ok).toBe(true);
+    if (opened.ok) {
+      expect(opened.path).toBe(source);
+      fs.closeSync(opened.fd);
+    }
   });
 
   it("reads an aliased Windows plugin root through the descriptor boundary", () => {

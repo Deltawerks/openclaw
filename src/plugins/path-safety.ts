@@ -1,6 +1,7 @@
 /** Plugin-local re-export of shared path safety helpers for plugin install/runtime code. */
 import fs from "node:fs";
 import path from "node:path";
+import { openRootFileSync } from "../infra/boundary-file-read.js";
 import { isPathInside as isPathInsideLexical } from "../infra/path-safety.js";
 
 export { safeRealpathSync, safeStatSync, formatPosixMode } from "../infra/path-safety.js";
@@ -56,4 +57,23 @@ export function isPathInside(rootPath: string, targetPath: string): boolean {
     isPathInsideLexical(rootPath, targetPath) ||
     resolvePhysicalPathInsideRootSync(rootPath, targetPath) !== undefined
   );
+}
+
+/** Opens a runtime plugin artifact after reconciling Windows root aliases. */
+export function openPluginRootFileSync(params: {
+  rootPath: string;
+  filePath: string;
+  rejectHardlinks: boolean;
+}) {
+  const physical = isPathInsideLexical(params.rootPath, params.filePath)
+    ? undefined
+    : resolvePhysicalPathInsideRootSync(params.rootPath, params.filePath);
+  return openRootFileSync({
+    absolutePath: physical?.targetPath ?? params.filePath,
+    rootPath: physical?.rootPath ?? params.rootPath,
+    rootRealPath: physical?.rootPath,
+    boundaryLabel: "plugin root",
+    rejectHardlinks: params.rejectHardlinks,
+    skipLexicalRootCheck: true,
+  });
 }
