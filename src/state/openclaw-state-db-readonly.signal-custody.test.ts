@@ -77,6 +77,7 @@ vi.mock("./openclaw-state-db-cache.js", () => ({
     return () => mocks.resources.delete(resource);
   },
   borrowOpenClawStateDatabaseForAsyncRead: () => undefined,
+  retainOpenClawStateDatabaseForIndependentRead: () => undefined,
   openClawStateDatabaseCache: {
     getCachedOpenClawStateDatabase: () => undefined,
     assertOpenClawStateDatabaseOpenAllowed() {},

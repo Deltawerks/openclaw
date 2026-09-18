@@ -78,34 +78,44 @@ export function createStateDatabaseRetainer(
     scope?.own(reference, "shared-references", () => reference.release());
     return reference;
   };
+  const findReadDatabase = (pathname: string) => {
+    getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
+    operations.assertOpen(pathname);
+    const database = state.cachedDatabases.get(path.resolve(pathname));
+    return database?.db.isOpen ? database : undefined;
+  };
+  const retainReadReference = (database: OpenClawStateDatabase) => {
+    const reference = retain(database, true);
+    const assertCurrent = () => {
+      if (state.cachedDatabases.get(database.path) !== database || !database.db.isOpen) {
+        throw new Error("Shared-state read lost its original native owner");
+      }
+    };
+    return {
+      assertCurrent,
+      observe() {
+        assertCurrent();
+        // Failed schema admission must not transfer a maintenance-owned handle.
+        observeOpenClawDatabaseMaintenanceResource(database.db);
+      },
+      release: () => reference.release(),
+    };
+  };
   return {
     retain: (database: OpenClawStateDatabase) => retain(database),
+    retainForIndependentRead(this: void, pathname: string) {
+      const database = findReadDatabase(pathname);
+      return database ? retainReadReference(database) : undefined;
+    },
     borrowForRead(this: void, pathname: string) {
-      getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
-      operations.assertOpen(pathname);
-      const database = state.cachedDatabases.get(path.resolve(pathname));
-      if (!database?.db.isOpen) {
+      const database = findReadDatabase(pathname);
+      if (!database) {
         return undefined;
       }
       if (database.db.isTransaction) {
         throw new Error("Asynchronous shared-state reads cannot run inside a native transaction");
       }
-      const reference = retain(database, true);
-      const assertCurrent = () => {
-        if (state.cachedDatabases.get(database.path) !== database || !database.db.isOpen) {
-          throw new Error("Shared-state read lost its original native owner");
-        }
-      };
-      return {
-        database,
-        assertCurrent,
-        observe() {
-          assertCurrent();
-          // Failed schema admission must not transfer a maintenance-owned handle.
-          observeOpenClawDatabaseMaintenanceResource(database.db);
-        },
-        release: () => reference.release(),
-      };
+      return { database, ...retainReadReference(database) };
     },
   };
 }

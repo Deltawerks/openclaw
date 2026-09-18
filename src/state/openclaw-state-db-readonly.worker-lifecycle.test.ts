@@ -10,17 +10,18 @@ const mock = vi.hoisted(() => ({
   read: vi.fn<() => Promise<OpenClawStateReadOutcome>>(),
   cleanup: vi.fn<() => Promise<boolean>>(),
   borrow: vi.fn(),
+  independent: vi.fn(),
+  prepareNative: vi.fn(),
+  prepareSource: vi.fn(),
 }));
 vi.mock("./openclaw-state-db-cache.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./openclaw-state-db-cache.js")>()),
   borrowOpenClawStateDatabaseForAsyncRead: mock.borrow,
+  retainOpenClawStateDatabaseForIndependentRead: mock.independent,
 }));
 vi.mock("../infra/sqlite-readonly-location.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/sqlite-readonly-location.js")>()),
-  prepareSqliteReadOnlyLocationFromOwnedDatabase: async () => ({
-    location: "/fixture/prepared.sqlite",
-    cleanupAsync: mock.cleanup,
-  }),
+  prepareSqliteReadOnlyLocationFromOwnedDatabase: mock.prepareNative,
 }));
 let finishProducer: (() => void) | undefined;
 vi.mock("./openclaw-state-read-worker.js", () => ({
@@ -33,12 +34,7 @@ vi.mock("./openclaw-state-read-worker.js", () => ({
 }));
 vi.mock("../infra/sqlite-snapshot-source.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/sqlite-snapshot-source.js")>()),
-  prepareSqliteReadOnlyLocation: async () => ({
-    location: "/fixture/prepared.sqlite",
-    cleanupRoot: "/fixture/prepared",
-    cleanup: () => true,
-    cleanupAsync: mock.cleanup,
-  }),
+  prepareSqliteReadOnlyLocation: mock.prepareSource,
 }));
 vi.mock("../infra/sqlite-readonly-location-cleanup.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/sqlite-readonly-location-cleanup.js")>()),
@@ -74,6 +70,17 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 );
 beforeEach(() => {
   mock.borrow.mockReset();
+  mock.independent.mockReset();
+  mock.prepareNative.mockReset().mockImplementation(async () => ({
+    location: "/fixture/prepared.sqlite",
+    cleanupAsync: mock.cleanup,
+  }));
+  mock.prepareSource.mockReset().mockImplementation(async () => ({
+    location: "/fixture/prepared.sqlite",
+    cleanupRoot: "/fixture/prepared",
+    cleanup: () => true,
+    cleanupAsync: mock.cleanup,
+  }));
   mock.close.mockReset().mockResolvedValue();
   mock.cleanup.mockReset().mockResolvedValue(true);
   mock.read.mockReset().mockResolvedValue({
@@ -88,6 +95,66 @@ function source() {
   fs.writeFileSync(pathname, "mock read transport source");
   return { path: pathname, env: { OPENCLAW_STATE_DIR: root } };
 }
+
+it("reads independently when native snapshot borrowing refuses a transaction", async () => {
+  const options = source();
+  const observe = vi.fn();
+  const release = vi.fn();
+  mock.borrow.mockImplementation(() => {
+    throw new Error("Asynchronous shared-state reads cannot run inside a native transaction");
+  });
+  mock.independent.mockReturnValue({ assertCurrent() {}, observe, release });
+  await expect(executeExistingOpenClawStateRead(options, { type: "fleet.list" })).resolves.toEqual({
+    ok: true,
+    type: "fleet.list",
+    sourceAdmitted: true,
+    cells: [],
+  });
+  expect(observe).toHaveBeenCalledOnce();
+  expect(release).toHaveBeenCalledOnce();
+  expect(mock.borrow).not.toHaveBeenCalled();
+  expect(mock.prepareNative).not.toHaveBeenCalled();
+  expect(mock.prepareSource).not.toHaveBeenCalled();
+});
+
+it("prepares artifact-preserving reads from the retained native source", async () => {
+  const options = source();
+  const database = { db: {} };
+  const observe = vi.fn();
+  const release = vi.fn();
+  mock.borrow.mockReturnValue({ database, assertCurrent() {}, observe, release });
+  await expect(
+    withArtifactPreservingStateReads(() =>
+      executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+    ),
+  ).resolves.toEqual({ ok: true, type: "fleet.list", sourceAdmitted: true, cells: [] });
+  expect(mock.prepareNative).toHaveBeenCalledWith(database.db, expect.any(Function));
+  expect(mock.prepareSource).not.toHaveBeenCalled();
+  expect(mock.independent).not.toHaveBeenCalled();
+  expect(observe).toHaveBeenCalledOnce();
+  expect(release).toHaveBeenCalledOnce();
+  expect(mock.cleanup).toHaveBeenCalledOnce();
+});
+
+it("preserves native transaction refusal for artifact reads without independent fallback", async () => {
+  const options = source();
+  const failure = new Error(
+    "Asynchronous shared-state reads cannot run inside a native transaction",
+  );
+  mock.borrow.mockImplementation(() => {
+    throw failure;
+  });
+  mock.independent.mockReturnValue({ assertCurrent() {}, observe() {}, release() {} });
+  await expect(
+    withArtifactPreservingStateReads(() =>
+      executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+    ),
+  ).rejects.toBe(failure);
+  expect(mock.independent).not.toHaveBeenCalled();
+  expect(mock.prepareNative).not.toHaveBeenCalled();
+  expect(mock.prepareSource).not.toHaveBeenCalled();
+  expect(mock.read).not.toHaveBeenCalled();
+});
 
 it.each([false, true])(
   "retains ordered cleanup for canonical retry after read failure=%s",
@@ -196,7 +263,7 @@ it.each([false, true])(
     const failure = new Error("query failed");
     const observe = vi.fn();
     const release = vi.fn();
-    mock.borrow.mockReturnValue({ database: { db: {} }, assertCurrent() {}, observe, release });
+    mock.independent.mockReturnValue({ assertCurrent() {}, observe, release });
     mock.read.mockResolvedValue({
       error: failure,
       ...(sourceAdmitted ? { sourceAdmitted: true } : {}),
@@ -215,7 +282,7 @@ it("preserves the query failure without observing a source that lost its origina
   const retired = new Error("original source retired");
   const assertCurrent = vi.fn();
   const observe = vi.fn();
-  mock.borrow.mockReturnValue({ database: { db: {} }, assertCurrent, observe, release() {} });
+  mock.independent.mockReturnValue({ assertCurrent, observe, release() {} });
   mock.read.mockImplementation(async () => {
     assertCurrent.mockImplementation(() => {
       throw retired;

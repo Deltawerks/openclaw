@@ -35,6 +35,7 @@ vi.mock("./openclaw-state-db-cache.js", async (importOriginal) => {
     captureOpenClawStateDatabaseReadAdmission: mocks.capture,
     registerOpenClawStateDatabaseAsyncResource: () => () => {},
     borrowOpenClawStateDatabaseForAsyncRead: () => undefined,
+    retainOpenClawStateDatabaseForIndependentRead: () => undefined,
     openClawStateDatabaseCache: {
       ...actual.openClawStateDatabaseCache,
       getCachedOpenClawStateDatabase: () => undefined,

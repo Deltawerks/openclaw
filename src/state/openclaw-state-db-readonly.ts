@@ -25,6 +25,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { observeOpenClawDatabaseMaintenanceResource } from "./openclaw-state-db-async-lifecycle.js";
 import {
   borrowOpenClawStateDatabaseForAsyncRead,
+  retainOpenClawStateDatabaseForIndependentRead,
   captureOpenClawStateDatabaseReadAdmission,
   openClawStateDatabaseCache,
   registerOpenClawStateDatabaseAsyncResource,
@@ -460,7 +461,7 @@ function executeRetainedOpenClawStateRead(
     let cleaned = false;
     let validated = false;
     const acceptanceErrors: unknown[] = [];
-    let borrowed: ReturnType<typeof borrowOpenClawStateDatabaseForAsyncRead>;
+    let borrowed: ReturnType<typeof retainOpenClawStateDatabaseForIndependentRead>;
     let sourcePin: ReturnType<typeof acquireStateDatabaseHandleLease> | undefined;
     let prepared: PreparedSqliteReadOnlyLocation | undefined;
     let expectedIdentity: string | undefined;
@@ -559,8 +560,15 @@ function executeRetainedOpenClawStateRead(
     }
     const read = async () => {
       authority.assertCurrent();
+      let nativeSource: OpenClawStateDatabase | undefined;
       if (!snapshot) {
-        borrowed = borrowOpenClawStateDatabaseForAsyncRead(pathname);
+        if (preserveArtifacts || excluded || mutation) {
+          const native = borrowOpenClawStateDatabaseForAsyncRead(pathname);
+          borrowed = native;
+          nativeSource = native?.database;
+        } else {
+          borrowed = retainOpenClawStateDatabaseForIndependentRead(pathname);
+        }
       }
       if (!snapshot && !borrowed && !existingPathOrUndefined(pathname)) {
         return undefined;
@@ -569,9 +577,9 @@ function executeRetainedOpenClawStateRead(
         sourcePin = acquireStateDatabaseHandleLease({ databasePath: pathname });
       }
       let location = snapshot?.location ?? pathname;
-      if (borrowed && (preserveArtifacts || excluded || mutation)) {
+      if (nativeSource) {
         prepared = await prepareSqliteReadOnlyLocationFromOwnedDatabase(
-          borrowed.database.db,
+          nativeSource.db,
           authority.assertCurrent,
         );
         location = prepared.location;

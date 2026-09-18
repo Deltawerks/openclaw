@@ -588,7 +588,15 @@ export class WorkerTaskPool<Input, Output> {
         // Keep input and capacity custody until execution stops, even if rejection is early.
         (slot.completions ??= []).push(complete);
         void this.retire(slot).catch((failure: unknown) => {
-          task.reject(error ?? failure);
+          task.reject(
+            error
+              ? new AggregateError(
+                  [error, failure],
+                  `Worker retirement failed: ${toErrorObject(failure, "worker retirement failed").message}; task failed: ${error.message}`,
+                  { cause: failure },
+                )
+              : failure,
+          );
         });
         return;
       }
