@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getPluginMetadataSnapshotCache, retirePluginCache } from "../plugins/plugin-cache.js";
 import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import * as agentAuthDiscovery from "./agent-auth-discovery.js";
 import { saveAuthProfileStore } from "./auth-profiles/store-runtime.js";
 import {
   getPreparedModelCatalogWorkerPoolSnapshot,
@@ -655,6 +656,60 @@ describe("Gateway catalog worker pool", () => {
     } finally {
       fs.rmSync(`${marker}.hold`, { force: true });
       await Promise.allSettled([first, retired, sibling]);
+    }
+  });
+  it("keeps replacement preparation alive when the preceding catalog finishes", async () => {
+    const fixture = await createFleetFixture();
+    await Promise.all(fixture.snapshots.map((snapshot) => loadCompletedFullCatalog(snapshot)));
+    const before = fs.readFileSync(fixture.marker, "utf8");
+    fs.writeFileSync(`${fixture.marker}.hold`, "");
+    const previousCatalog = fixture.snapshots[0]!.loadFullModelCatalog!({ refresh: true });
+    void previousCatalog.catch(() => {});
+    const preparing = createDeferredCore();
+    const resume = createDeferredCore();
+    const prepareCredentials = agentAuthDiscovery.prepareAmbientAgentCredentialsForDiscovery;
+    const preparation = vi
+      .spyOn(agentAuthDiscovery, "prepareAmbientAgentCredentialsForDiscovery")
+      .mockImplementationOnce(async (options) => {
+        const credentials = await prepareCredentials(options);
+        preparing.resolve();
+        await resume.promise;
+        return credentials;
+      });
+    let publication: Promise<void> | undefined;
+    try {
+      await expect.poll(() => fs.readFileSync(fixture.marker, "utf8")).not.toBe(before);
+      publication = refreshPreparedModelRuntimeSnapshots(fixture.config, {
+        catalogMode: "static",
+        allowGatewaySubagentBinding: true,
+        pluginMetadataSnapshot: fixture.snapshots[0]!.metadataSnapshot,
+      });
+      void publication.catch(() => {});
+      await Promise.race([
+        preparing.promise,
+        publication.then(() => {
+          throw new Error("Publication completed before its credential preparation");
+        }),
+      ]);
+      fs.rmSync(`${fixture.marker}.hold`);
+      await expect(previousCatalog).rejects.toThrow("superseded");
+      resume.resolve();
+      await publication;
+      const replacement = getPreparedModelRuntimeSnapshot({
+        agentId: fixture.agentIds[0],
+        agentDir: fixture.snapshots[0]!.agentDir,
+        config: fixture.config,
+      })!;
+      expect(replacement).not.toBe(fixture.snapshots[0]);
+      expect(replacement.isCurrent()).toBe(true);
+      expect((await loadCompletedFullCatalog(replacement)).entries).toContainEqual(
+        expect.objectContaining({ provider: PROVIDER_ID, id: "plugin-generation-v1" }),
+      );
+    } finally {
+      resume.resolve();
+      fs.rmSync(`${fixture.marker}.hold`, { force: true });
+      await Promise.allSettled([previousCatalog, publication]);
+      preparation.mockRestore();
     }
   });
   it.for([false, true])(
