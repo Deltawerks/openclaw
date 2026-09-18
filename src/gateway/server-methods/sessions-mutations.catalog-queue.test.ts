@@ -81,11 +81,39 @@ test("catalog reload releases the agent writer while preserving same-session ord
       waitForReplacement: true,
     });
     expect(replacement).toBeDefined();
+    const extendedContext = {
+      contextWindows: [{ id: "extended", label: "Extended", contextWindow: 200_000 }],
+    };
+    const cfg = {
+      models: {
+        mode: "replace",
+        providers: {
+          fixture: {
+            baseUrl: "https://fixture.invalid/v1",
+            api: "openai-responses",
+            apiKey: "fixture-key",
+            models: [
+              {
+                id: "catalog-dependent",
+                name: "Catalog Dependent",
+                reasoning: true,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 200_000,
+                ...extendedContext,
+                maxTokens: 4_096,
+              },
+            ],
+          },
+        },
+      },
+      agents: { defaults: { model: "fixture/catalog-dependent" } },
+    } satisfies OpenClawConfig;
     const loadGatewayModelCatalog = vi.fn(async () => {
       entered.resolve();
-      return await loadActualGatewayModelCatalog({ agentId: "main", getConfig: () => ({}) });
+      return await loadActualGatewayModelCatalog({ agentId: "main", getConfig: () => cfg });
     });
-    const context = patchContext(loadGatewayModelCatalog);
+    const context = patchContext(loadGatewayModelCatalog, cfg);
     const catalogResponse = vi.fn();
     const metadataResponse = vi.fn();
     const successorResponse = vi.fn();
