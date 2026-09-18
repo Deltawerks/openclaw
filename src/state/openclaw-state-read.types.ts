@@ -30,7 +30,7 @@ export type OpenClawStateReadRequest = {
   snapshotRoot?: string;
   command: OpenClawStateReadCommand | { type: "admit" };
 };
-export type OpenClawStateReadReply =
+export type OpenClawStateReadReply = (
   | { ok: true; type: "admit" }
   | { ok: true; type: "fleet.list"; sourceAdmitted: true; cells: FleetCellRecord[] }
   | { ok: true; type: "fleet.get"; sourceAdmitted: true; cell: FleetCellRecord | undefined }
@@ -39,7 +39,11 @@ export type OpenClawStateReadReply =
       sourceAdmitted?: true;
       message: string;
       error: OpenClawStateWorkerErrorPayload | undefined;
-    };
+    }
+) & {
+  /** A best-effort admission read completed without confirmed native cleanup. */
+  nativeCleanupFailure?: { error: OpenClawStateWorkerErrorPayload | undefined };
+};
 
 export type OpenClawStateReadOutcome =
   | { value: Extract<OpenClawStateReadReply, { ok: true }> }

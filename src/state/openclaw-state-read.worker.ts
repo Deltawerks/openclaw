@@ -40,47 +40,57 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
 
 serveWorkerTasks((input): OpenClawStateReadReply => {
   let sourceAdmitted: true | undefined;
+  let nativeCleanupFailure: OpenClawStateReadReply["nativeCleanupFailure"];
   try {
     if (!isReadRequest(input)) {
       throw new Error("Fleet registry reader requires a captured state location and read command");
     }
-    return runWithSqliteWorkerStateContext(input.context, () =>
-      withStateDatabaseCoordinatorRuntimeDirectory(input.context.coordinatorRuntime, () => {
-        if (input.checkFreshAdmission) {
-          openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
-            input.databasePath,
-            input.context.environment,
-          );
-        }
-        const { command } = input;
-        if (command.type === "admit") {
-          return { ok: true, type: "admit" };
-        }
-        return withOpenClawStateReadOnlyLocation(
-          ({ db }) => {
-            sourceAdmitted = true;
-            return command.type === "fleet.list"
-              ? {
-                  ok: true,
-                  type: "fleet.list",
-                  sourceAdmitted,
-                  cells: listFleetCellsInDatabase(db),
-                }
-              : {
-                  ok: true,
-                  type: "fleet.get",
-                  sourceAdmitted,
-                  cell: getFleetCellInDatabase(db, command.tenantId),
+    const reply = runWithSqliteWorkerStateContext(input.context, () =>
+      withStateDatabaseCoordinatorRuntimeDirectory(
+        input.context.coordinatorRuntime,
+        (): OpenClawStateReadReply => {
+          if (input.checkFreshAdmission) {
+            openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
+              input.databasePath,
+              input.context.environment,
+              (error) => {
+                nativeCleanupFailure = {
+                  error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
                 };
-          },
-          input.databasePath,
-          input.location,
-          undefined,
-          input.expectedIdentity,
-          input.snapshotRoot,
-        );
-      }),
+              },
+            );
+          }
+          const { command } = input;
+          if (command.type === "admit") {
+            return { ok: true, type: "admit" };
+          }
+          return withOpenClawStateReadOnlyLocation(
+            ({ db }) => {
+              sourceAdmitted = true;
+              return command.type === "fleet.list"
+                ? {
+                    ok: true,
+                    type: "fleet.list",
+                    sourceAdmitted,
+                    cells: listFleetCellsInDatabase(db),
+                  }
+                : {
+                    ok: true,
+                    type: "fleet.get",
+                    sourceAdmitted,
+                    cell: getFleetCellInDatabase(db, command.tenantId),
+                  };
+            },
+            input.databasePath,
+            input.location,
+            undefined,
+            input.expectedIdentity,
+            input.snapshotRoot,
+          );
+        },
+      ),
     );
+    return nativeCleanupFailure ? { ...reply, nativeCleanupFailure } : reply;
   } catch (value) {
     const error = toStringifiedError(value);
     return {
@@ -88,6 +98,7 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
       sourceAdmitted,
       message: error.message,
       error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
+      ...(nativeCleanupFailure ? { nativeCleanupFailure } : {}),
     };
   }
 });

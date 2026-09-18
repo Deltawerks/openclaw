@@ -55,6 +55,19 @@ export type WorkerTaskOptions<Input> = {
   onInputConsumed?: () => void;
 };
 
+/** Internal custody: a result alone does not release its execution slot. */
+export type OwnedWorkerTask<Output> = {
+  result: Promise<Output>;
+  close(options?: { retire?: true }): Promise<void>;
+};
+
+type TaskOwner = {
+  closed: boolean;
+  retire: boolean;
+  closing?: Promise<void>;
+  complete?: () => void;
+};
+
 type WorkerHostExchange = {
   id: number;
   pressure: AbortController;
@@ -77,6 +90,8 @@ export type Task<Input, Output> = Deferred<Output> & {
   slot?: Slot<Input, Output>;
   admitted: boolean;
   preparing: boolean;
+  preparation?: Deferred;
+  owner?: TaskOwner;
   inputBytes: number;
   computePermit?: WorkerComputePermit;
   enqueuedAt: number;
@@ -93,4 +108,15 @@ export type Slot<Input, Output> = {
   retiring?: Promise<void>;
   retirementFailed?: boolean;
   completions?: Array<() => void>;
+};
+
+export type WorkerTaskPoolDispatch = {
+  close(error: Error): Promise<void>;
+  getSnapshot(): {
+    maxWorkers: number;
+    workers: number;
+    workersCreated: number;
+    activeTasks: number;
+    pendingTasks: number;
+  };
 };
