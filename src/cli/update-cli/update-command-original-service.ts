@@ -13,6 +13,7 @@ import { tryReadJson } from "../../infra/json-files.js";
 import {
   createPackageIntegrityReader,
   PackageIntegrityTimeoutError,
+  PackageIntegrityLimitError,
 } from "../../infra/package-update-integrity.js";
 import { readBuiltGatewayBuildId } from "../../infra/update-git-runtime.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
@@ -180,10 +181,18 @@ export async function revalidateOriginalManagedServiceRuntime(
       }
     } catch (error) {
       assertCurrent();
-      if (!(error instanceof PackageIntegrityTimeoutError)) {
+      if (
+        !(
+          error instanceof PackageIntegrityTimeoutError ||
+          error instanceof PackageIntegrityLimitError
+        )
+      ) {
         throw error;
       }
-      original.packageFingerprintWarning = `Original service full package fingerprint timed out (scan budget ${error.budgetMs} ms); full package contents are unverified. Mandatory runtime identities still require revalidation.`;
+      original.packageFingerprintWarning =
+        error instanceof PackageIntegrityTimeoutError
+          ? `Original service full package fingerprint timed out (scan budget ${error.budgetMs} ms); full package contents are unverified. Mandatory runtime identities still require revalidation.`
+          : `Original service full package fingerprint unavailable (${error.message}); full package contents are unverified. Mandatory runtime identities still require revalidation.`;
       defaultRuntime.error(original.packageFingerprintWarning);
     }
   }
@@ -294,10 +303,18 @@ export async function observeOriginalManagedServiceRuntime(
       }
     } catch (error) {
       assertCurrent();
-      if (!(error instanceof PackageIntegrityTimeoutError)) {
+      if (
+        !(
+          error instanceof PackageIntegrityTimeoutError ||
+          error instanceof PackageIntegrityLimitError
+        )
+      ) {
         throw error;
       }
-      original.packageFingerprintWarning = `Original service full package fingerprint unavailable after ${Math.round(performance.now() - startedAt)} ms (scan budget ${error.budgetMs} ms). Compensation requires directory, version and launcher revalidation; full package contents are unverified.`;
+      original.packageFingerprintWarning =
+        error instanceof PackageIntegrityTimeoutError
+          ? `Original service full package fingerprint unavailable after ${Math.round(performance.now() - startedAt)} ms (scan budget ${error.budgetMs} ms). Compensation requires directory, version and launcher revalidation; full package contents are unverified.`
+          : `Original service full package fingerprint unavailable (${error.message}). Compensation requires directory, version and launcher revalidation; full package contents are unverified.`;
       defaultRuntime.error(original.packageFingerprintWarning);
     }
     assertCurrent();

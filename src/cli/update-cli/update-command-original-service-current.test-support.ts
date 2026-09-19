@@ -458,80 +458,97 @@ export function registerCurrentF3Controls(fixture: () => Fixture) {
     });
   });
 
-  it.each(["timeout", "read-error", "later-timeout", "launcher-drift", "read-window"] as const)(
-    "current F3 mandatory identity and optional tree: %s",
-    async (scenario) => {
-      const { rootA, rootB, before } = fixture();
-      const createReader = integrity.createPackageIntegrityReader;
-      let treeReads = 0;
-      let displaced = false;
-      vi.spyOn(integrity, "createPackageIntegrityReader").mockImplementation((timeout) => {
-        const reader = createReader(timeout);
-        return {
-          ...reader,
-          tree: async (root, originalRoot) => {
-            treeReads++;
-            if (scenario === "read-error") {
-              throw new Error("mandatory package access failed");
+  it.each([
+    "timeout",
+    "entry-limit",
+    "byte-limit",
+    "read-error",
+    "later-timeout",
+    "later-entry-limit",
+    "later-byte-limit",
+    "launcher-limit",
+    "launcher-drift",
+    "read-window",
+  ] as const)("current F3 mandatory identity and optional tree: %s", async (scenario) => {
+    const { rootA, rootB, before } = fixture();
+    const createReader = integrity.createPackageIntegrityReader;
+    let treeReads = 0;
+    let displaced = false;
+    vi.spyOn(integrity, "createPackageIntegrityReader").mockImplementation((timeout) => {
+      const reader = createReader(timeout);
+      return {
+        ...reader,
+        tree: async (root, originalRoot) => {
+          treeReads++;
+          if (scenario === "read-error") {
+            throw new Error("mandatory package access failed");
+          }
+          if (!scenario.startsWith("later-") || treeReads > 1) {
+            if (scenario.includes("entry-limit")) {
+              throw new integrity.PackageIntegrityLimitError("entry");
             }
-            if (scenario !== "later-timeout" || treeReads > 1) {
-              throw new integrity.PackageIntegrityTimeoutError(30_000);
+            if (scenario.includes("byte-limit")) {
+              throw new integrity.PackageIntegrityLimitError("byte");
             }
-            return reader.tree(root, originalRoot);
-          },
-          launcher: async (launcher) => {
-            const value = await reader.launcher(launcher);
-            if (scenario === "read-window" && !displaced) {
-              displaced = true;
-              await fs.rename(rootA, `${rootA}-displaced`);
-              await fs.cp(`${rootA}-displaced`, rootA, { recursive: true });
-            }
-            return value;
-          },
-        };
-      });
-      await admitted(async (run) => {
-        const observation = observeOriginalManagedServiceRuntime(
-          { root: rootB, opts: { run } },
-          before,
-        );
-        if (["read-error", "read-window"].includes(scenario)) {
-          await expect(observation).rejects.toMatchObject({
-            reason: "original-service-unverified",
-          });
-          return;
-        }
-        const original = await observation;
-        expect(original).toMatchObject({ root: rootA, version: "2026.9.3", verified: true });
-        if (scenario === "later-timeout") {
-          expect(original).toHaveProperty("packageFingerprint");
-        } else {
-          expect(original).not.toHaveProperty("packageFingerprint");
-        }
-        expect(original).toHaveProperty(
-          "packageFingerprintWarning",
-          expect.stringContaining("full package contents are unverified"),
-        );
-        expect(treeReads).toBe(scenario === "later-timeout" ? 2 : 1);
-        if (!original || !run.executorFence) {
-          throw new Error("missing admitted observation");
-        }
-        if (scenario === "launcher-drift") {
-          await fs.appendFile(path.join(rootA, "dist/index.js"), "// replaced\n");
-          await expect(
-            revalidateOriginalManagedServiceRuntime(original, () =>
-              run.executorFence!.assertCurrent(),
-            ),
-          ).rejects.toThrow("changed");
-        } else {
-          await revalidateOriginalManagedServiceRuntime(original, () =>
+            throw new integrity.PackageIntegrityTimeoutError(30_000);
+          }
+          return reader.tree(root, originalRoot);
+        },
+        launcher: async (launcher) => {
+          if (scenario === "launcher-limit") {
+            throw new integrity.PackageIntegrityLimitError("byte");
+          }
+          const value = await reader.launcher(launcher);
+          if (scenario === "read-window" && !displaced) {
+            displaced = true;
+            await fs.rename(rootA, `${rootA}-displaced`);
+            await fs.cp(`${rootA}-displaced`, rootA, { recursive: true });
+          }
+          return value;
+        },
+      };
+    });
+    await admitted(async (run) => {
+      const observation = observeOriginalManagedServiceRuntime(
+        { root: rootB, opts: { run } },
+        before,
+      );
+      if (["read-error", "read-window", "launcher-limit"].includes(scenario)) {
+        await expect(observation).rejects.toMatchObject({
+          reason: "original-service-unverified",
+        });
+        return;
+      }
+      const original = await observation;
+      expect(original).toMatchObject({ root: rootA, version: "2026.9.3", verified: true });
+      if (scenario.startsWith("later-")) {
+        expect(original).toHaveProperty("packageFingerprint");
+      } else {
+        expect(original).not.toHaveProperty("packageFingerprint");
+      }
+      expect(original).toHaveProperty(
+        "packageFingerprintWarning",
+        expect.stringContaining("full package contents are unverified"),
+      );
+      expect(treeReads).toBe(scenario.startsWith("later-") ? 2 : 1);
+      if (!original || !run.executorFence) {
+        throw new Error("missing admitted observation");
+      }
+      if (scenario === "launcher-drift") {
+        await fs.appendFile(path.join(rootA, "dist/index.js"), "// replaced\n");
+        await expect(
+          revalidateOriginalManagedServiceRuntime(original, () =>
             run.executorFence!.assertCurrent(),
-          );
-          expect(treeReads).toBe(scenario === "later-timeout" ? 3 : 1);
-        }
-      });
-    },
-  );
+          ),
+        ).rejects.toThrow("changed");
+      } else {
+        await revalidateOriginalManagedServiceRuntime(original, () =>
+          run.executorFence!.assertCurrent(),
+        );
+        expect(treeReads).toBe(scenario.startsWith("later-") ? 3 : 1);
+      }
+    });
+  });
 
   it.each([
     "unsupported",
