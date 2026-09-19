@@ -88,6 +88,22 @@ describe("memory reindex state", () => {
       reason,
       code,
       owner: "openclaw",
+      versionOrder: "older",
+    });
+  });
+
+  it("invalidates indexes built by a previous chunking implementation", () => {
+    expect(
+      resolveMemoryIndexIdentityState(
+        createIdentityParams({
+          meta: createMeta({ chunkingVersion: MEMORY_CHUNKING_VERSION - 1 }),
+        }),
+      ),
+    ).toMatchObject({
+      status: "mismatched",
+      reason: "index chunking implementation changed",
+      code: "chunking_version",
+      owner: "openclaw",
     });
   });
 

@@ -10,6 +10,7 @@ import {
   renderSettingsValue,
 } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
+import { registerGitHubEnglish } from "../../i18n/locales/en-github.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../../lib/external-link.ts";
 import { formatUiExternalText } from "../../lib/format-error.ts";
 import { formatDateTimeMs } from "../../lib/format.ts";
@@ -47,11 +48,30 @@ const GITHUB_AUTHORIZATION_LABEL = {
   network_error: "agentTools.githubNetworkRetry",
 } as const;
 
-export function renderGitHubHealth(identity: GitHubIdentityFacts | null) {
-  const status = identity ? GITHUB_CREDENTIAL_STATUS[identity.credentialState] : null;
+export function renderGitHubUnloadedStatus(
+  request: Pick<GitHubIdentityController, "loading" | "error">,
+) {
   return renderSettingsStatus({
-    kind: status?.kind ?? "muted",
-    label: status ? t(status.label) : t("githubConnections.notLoaded"),
+    kind: request.error ? "warn" : "muted",
+    label: request.loading
+      ? t("githubConnections.checking")
+      : request.error
+        ? t("githubConnections.statusUnavailable")
+        : t("githubConnections.notLoaded"),
+  });
+}
+
+export function renderGitHubHealth(
+  identity: GitHubIdentityFacts | null,
+  request: Pick<GitHubIdentityController, "loading" | "error">,
+) {
+  if (!identity) {
+    return renderGitHubUnloadedStatus(request);
+  }
+  const status = GITHUB_CREDENTIAL_STATUS[identity.credentialState];
+  return renderSettingsStatus({
+    kind: status.kind,
+    label: t(status.label),
   });
 }
 
@@ -365,6 +385,7 @@ export function renderGitHubIdentity(
   return renderSettingsSection(
     {
       title: t("githubConnections.agentTitle"),
+      description: t("githubConnections.agentDescription"),
       actions: controller.statusReadable
         ? html`<button
             class="btn btn--sm"
@@ -382,7 +403,7 @@ export function renderGitHubIdentity(
           identity?.source === "agent-override"
             ? t("githubConnections.agentOverride")
             : t("githubConnections.system"),
-        control: html`${renderGitHubHealth(identity)}<button
+        control: html`${renderGitHubHealth(identity, controller)}<button
             class="btn btn--sm"
             @click=${onOpenConnections}
           >
@@ -427,3 +448,5 @@ export function renderGitHubIdentity(
     `,
   );
 }
+
+registerGitHubEnglish();

@@ -7,6 +7,7 @@ import {
 } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { expectRequestCountStable } from "./chat-flow.test-support.ts";
+import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
 import {
   actionOpacity,
   actionPointerEvents,
@@ -23,6 +24,7 @@ import {
 } from "./session-management.test-support.ts";
 
 const suite = createSessionManagementE2eSuite();
+const rosterMatch = { includeGlobal: true };
 
 function sessionActionPresentation(button: Locator) {
   return button.evaluate((element) => {
@@ -38,7 +40,7 @@ function sessionActionPresentation(button: Locator) {
 }
 
 suite.define(() => {
-  it("expands and manages child sessions inline before opening a child chat", async () => {
+  it.each([false, true])("nests and manages spawned sessions (pinned: %s)", async (pinned) => {
     const baseTime = Date.parse("2026-07-01T16:00:00.000Z");
     const parentKey = "agent:main:release-plan";
     const childOneKey = "agent:main:research-sources";
@@ -52,55 +54,58 @@ suite.define(() => {
       viewport: { height: 900, width: 1280 },
     });
     const page = await context.newPage();
+    const children = [
+      sessionRow(childOneKey, "Research sources", baseTime - 1_000, {
+        hasActiveRun: true,
+        spawnedBy: parentKey,
+        startedAt: baseTime - 61_000,
+        status: "running",
+      }),
+      sessionRow(childTwoKey, "Verify tests", baseTime - 2_000, {
+        endedAt: baseTime - 2_000,
+        spawnedBy: parentKey,
+        startedAt: baseTime - 62_000,
+        status: "done",
+      }),
+      {
+        ...sessionRow(staleRunningChildKey, "Stale activity", baseTime - 3_000, {
+          hasActiveRun: false,
+          spawnedBy: parentKey,
+          startedAt: baseTime - 64_000,
+          status: "running",
+        }),
+        runtimeMs: 61_000,
+        runtimeSampledAt: baseTime,
+      },
+      {
+        ...sessionRow(failedChildKey, "Failed checks", baseTime - 4_000, {
+          endedAt: baseTime - 4_000,
+          hasActiveRun: true,
+          spawnedBy: parentKey,
+          startedAt: baseTime - 64_000,
+          status: "failed",
+        }),
+        lastReadAt: baseTime,
+        runtimeMs: 60_000,
+        runtimeSampledAt: baseTime,
+      },
+    ];
+    const parentRow = sessionRow(parentKey, "Plan release", baseTime, {
+      childSessions: [childOneKey, childTwoKey, staleRunningChildKey, failedChildKey],
+      pinned,
+    });
     const gateway = await installMockGateway(page, {
+      // Direct routes resolve canonical identity before the sidebar list arrives.
+      sessions: [parentRow, ...children],
       methodResponses: {
         "sessions.list": {
           cases: [
             {
               match: { spawnedBy: parentKey },
-              response: sessionsListResponse([
-                sessionRow(childOneKey, "Research sources", baseTime - 1_000, {
-                  hasActiveRun: true,
-                  spawnedBy: parentKey,
-                  startedAt: baseTime - 61_000,
-                  status: "running",
-                }),
-                sessionRow(childTwoKey, "Verify tests", baseTime - 2_000, {
-                  endedAt: baseTime - 2_000,
-                  spawnedBy: parentKey,
-                  startedAt: baseTime - 62_000,
-                  status: "done",
-                }),
-                {
-                  ...sessionRow(staleRunningChildKey, "Stale activity", baseTime - 3_000, {
-                    hasActiveRun: false,
-                    spawnedBy: parentKey,
-                    startedAt: baseTime - 64_000,
-                    status: "running",
-                  }),
-                  runtimeMs: 61_000,
-                  runtimeSampledAt: baseTime,
-                },
-                {
-                  ...sessionRow(failedChildKey, "Failed checks", baseTime - 4_000, {
-                    endedAt: baseTime - 4_000,
-                    hasActiveRun: true,
-                    spawnedBy: parentKey,
-                    startedAt: baseTime - 64_000,
-                    status: "failed",
-                  }),
-                  lastReadAt: baseTime,
-                  runtimeMs: 60_000,
-                  runtimeSampledAt: baseTime,
-                },
-              ]),
+              response: sessionsListResponse(children),
             },
             {
-              response: sessionsListResponse([
-                sessionRow(parentKey, "Plan release", baseTime, {
-                  childSessions: [childOneKey, childTwoKey, staleRunningChildKey, failedChildKey],
-                }),
-              ]),
+              response: sessionsListResponse([parentRow]),
             },
           ],
         },
@@ -113,9 +118,19 @@ suite.define(() => {
       const parent = page.locator(`[data-session-key="${parentKey}"]`);
       await parent.waitFor({ state: "visible", timeout: 10_000 });
       await expect.poll(() => page.locator(".sidebar-recent-session--child").count()).toBe(0);
+      // Delegated work keeps the idle parent's ring visible even with children collapsed.
       await expect
-        .poll(() => parent.locator(".session-run-spinner").getAttribute("aria-label"))
-        .toBe("Active run");
+        .poll(() => parent.locator(".sidebar-child-session-toggle--running").count())
+        .toBe(1);
+      await parent.getByRole("img", { name: "Subagents working", exact: true }).waitFor();
+      const accessibility = await context.newCDPSession(page);
+      const collapsedTree = await accessibility.send("Accessibility.getFullAXTree");
+      const collapsedToggle = collapsedTree.nodes.find(
+        (node) =>
+          node.role?.value === "button" &&
+          node.name?.value === "Show 4 child sessions for Plan release",
+      );
+      expect(collapsedToggle?.description?.value).toBe("Active run");
       await captureUiProof(suite, page, "child-sessions-collapsed.png");
 
       await parent.getByRole("button", { name: "Show 4 child sessions for Plan release" }).click();
@@ -148,12 +163,37 @@ suite.define(() => {
       expect(await childToggle.getAttribute("class")).toContain(
         "sidebar-child-session-toggle--running",
       );
+      const expandedTree = await accessibility.send("Accessibility.getFullAXTree");
+      const expandedToggle = expandedTree.nodes.find(
+        (node) =>
+          node.role?.value === "button" &&
+          node.name?.value === "Hide 4 child sessions for Plan release",
+      );
+      expect(expandedToggle).toBeDefined();
+      expect(expandedToggle?.description?.value ?? "").toBe("");
+      await accessibility.detach();
       for (const child of [staleRunningChild, failedChild]) {
         expect(await child.locator("openclaw-elapsed-time").count()).toBe(0);
         expect((await child.locator(".session-row-trail").textContent())?.trim()).toBeTruthy();
       }
       await captureUiProof(suite, page, "child-sessions-expanded.png");
       await captureUiProof(suite, page, "child-sessions-run-state-precedence.png");
+
+      const tree = page.locator(`[data-session-tree="${parentKey}"]`);
+      expect(await tree.locator("xpath=ancestor::nav").count()).toBe(pinned ? 1 : 0);
+      const nesting = await tree.evaluate((element) => {
+        const parentElement = element.querySelector(".sidebar-recent-session")!;
+        const childContainer = element.querySelector(".sidebar-session-tree__children")!;
+        return {
+          parentLeft: parentElement.getBoundingClientRect().left,
+          childLeft: childContainer
+            .querySelector(".sidebar-recent-session")!
+            .getBoundingClientRect().left,
+          guide: getComputedStyle(childContainer).backgroundImage,
+        };
+      });
+      expect(nesting.childLeft - nesting.parentLeft).toBeGreaterThan(8);
+      expect(nesting.guide).not.toBe("none");
 
       const completedChild = childRows.nth(1);
       const childMenuButton = completedChild.getByRole("button", {
@@ -187,11 +227,7 @@ suite.define(() => {
   });
 
   it("dismisses fixed session menus before the sidebar or drawer hides", async () => {
-    const context = await suite.browser.newContext({
-      locale: "en-US",
-      serviceWorkers: "block",
-      viewport: { height: 900, width: 1280 },
-    });
+    const context = await suite.browser.newContext(createControlUiE2eContextOptions());
     const page = await context.newPage();
     const gateway = await installMockGateway(page, {
       methodResponses: {
@@ -231,8 +267,9 @@ suite.define(() => {
       await row.waitFor({ state: "visible", timeout: 10_000 });
 
       const openSessionMenu = async () => {
-        await row.hover();
-        await row.getByRole("button", { name: "Open session menu" }).click();
+        // Keep dismissal setup independent of hover while the sidebar expands.
+        await row.getByRole("button", { name: "Open session menu" }).focus();
+        await page.keyboard.press("Enter");
         await page
           .getByRole("menu", { name: "Actions for Research notes" })
           .waitFor({ state: "visible" });
@@ -276,7 +313,7 @@ suite.define(() => {
       // must explicitly unmount it before the sidebar becomes display:none.
       await openSessionMenu();
       const beforeKeyboardCollapse = await hiddenActionCounts();
-      await page.keyboard.press("Meta+B");
+      await page.keyboard.press("ControlOrMeta+B");
       await expectDesktopCollapsed();
       await expect.poll(() => sessionMenu.count()).toBe(0);
       await expectHiddenShortcutsInert(beforeKeyboardCollapse);
@@ -332,7 +369,7 @@ suite.define(() => {
         .toBe(0);
       await openSessionMenu();
       const beforeDrawerCollapse = await hiddenActionCounts();
-      await page.keyboard.press("Meta+B");
+      await page.keyboard.press("ControlOrMeta+B");
       await expectDrawerClosed();
       await expect.poll(() => sessionMenu.count()).toBe(0);
       await expect
@@ -345,11 +382,7 @@ suite.define(() => {
   });
 
   it("names session-row actions and tabs from their menu into the next visible session", async () => {
-    const context = await suite.browser.newContext({
-      locale: "en-US",
-      serviceWorkers: "block",
-      viewport: { height: 900, width: 1280 },
-    });
+    const context = await suite.browser.newContext(createControlUiE2eContextOptions());
     const page = await context.newPage();
     await installMockGateway(page, {
       methodResponses: {
@@ -434,11 +467,7 @@ suite.define(() => {
   });
 
   it("keeps sidebar sessions visible through transport and client replacement reconnects", async () => {
-    const context = await suite.browser.newContext({
-      locale: "en-US",
-      serviceWorkers: "block",
-      viewport: { height: 900, width: 1280 },
-    });
+    const context = await suite.browser.newContext(createControlUiE2eContextOptions());
     const page = await context.newPage();
     const sessionKey = "agent:main:disconnect-proof";
     const otherSessionKeys = ["agent:main:other-a", "agent:main:other-b"] as const;
@@ -464,7 +493,7 @@ suite.define(() => {
       await expect.poll(() => pinnedEntry.count()).toBe(1);
       const sidebarRows = page.locator(".sidebar-recent-session");
       await expect.poll(() => sidebarRows.count()).toBe(3);
-      const initialListCount = (await gateway.getRequests("sessions.list")).length;
+      const initialListCount = (await gateway.getRequests("sessions.list", rosterMatch)).length;
 
       const socketsBefore = await gateway.getSocketCount();
       await gateway.setOnline(false);
@@ -494,7 +523,9 @@ suite.define(() => {
       await gateway.setOnline(true);
       await waitForControlUiGatewayReady(page);
       await expect
-        .poll(async () => (await gateway.getRequests("sessions.list")).length, { timeout: 15_000 })
+        .poll(async () => (await gateway.getRequests("sessions.list", rosterMatch)).length, {
+          timeout: 15_000,
+        })
         .toBeGreaterThan(initialListCount);
       await sidebarRow.waitFor({ state: "visible" });
       expect(await sidebarRows.count()).toBe(3);
@@ -504,7 +535,8 @@ suite.define(() => {
           .waitFor({ state: "visible" });
       }
 
-      const firstReconnectListCount = (await gateway.getRequests("sessions.list")).length;
+      const firstReconnectListCount = (await gateway.getRequests("sessions.list", rosterMatch))
+        .length;
       const refreshedResponse = sessionsListResponse([
         sessionRow(sessionKey, "Reconnect refreshed", Date.parse("2026-07-01T16:01:00.000Z")),
         sessionRow(otherSessionKeys[0], "Other A", Date.parse("2026-07-01T15:59:00.000Z")),
@@ -513,18 +545,20 @@ suite.define(() => {
       await gateway.resolveDeferred("sessions.list", refreshedResponse);
       await expect.poll(() => sidebarRow.textContent()).toContain("Reconnect refreshed");
       await expect.poll(() => sidebarRows.count()).toBe(3);
-      await expectRequestCountStable(gateway, "sessions.list", firstReconnectListCount);
+      await expectRequestCountStable(
+        gateway,
+        "sessions.list",
+        firstReconnectListCount,
+        500,
+        rosterMatch,
+      );
     } finally {
       await context.close();
     }
   });
 
   it("retains the selected session and one observer while reconnecting across route changes", async () => {
-    const context = await suite.browser.newContext({
-      locale: "en-US",
-      serviceWorkers: "block",
-      viewport: { height: 900, width: 1280 },
-    });
+    const context = await suite.browser.newContext(createControlUiE2eContextOptions());
     const page = await context.newPage();
     const firstKey = "agent:main:reconnect-first";
     const selectedKey = "agent:main:reconnect-selected";
@@ -552,7 +586,7 @@ suite.define(() => {
       await expect.poll(() => new URL(page.url()).pathname).toBe(controlUiSessionPath(selectedKey));
       await expect.poll(() => selectedRow.getAttribute("class")).toContain("--active");
       const initialObserverCount = (await gateway.getRequests("sessions.subscribe")).length;
-      const initialListCount = (await gateway.getRequests("sessions.list")).length;
+      const initialListCount = (await gateway.getRequests("sessions.list", rosterMatch)).length;
 
       const socketsBefore = await gateway.getSocketCount();
       await gateway.setOnline(false);
@@ -583,7 +617,7 @@ suite.define(() => {
       await gateway.resolveDeferred("sessions.subscribe", { subscribed: true });
       await expect
         .poll(async () =>
-          (await gateway.getRequests("sessions.list"))
+          (await gateway.getRequests("sessions.list", rosterMatch))
             .slice(initialListCount)
             .some((request) => requireRecord(request.params).includeLastMessage === true),
         )
@@ -782,7 +816,13 @@ suite.define(() => {
       await pinnedCandidate.click({ button: "right" });
       await page.getByRole("menuitem", { name: "Unpin session" }).waitFor();
       expect(await page.getByRole("menuitem", { name: "Reset pinned items" }).count()).toBe(0);
-      await captureUiProof(suite, page, "sidebar-session-dropped-into-pinned.png");
+      await captureUiProof(
+        suite,
+        page,
+        "sidebar-session-dropped-into-pinned.png",
+        page.locator('openclaw-session-menu > wa-dropdown [part="menu"]'),
+        [page.getByRole("menuitem", { name: "Unpin session" })],
+      );
     } finally {
       await context.close();
       if (proofVideo) {
@@ -818,11 +858,7 @@ suite.define(() => {
         sessionRow("agent:main:node-mcp-debug-4de003fbff138fcb9239c9378b2e", "", ts - 180_000),
       ];
     };
-    const context = await suite.browser.newContext({
-      locale: "en-US",
-      serviceWorkers: "block",
-      viewport: { height: 900, width: 1280 },
-    });
+    const context = await suite.browser.newContext(createControlUiE2eContextOptions());
     const page = await context.newPage();
     await page.addInitScript(() => {
       localStorage.setItem("openclaw:sidebar:sessions:show-preview", "true");
@@ -841,14 +877,14 @@ suite.define(() => {
         .toBeGreaterThan(0);
       // Add work metadata only after first layout so the WebKit overlap
       // regression still exercises in-place row growth.
-      const listRequests = (await gateway.getRequests("sessions.list")).length;
+      const listRequests = (await gateway.getRequests("sessions.list", rosterMatch)).length;
       await gateway.setSessionsListResponse(sessionsListResponse(rows(true)));
       await gateway.emitGatewayEvent("sessions.changed", {
         reason: "update",
         sessionKey: "agent:main:dashboard:0f9d5c1e-6d0f-4c9a-9d84-1c2f3a4b5c6e",
       });
       await expect
-        .poll(async () => (await gateway.getRequests("sessions.list")).length)
+        .poll(async () => (await gateway.getRequests("sessions.list", rosterMatch)).length)
         .toBeGreaterThan(listRequests);
       const codingToggle = page.locator(
         '[data-session-section="work"] .sidebar-session-group-toggle',

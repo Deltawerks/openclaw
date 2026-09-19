@@ -12,21 +12,59 @@ import {
   resolveFailoverReasonFromError,
   resolveFailoverStatus,
 } from "../../failover-error.js";
+import { hasLongWindowRateLimitEvidence } from "../../failover/retry-evidence.js";
 import { isConfigBackedInlineProviderApiKey, type ResolvedProviderAuth } from "../../model-auth.js";
 import { log } from "../logger.js";
 import type { TraceAttempt } from "../types.js";
 import { resolveAuthProfileFailureReason } from "./auth-profile-failure-policy.js";
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
-import {
-  MAX_TRANSIENT_RETRIES,
-  resolveTransientRetryDelayMs,
-  resolveOverloadProfileRotationLimit,
-  resolveRateLimitProfileRotationLimit,
-} from "./helpers.js";
 import type { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
+import type { EmbeddedRunAttemptResult } from "./types.js";
+
+const MAX_TRANSIENT_RETRIES = 8;
+const MAX_TRANSIENT_RETRY_TIME_MS = 90_000;
+const TRANSIENT_RETRY_BASE_DELAY_MS = 1_000;
+const TRANSIENT_RETRY_MAX_DELAY_MS = 30_000;
+
+function resolveTransientRetryDelayMs(params: {
+  retryNumber: number;
+  retryAfterMs?: number;
+  elapsedMs?: number;
+}): number | undefined {
+  const remainingMs =
+    params.elapsedMs === undefined
+      ? Infinity
+      : MAX_TRANSIENT_RETRY_TIME_MS - Math.max(0, params.elapsedMs);
+  // The header parser uses Infinity for a floor too large to represent safely.
+  if (remainingMs <= 0 || params.retryAfterMs === Infinity) {
+    return undefined;
+  }
+  const exponentialMs = Math.min(
+    TRANSIENT_RETRY_MAX_DELAY_MS,
+    TRANSIENT_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, params.retryNumber - 1),
+  );
+  const jitteredMs = Math.min(
+    TRANSIENT_RETRY_MAX_DELAY_MS,
+    Math.round(exponentialMs * (0.5 + Math.random())),
+  );
+  const retryAfterMs = Number.isFinite(params.retryAfterMs)
+    ? Math.max(0, Math.ceil(params.retryAfterMs ?? 0))
+    : 0;
+  const delayMs = Math.max(jitteredMs, retryAfterMs);
+  return delayMs <= remainingMs ? delayMs : undefined;
+}
+
+const MAX_RATE_LIMIT_ATTEMPTS = 10;
+const MAX_OVERLOAD_PROFILE_ROTATIONS = 1;
+const MAX_RATE_LIMIT_PROFILE_ROTATIONS = 1;
+const RETRY_SLEEP_CHUNK_MS = 24 * 60 * 60 * 1000;
 
 type PreparedRuntime = Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>;
+export type EmbeddedRunFailoverRetryController = ReturnType<
+  typeof createEmbeddedRunFailoverRetryController
+>;
 type AuthRetryTrace = TraceAttempt & { reason: FailoverReason };
+type TransientRetryReason = FailoverReason | "output_limit";
 
 type RateLimitAuthProfileContext = {
   failoverProvider: string;
@@ -58,28 +96,13 @@ export function createEmbeddedRunFailoverRetryController(input: {
     fallbackConfigured,
     profileFailureStore,
   } = input;
-  const overloadProfileRotationLimit = resolveOverloadProfileRotationLimit();
-  const rateLimitProfileRotationLimit = resolveRateLimitProfileRotationLimit();
   let rateLimitProfileRotations = 0;
   let transientRetryCount = 0;
-  let transientRetryBudget = MAX_TRANSIENT_RETRIES;
-  // Wall-clock anchor set at the first transient consult so the 90s budget
-  // counts failed-request time, not only backoff sleeps; a slow provider
-  // timeout consumes budget instead of extending the retry window.
+  let rateLimitSeen = false;
+  let transientRetryBudget: number | undefined;
+  // Consecutive outages count failed-request time as well as backoff. A completed
+  // successful model response ends the outage, but never refunds retry attempts.
   let transientRetryWindowStartMs: number | null = null;
-
-  const sleepForRetry = async (delayMs: number) => {
-    try {
-      await sleepWithAbort(delayMs, params.abortSignal);
-    } catch (error) {
-      if (!params.abortSignal?.aborted) {
-        throw error;
-      }
-      const abortError = new Error("Operation aborted", { cause: error });
-      abortError.name = "AbortError";
-      throw abortError;
-    }
-  };
 
   const resolveProfileFailureReason = (
     failoverReason: FailoverReason | null,
@@ -147,18 +170,24 @@ export function createEmbeddedRunFailoverRetryController(input: {
   };
 
   return {
-    overloadProfileRotationLimit,
+    overloadProfileRotationLimit: MAX_OVERLOAD_PROFILE_ROTATIONS,
     get transientRetryCount() {
       return transientRetryCount;
     },
-    // Saved retry.provider.maxRetries keeps its meaning as the transient-retry
-    // attempt budget, now owned here instead of per-SDK-request.
-    setTransientRetryBudget: (maxRetries?: number) => {
-      transientRetryBudget = maxRetries ?? MAX_TRANSIENT_RETRIES;
+    observeAttempt: (
+      attempt: Pick<
+        EmbeddedRunAttemptResult,
+        "providerRetryMaxRetries" | "hasSuccessfulModelResponse"
+      >,
+    ) => {
+      transientRetryBudget = attempt.providerRetryMaxRetries;
+      if (attempt.hasSuccessfulModelResponse) {
+        transientRetryWindowStartMs = null;
+      }
     },
     advanceAuthProfile: input.advanceAuthProfile,
     advanceRateLimitAuthProfile: async (context: RateLimitAuthProfileContext): Promise<boolean> => {
-      if (rateLimitProfileRotations >= rateLimitProfileRotationLimit && fallbackConfigured) {
+      if (rateLimitProfileRotations >= MAX_RATE_LIMIT_PROFILE_ROTATIONS && fallbackConfigured) {
         const status = resolveFailoverStatus("rate_limit");
         log.warn(
           `rate-limit profile rotation cap reached for ${sanitizeForLog(provider)}/${sanitizeForLog(modelId)} after ${rateLimitProfileRotations} rotations; escalating to model fallback`,
@@ -220,40 +249,81 @@ export function createEmbeddedRunFailoverRetryController(input: {
         : null;
     },
     maybeRetryTransient: async (retry: {
-      reason: FailoverReason;
+      reason: TransientRetryReason;
+      message?: string;
       retryAfterMs?: number;
+      onRetry?: (status: {
+        attempt: number;
+        maxRetries: number;
+        delayMs: number;
+        reason: TransientRetryReason;
+      }) => void | Promise<void>;
     }): Promise<boolean> => {
       if (
         retry.reason !== "rate_limit" &&
         retry.reason !== "overloaded" &&
         retry.reason !== "server_error" &&
-        retry.reason !== "timeout"
+        retry.reason !== "timeout" &&
+        retry.reason !== "output_limit"
       ) {
         return false;
       }
-      if (transientRetryCount >= transientRetryBudget) {
+      const rateLimit = retry.reason === "rate_limit";
+      if (rateLimit && hasLongWindowRateLimitEvidence(retry.message)) {
+        return false;
+      }
+      rateLimitSeen ||= rateLimit;
+      const retryCount = transientRetryCount;
+      const retryBudget = Math.min(
+        transientRetryBudget ?? (rateLimit ? MAX_RATE_LIMIT_ATTEMPTS - 1 : MAX_TRANSIENT_RETRIES),
+        rateLimitSeen ? MAX_RATE_LIMIT_ATTEMPTS - 1 : Infinity,
+      );
+      if (retryCount >= retryBudget) {
         return false;
       }
       const nowMs = Date.now();
-      transientRetryWindowStartMs ??= nowMs;
+      const retryWindowStartMs = transientRetryWindowStartMs ?? nowMs;
+      if (retry.reason !== "output_limit") {
+        transientRetryWindowStartMs = retryWindowStartMs;
+      }
       const delayMs = resolveTransientRetryDelayMs({
-        retryNumber: transientRetryCount + 1,
+        retryNumber: retryCount + 1,
         retryAfterMs: retry.retryAfterMs,
-        elapsedMs: nowMs - transientRetryWindowStartMs,
+        // Reaching an output ceiling can take minutes of useful generation.
+        // Keep its count budget and run deadline without the outage time window.
+        elapsedMs:
+          rateLimit || retry.reason === "output_limit" ? undefined : nowMs - retryWindowStartMs,
       });
       if (delayMs === undefined) {
-        // The window in resolveTransientRetryDelayMs outranks the attempt budget when
-        // requests are slow, so record the truncation: a configured maxRetries that
-        // never runs must be diagnosable. Failover is the better recovery past here.
+        // Explain why recovery stopped before the count limit; replay safety still gates fallback.
         log.warn(
-          `transient retry window elapsed for ${sanitizeForLog(provider)}/${sanitizeForLog(modelId)} after ${transientRetryCount}/${transientRetryBudget} retries; failing over`,
+          `transient retry ${retry.retryAfterMs === Infinity ? "floor exceeds representable time" : "window elapsed"} for ${sanitizeForLog(provider)}/${sanitizeForLog(modelId)} after ${transientRetryCount}/${retryBudget} retries; stopping same-model retries`,
         );
         return false;
       }
       log.warn(
-        `transient same-model retry ${transientRetryCount + 1}/${transientRetryBudget} for ${sanitizeForLog(provider)}/${sanitizeForLog(modelId)} reason=${retry.reason}: delayMs=${delayMs}`,
+        `transient same-model retry ${retryCount + 1}/${retryBudget} for ${sanitizeForLog(provider)}/${sanitizeForLog(modelId)} reason=${retry.reason}: delayMs=${delayMs}`,
       );
-      await sleepForRetry(delayMs);
+      await retry.onRetry?.({
+        attempt: retryCount + 1,
+        maxRetries: retryBudget,
+        delayMs,
+        reason: retry.reason,
+      });
+      const closeRetryWait = params.onRetryWait?.(Date.now() + delayMs, params.abortSignal);
+      let completed = false;
+      try {
+        // Provider floors can exceed one native timer; protect the whole wait.
+        let remainingMs = delayMs;
+        while (remainingMs > 0) {
+          const chunkMs = Math.min(remainingMs, RETRY_SLEEP_CHUNK_MS);
+          await sleepWithAbort(chunkMs, params.abortSignal);
+          remainingMs -= chunkMs;
+        }
+        completed = true;
+      } finally {
+        closeRetryWait?.(completed);
+      }
       transientRetryCount += 1;
       return true;
     },

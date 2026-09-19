@@ -196,6 +196,7 @@ describe("event-driven session list refresh", () => {
     const stopWriter = sessions.subscribeList(writerQuery, () => undefined);
 
     try {
+      await sessions.refresh({ agentId: "writer", force: true });
       await sessions.refreshList({ ...allAgentsQuery, force: true });
       await sessions.refreshList({ ...allAgentsQuery, offset: 2, append: true, force: true });
       await sessions.refreshList({ ...writerQuery, force: true });
@@ -205,6 +206,7 @@ describe("event-driven session list refresh", () => {
       emitEvent(sessionChangedEvent("agent:research:changed"));
       await vi.advanceTimersByTimeAsync(SESSION_EVENT_REFRESH_DEBOUNCE_MS);
 
+      expect(request).toHaveBeenCalledTimes(1);
       const researchDashboardRequests = request.mock.calls.filter(
         ([, params]) => (params as { hasBoard?: unknown } | undefined)?.hasBoard === true,
       );
@@ -225,8 +227,9 @@ describe("event-driven session list refresh", () => {
       request.mockClear();
 
       emitEvent(sessionChangedEvent("agent:writer:changed"));
-      await vi.advanceTimersByTimeAsync(SESSION_EVENT_REFRESH_DEBOUNCE_MS);
+      await vi.advanceTimersByTimeAsync(1_000);
 
+      expect(request).toHaveBeenCalledTimes(3);
       const writerDashboardRequests = request.mock.calls.filter(
         ([, params]) => (params as { hasBoard?: unknown } | undefined)?.hasBoard === true,
       );
@@ -235,7 +238,7 @@ describe("event-driven session list refresh", () => {
         writerDashboardRequests.map(
           ([, params]) => (params as { agentId?: string } | undefined)?.agentId ?? null,
         ),
-      ).toEqual([null, "writer"]);
+      ).toEqual(["writer", null]);
     } finally {
       stopAll();
       stopWriter();
@@ -881,6 +884,7 @@ describe("event-driven session list refresh", () => {
         }
         secondList.resolve(sessionsResult([], 2));
         await Promise.all([initialRefresh, foregroundRefresh, appendRefresh]);
+        await vi.advanceTimersByTimeAsync(1_000);
         expect(request).toHaveBeenCalledTimes(expectedCalls);
         if (expectedCalls === 3) {
           expect(request.mock.calls[2]?.[1]).toMatchObject({
@@ -901,7 +905,6 @@ describe("event-driven session list refresh", () => {
   it("queues one trailing refresh for an event during an in-flight refresh", async () => {
     vi.useFakeTimers();
     const secondList = createDeferred<SessionsListResult>();
-    const thirdListStarted = createDeferred();
     let listCalls = 0;
     const request = vi.fn(async (method: string) => {
       if (method !== "sessions.list") {
@@ -910,9 +913,6 @@ describe("event-driven session list refresh", () => {
       listCalls += 1;
       if (listCalls === 2) {
         return await secondList.promise;
-      }
-      if (listCalls === 3) {
-        thirdListStarted.resolve();
       }
       return sessionsResult([], listCalls);
     });
@@ -931,7 +931,9 @@ describe("event-driven session list refresh", () => {
       expect(request).toHaveBeenCalledTimes(2);
 
       secondList.resolve(sessionsResult([], 2));
-      await thirdListStarted.promise;
+      await vi.advanceTimersByTimeAsync(999);
+      expect(request).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
       expect(request).toHaveBeenCalledTimes(3);
     } finally {
       sessions.dispose();
@@ -973,7 +975,9 @@ describe("event-driven session list refresh", () => {
       expect(filteredCalls).toBe(2);
 
       page.setVisibility("visible");
-      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(filteredCalls).toBe(2);
+      await vi.advanceTimersByTimeAsync(1);
       expect(filteredCalls).toBe(3);
     } finally {
       activeRefresh.resolve(sessionsResult([], 2));
@@ -1032,7 +1036,9 @@ describe("event-driven session list refresh", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(request).toHaveBeenCalledTimes(4);
       page.setVisibility("visible");
-      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(request).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(1);
       expect(request).toHaveBeenCalledTimes(6);
 
       sessions.dispose();

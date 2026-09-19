@@ -1,3 +1,4 @@
+import { readAssistantThinkingAppend } from "@openclaw/ai/internal/shared";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { InlineCodeState } from "../../packages/markdown-core/src/code-spans.js";
 import {
@@ -11,6 +12,7 @@ import { emitAgentEvent } from "../infra/agent-events.js";
 import { splitMediaFromOutput } from "../media/parse.js";
 import { findFinalTagMatches } from "../shared/text/final-tags.js";
 import { hasOrphanReasoningCloseBoundary } from "../shared/text/reasoning-tags.js";
+import { createTextProjection, trimTextFilter } from "../shared/text/text-projection.js";
 import {
   isMessagingToolDuplicateNormalized,
   normalizeTextForComparison,
@@ -119,12 +121,30 @@ export function createStreamRendering({
   const messagingToolSourceReplyPayloads = state.messagingToolSourceReplyPayloads;
   const replyDirectiveAccumulator = createStreamingDirectiveAccumulator();
   const partialReplyDirectiveAccumulator = createStreamingDirectiveAccumulator();
+  let reasoningProjection = createTextProjection([trimTextFilter("both")]);
+  // Retain the producer snapshot for eligibility; the projection builds its own
+  // source, and comparing a reconstructed growing prefix can restore prefix work.
+  let reasoningRaw: string | undefined;
 
   const stripBlockTags = (
     text: string,
     stateLocal: StreamBlockState,
-    options?: { final?: boolean; completeMarkdownChunk?: boolean },
+    options?: { final?: boolean; completeMarkdownChunk?: boolean; startsAtLineStart?: boolean },
   ): string => {
+    const hasPendingPrefix = Boolean(
+      stateLocal.pendingFenceFragment || stateLocal.pendingTagFragment,
+    );
+    if (!hasPendingPrefix && options?.startsAtLineStart !== undefined) {
+      const atLineStart = options.startsAtLineStart;
+      stateLocal.fence = { ...stateLocal.fence, atLineStart };
+      if (stateLocal.thinking && !stateLocal.reasoningPendingFenceFragment) {
+        stateLocal.reasoningFence = { ...stateLocal.reasoningFence, atLineStart };
+      }
+      if (stateLocal.final) {
+        stateLocal.finalFence = { ...stateLocal.finalFence, atLineStart };
+      }
+    }
+    const fenceStateStart = stateLocal.fence;
     const input = `${stateLocal.pendingFenceFragment ?? ""}${stateLocal.pendingTagFragment ?? ""}${text}`;
     stateLocal.pendingFenceFragment = undefined;
     stateLocal.pendingTagFragment = undefined;
@@ -136,14 +156,13 @@ export function createStreamRendering({
       ? { text: input, pendingFenceFragment: undefined }
       : options?.completeMarkdownChunk
         ? { text: input, pendingFenceFragment: undefined }
-        : splitTrailingFenceFragment(input, stateLocal.fence?.atLineStart ?? true);
+        : splitTrailingFenceFragment(input, fenceStateStart?.atLineStart ?? true);
     stateLocal.pendingFenceFragment = pendingFenceFragment;
     if (!fenceInput) {
       return "";
     }
 
     const inlineStateStart = stateLocal.inlineCode ?? createInlineCodeState();
-    const fenceStateStart = stateLocal.fence;
     const initialCodeSpans = buildCodeSpanIndex(fenceInput, inlineStateStart, fenceStateStart);
     const { text: scanText, pendingTagFragment } = options?.final
       ? { text: fenceInput, pendingTagFragment: undefined }
@@ -353,9 +372,11 @@ export function createStreamRendering({
   const emitBlockChunk = (
     text: string,
     options?: {
+      sourceText?: string;
       assistantMessageIndex?: number;
       final?: boolean;
       completeMarkdownChunk?: boolean;
+      startsAtLineStart?: boolean;
       finalReply?: ReplyDirectiveParseResult;
     },
   ) => {
@@ -375,6 +396,7 @@ export function createStreamRendering({
             stripBlockTags(text, state.blockState, {
               final: options?.final === true,
               completeMarkdownChunk: options?.completeMarkdownChunk === true,
+              startsAtLineStart: options?.startsAtLineStart,
             }),
           )
     ).trimEnd();
@@ -398,7 +420,9 @@ export function createStreamRendering({
     const blockReplySuffix = lastDeliveredBlockReplyText
       ? blockReplyText.slice(lastDeliveredBlockReplyText.length)
       : "";
+    // A deferred prefix was never delivered and may be superseded at terminal release.
     const prefixReplayCandidate = Boolean(
+      !state.deferBlockReplyDelivery &&
       state.blockReplyBreak === "text_end" &&
       state.toolExecutionSinceLastBlockReply &&
       lastDeliveredBlockReplyText &&
@@ -452,9 +476,13 @@ export function createStreamRendering({
       markBlockReplyTextHandled();
       return;
     }
-    let splitResult = replyDirectiveAccumulator.consume(chunk, {
-      final: options?.finalReply !== undefined,
-    });
+    // Prepared chunks already removed real directives with full source context;
+    // a chunk boundary can separate a remaining literal from its code opener.
+    let splitResult: ReplyDirectiveParseResult | null = state.blockState.textIsVisible
+      ? { text: chunk, replyToTag: false, isSilent: false }
+      : replyDirectiveAccumulator.consume(chunk, {
+          final: options?.finalReply !== undefined,
+        });
     if (options?.finalReply) {
       let pendingText = splitResult?.text ?? "";
       if (pendingText && !options.finalReply.text.endsWith(pendingText)) {
@@ -512,6 +540,8 @@ export function createStreamRendering({
       },
       {
         assistantMessageIndex: options?.assistantMessageIndex ?? state.assistantMessageIndex,
+        blockSourceText:
+          chunk === text.trimEnd() && cleanedText === chunk ? options?.sourceText : undefined,
         consumePendingToolMedia:
           options?.finalReply !== undefined || Boolean(mediaUrls?.length || audioAsVoice),
       },
@@ -533,26 +563,32 @@ export function createStreamRendering({
     if (!params.onBlockReply) {
       return undefined;
     }
-    let pendingChunk: string | undefined;
+    let pendingChunk:
+      | { text: string; sourceText?: string; startsAtLineStart?: boolean }
+      | undefined;
     if (blockChunker.hasBuffered()) {
       blockChunker.drain({
         force: true,
-        emit: (text) => {
+        emit: (text, metadata) => {
           if (pendingChunk !== undefined) {
-            emitBlockChunk(pendingChunk, {
+            emitBlockChunk(pendingChunk.text, {
+              sourceText: pendingChunk.sourceText,
+              startsAtLineStart: pendingChunk.startsAtLineStart,
               assistantMessageIndex: options?.assistantMessageIndex,
               completeMarkdownChunk: true,
             });
           }
-          pendingChunk = text;
+          pendingChunk = { text, ...metadata };
         },
       });
     }
     if (pendingChunk !== undefined || options?.final) {
       // Only the final chunk can select attachments or consume fallback tool
       // media. Intermediate chunks remain text-only until that selection exists.
-      emitBlockChunk(pendingChunk ?? "", {
+      emitBlockChunk(pendingChunk?.text ?? "", {
         ...options,
+        sourceText: pendingChunk?.sourceText,
+        startsAtLineStart: pendingChunk?.startsAtLineStart,
         completeMarkdownChunk: options?.final === true,
       });
     }
@@ -566,22 +602,41 @@ export function createStreamRendering({
     })();
   };
 
-  const emitReasoningStream = (text: string) => {
+  const emitReasoningStream: EmbeddedAgentSubscribeContext["emitReasoningStream"] = (
+    input,
+    fallback,
+  ) => {
     if (params.silentExpected) {
       return;
     }
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return;
+    const text = typeof input === "string" ? input : input.thinking;
+    const append =
+      typeof input !== "string" && reasoningRaw !== undefined
+        ? readAssistantThinkingAppend(input, reasoningRaw)
+        : undefined;
+    const previousProjectedText = reasoningProjection.text;
+    let projected =
+      append !== undefined ? reasoningProjection.append(append) : reasoningProjection.replace(text);
+    reasoningRaw = text;
+    if (!projected.text && fallback?.trim()) {
+      // Empty native summaries have always fallen back to event payloads. That
+      // replacement must not seed a later append against a different raw prefix.
+      projected = reasoningProjection.replace(fallback);
+      reasoningRaw = undefined;
     }
-    if (trimmed === state.lastStreamedReasoning) {
+    const trimmed = projected.text;
+    if (!trimmed || trimmed === state.lastStreamedReasoning) {
       return;
     }
     flushAssistantStream();
-    // Compute delta: new text since the last emitted reasoning.
-    // Guard against non-prefix changes (e.g. trim altering earlier content).
+    // Partial callbacks can advance reasoning while the assistant scope flushes.
     const prior = state.lastStreamedReasoning ?? "";
-    const delta = trimmed.startsWith(prior) ? trimmed.slice(prior.length) : trimmed;
+    const delta =
+      previousProjectedText === prior && projected.delta !== null
+        ? projected.delta
+        : trimmed.startsWith(prior)
+          ? trimmed.slice(prior.length)
+          : trimmed;
     state.lastStreamedReasoning = trimmed;
 
     // Emit-always: the thinking stream always reaches the bus and session
@@ -636,6 +691,8 @@ export function createStreamRendering({
     state.currentSourceMessagingToolHeldPartial = undefined;
     state.lastBlockReplyText = undefined;
     state.lastStreamedReasoning = undefined;
+    reasoningProjection = createTextProjection([trimTextFilter("both")]);
+    reasoningRaw = undefined;
     state.lastReasoningSent = undefined;
     state.reasoningStreamOpen = false;
     state.suppressBlockChunks = false;

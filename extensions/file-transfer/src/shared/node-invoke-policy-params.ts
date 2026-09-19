@@ -1,10 +1,9 @@
 import { readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
+import { DIR_FETCH_DEFAULT_MAX_BYTES, DIR_FETCH_HARD_MAX_BYTES } from "./dir-fetch-limits.js";
 import type { FileTransferNodeInvokeCommand } from "./node-invoke-policy-commands.js";
 
 const FILE_FETCH_DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const FILE_FETCH_HARD_MAX_BYTES = 16 * 1024 * 1024;
-const DIR_FETCH_DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
-const DIR_FETCH_HARD_MAX_BYTES = 16 * 1024 * 1024;
 
 function readMaxBytes(input: {
   value: unknown;
@@ -41,7 +40,8 @@ export function prepareParams(input: {
 }): Record<string, unknown> {
   const next: Record<string, unknown> = {
     ...input.params,
-    followSymlinks: input.followSymlinks,
+    // A caller may narrow the configured permission, never expand it.
+    followSymlinks: input.followSymlinks && input.params.followSymlinks !== false,
   };
   delete next.preflightOnly;
   delete next.expectedCanonicalPath;

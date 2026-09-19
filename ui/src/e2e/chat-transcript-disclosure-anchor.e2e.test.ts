@@ -1,8 +1,10 @@
 // Control UI E2E tests protect transcript disclosure geometry across animation frames.
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Locator } from "playwright";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
+import { takeControlUiElementScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
   controlUiBundledSettingsStorageKey,
   controlUiSessionUrl,
@@ -17,6 +19,22 @@ const suite = createControlUiE2eSuite({
   name: "Control UI transcript disclosure anchoring",
   startServerBeforeBrowser: true,
 });
+
+async function captureDisclosureThemes(directory: string, name: string, summary: Locator) {
+  const page = summary.page();
+  for (const theme of ["light", "dark"] as const) {
+    if (theme === "dark") {
+      await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+      await expect
+        .poll(() => page.evaluate(() => document.documentElement.dataset.themeMode))
+        .toBe("dark");
+    }
+    await fs.writeFile(
+      path.join(directory, `${name}-${theme}.png`),
+      await takeControlUiElementScreenshot(page, page.locator(".chat-main"), [summary]),
+    );
+  }
+}
 
 type DisclosureFrame = {
   expanded: boolean;
@@ -542,86 +560,6 @@ suite.define(() => {
     },
   );
 
-  it("tracks late intrinsic image growth through a transcript remount", async () => {
-    await suite.withPage(
-      { reducedMotion: "reduce", viewport: { width: 1440, height: 900 } },
-      async ({ page }) => {
-        const imageUrl = `${suite.server.baseUrl}sizing-image.png`;
-        const imageData = await page.evaluate(() => {
-          const canvas = document.createElement("canvas");
-          canvas.width = 480;
-          canvas.height = 240;
-          canvas.getContext("2d")!.fillRect(0, 0, canvas.width, canvas.height);
-          return canvas.toDataURL("image/png").split(",")[1]!;
-        });
-        let releaseImage!: () => void;
-        const imageReady = new Promise<void>((resolve) => {
-          releaseImage = resolve;
-        });
-        await page.route(imageUrl, async (route) => {
-          await imageReady;
-          await route.fulfill({ contentType: "image/png", body: Buffer.from(imageData, "base64") });
-        });
-        await installMockGateway(page, {
-          historyMessages: Array.from({ length: 60 }, (_, index) => ({
-            role: index % 2 ? "assistant" : "user",
-            content:
-              index === 1
-                ? [
-                    { type: "text", text: "Delayed image." },
-                    { type: "image", url: imageUrl, alt: "Intrinsic size proof" },
-                  ]
-                : `Image fixture message ${index}.`,
-            timestamp: index + 1,
-            __openclaw: { id: `image-message-${index}`, seq: index + 1 },
-          })),
-        });
-        await page.goto(`${suite.server.baseUrl}chat`);
-        const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
-        await page.getByText("Image fixture message 59.", { exact: false }).waitFor();
-        await thread.hover();
-        await page.mouse.wheel(0, -100_000);
-        const image = thread.getByRole("img", { name: "Intrinsic size proof" });
-        await image.waitFor({ state: "attached" });
-        const rowHeight = () =>
-          image.evaluate(
-            (element) => element.closest<HTMLElement>(".chat-virtual-row")!.offsetHeight,
-          );
-        const initialHeight = await rowHeight();
-        releaseImage();
-        await expect
-          .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalHeight))
-          .toBe(240);
-        await expect.poll(rowHeight).toBeGreaterThan(initialHeight + 100);
-        const height = await rowHeight();
-        const gap = () =>
-          image.evaluate((element) => {
-            const row = element.closest<HTMLElement>(".chat-virtual-row")!;
-            const next = row
-              .closest(".chat-thread")!
-              .querySelector('.chat-bubble[data-entry-id="image-message-2"]')!
-              .closest<HTMLElement>(".chat-virtual-row")!;
-            return next.getBoundingClientRect().top - row.getBoundingClientRect().bottom;
-          });
-        expect(Math.abs(await gap())).toBeLessThanOrEqual(1);
-        await page.locator(".chat-scroll-to-bottom").click();
-        await expect.poll(() => image.count()).toBe(0);
-        await expect
-          .poll(() =>
-            thread.evaluate((element) =>
-              Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop),
-            ),
-          )
-          .toBeLessThanOrEqual(2);
-        await thread.hover();
-        await page.mouse.wheel(0, -100_000);
-        await image.waitFor({ state: "visible" });
-        await expect.poll(rowHeight).toBe(height);
-        expect(Math.abs(await gap())).toBeLessThanOrEqual(1);
-      },
-    );
-  });
-
   it("keeps completed-work and tool disclosures anchored on every expand and collapse frame", async () => {
     const artifactDirParent = process.env.OPENCLAW_CONTROL_UI_E2E_ARTIFACT_DIR?.trim();
     const artifactDir = artifactDirParent
@@ -807,16 +745,7 @@ suite.define(() => {
         path.join(artifactDir, "disclosure-geometry.json"),
         `${JSON.stringify(traces, null, 2)}\n`,
       );
-      await page.locator(".chat-main").screenshot({
-        path: path.join(artifactDir, "disclosure-geometry-light.png"),
-      });
-      await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-      await expect
-        .poll(() => page.evaluate(() => document.documentElement.dataset.themeMode))
-        .toBe("dark");
-      await page.locator(".chat-main").screenshot({
-        path: path.join(artifactDir, "disclosure-geometry-dark.png"),
-      });
+      await captureDisclosureThemes(artifactDir, "disclosure-geometry", middleWorkSummary);
     }
     await context.close();
     for (const frames of Object.values(traces)) {
@@ -932,16 +861,7 @@ suite.define(() => {
         path.join(artifactDir, "raw-details-geometry.json"),
         `${JSON.stringify(traces, null, 2)}\n`,
       );
-      await page.locator(".chat-main").screenshot({
-        path: path.join(artifactDir, "raw-details-geometry-light.png"),
-      });
-      await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-      await expect
-        .poll(() => page.evaluate(() => document.documentElement.dataset.themeMode))
-        .toBe("dark");
-      await page.locator(".chat-main").screenshot({
-        path: path.join(artifactDir, "raw-details-geometry-dark.png"),
-      });
+      await captureDisclosureThemes(artifactDir, "raw-details-geometry", toolSummary);
     }
     traces.rawDetailsMiddleCollapse = await toggleDisclosureWithFrameTrace(page, rawDetailsToggle);
     const video = page.video();

@@ -1,8 +1,8 @@
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import type { HealthFinding, HealthRepairEffect } from "../../../flows/health-checks.js";
+import { resolvePluginInstallSources } from "../../../plugins/install-channel-specs.js";
 import { isPayloadMissing } from "../../../plugins/payload-verification.js";
-import { resolveCompatibilityHostVersion } from "../../../version.js";
 import {
   collectDownloadableInstallCandidates,
   collectUpdateDeferredPluginIds,
@@ -13,10 +13,7 @@ import {
   collectConfiguredChannelIds,
   collectConfiguredPluginIds,
 } from "./missing-configured-plugin-install.ids.js";
-import {
-  resolveCandidateInstallSpec,
-  resolveRecordInstallPath,
-} from "./missing-configured-plugin-install.install.js";
+import { resolveRecordInstallPath } from "./missing-configured-plugin-install.install.js";
 import { isTrustedOfficialInstallRecordForCandidate } from "./missing-configured-plugin-install.records.js";
 import { shouldDeferConfiguredPluginInstallRepair } from "./update-phase.js";
 
@@ -94,8 +91,8 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
     configuredChannelOwnerPluginIds,
     bundledPluginsById,
     configuredPluginIdsWithStaleDescriptors: staleDescriptorPluginIds,
+    operatorManagedPluginIds,
     records,
-    updateChannel,
     installedPluginIdsWithRepairablePackageDiagnostics: repairablePackageDiagnosticPluginIds,
     installedPluginIdsWithStaleVersionBoundRuntimePackages: staleVersionBoundRuntimePluginIds,
     installedPluginIdsWithRepairablePackages: repairableInstalledPluginIds,
@@ -121,6 +118,9 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
       configuredChannelOwnerPluginIds,
       blockedPluginIds,
     })) {
+      if (operatorManagedPluginIds.has(pluginId)) {
+        continue;
+      }
       deferredPluginIds.add(pluginId);
       const record = records[pluginId];
       if (!record || !isPayloadMissing(env, record.installPath)) {
@@ -139,6 +139,7 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
 
   const missingRecordedPluginIds = Object.keys(records).filter(
     (pluginId) =>
+      !operatorManagedPluginIds.has(pluginId) &&
       !deferredPluginIds.has(pluginId) &&
       !officialReplacementPluginIds.has(pluginId) &&
       !bundledPluginsById.has(pluginId) &&
@@ -177,7 +178,7 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
 
   const missingPluginIds = new Set(
     [...pluginIds].filter((pluginId) => {
-      if (deferredPluginIds.has(pluginId)) {
+      if (operatorManagedPluginIds.has(pluginId) || deferredPluginIds.has(pluginId)) {
         return false;
       }
       const hasRecord = Object.hasOwn(records, pluginId);
@@ -197,10 +198,11 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
     configuredPluginIds: pluginIds,
     configuredChannelIds: channelIds,
     configuredChannelOwnerPluginIds,
-    blockedPluginIds:
-      deferredPluginIds.size > 0
-        ? new Set([...blockedPluginIds, ...deferredPluginIds])
-        : blockedPluginIds,
+    blockedPluginIds: new Set([
+      ...blockedPluginIds,
+      ...deferredPluginIds,
+      ...operatorManagedPluginIds,
+    ]),
   })) {
     if (bundledPluginsById.has(candidate.pluginId)) {
       continue;
@@ -228,11 +230,7 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
     ) {
       continue;
     }
-    const installSpec = resolveCandidateInstallSpec({
-      candidate,
-      updateChannel,
-      coreVersion: resolveCompatibilityHostVersion(env),
-    });
+    const installSpec = resolvePluginInstallSources(candidate)[0]?.spec;
     if (shouldReplaceBrokenOfficialInstall) {
       const installPath = resolveRecordInstallPath(record, env);
       if (staleVersionBoundRuntimePluginIds.has(candidate.pluginId)) {

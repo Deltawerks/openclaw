@@ -78,9 +78,14 @@ function createActivityChecker(params: {
     api,
     bindingStore,
     control: {
+      hasActiveWork: () => false,
+      disconnect: async () => {},
       forRequest: () => params.control,
-      homesForAgent: () => [],
-      forUpstream: () => params.control,
+      forNode: async () => {
+        throw new Error("Node source is outside this local activity fixture");
+      },
+      homesForAgent: async () => [],
+      forUpstream: async () => params.control,
     } satisfies CodexSessionCatalogControlFactory,
     getRuntimeConfig: () => undefined,
   });

@@ -13,6 +13,7 @@ import {
   selectTrustedFullReleaseCandidate,
   verifySealedFullReleaseCandidate,
 } from "../../scripts/lib/full-release-candidate-reuse.mjs";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import {
   canonicalTestJson,
   fullReleaseCandidateBindingFixture,
@@ -25,14 +26,10 @@ const NOW = Date.parse("2026-08-28T12:00:00Z");
 const EXPIRES_AT = "2026-09-04T12:00:00Z";
 const REPOSITORY = "openclaw/openclaw";
 const CONTRACT_SCRIPT = resolve("scripts/full-release-candidate-contract.mjs");
-// CLI children must use the same clock as the fixed-expiry artifact fixtures.
-const SCRIPT_ARGS = [
-  "--import",
-  `data:text/javascript,Date.now=()=>${NOW}`,
-  resolve("scripts/full-release-candidate-reuse.mjs"),
-];
+const SCRIPT = resolve("scripts/full-release-candidate-reuse.mjs");
 const WORKFLOW_PATH = ".github/workflows/full-release-validation.yml";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const testNodeExecPath = resolveTestNodeExecPath();
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -163,7 +160,8 @@ function constituentArtifactReader(manifest: CandidateConstituentSource) {
 
 async function fixture(now = NOW) {
   const manifest = fullReleaseCandidateManifestFixture();
-  // CLI children use the real clock; seal every artifact with the same fixture lifetime.
+  // Pure tests use NOW; CLI cases pass real time without freezing discovery deadlines.
+  // Set every expiry before sealing the manifest into the archive and its digest.
   const expiresAt = new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString();
   manifest.package.artifact.expiresAt = expiresAt;
   manifest.prepublishPluginRegistry.artifact.expiresAt = expiresAt;
@@ -385,7 +383,7 @@ printf '%s\n' '{"artifacts":[]}'
       ),
     );
     const contractResult = spawnSync(
-      process.execPath,
+      testNodeExecPath,
       [CONTRACT_SCRIPT, "request", "--input", rawInputPath, "--output", requestPath],
       { encoding: "utf8", timeout: 10_000 },
     );
@@ -403,9 +401,9 @@ printf '%s\n' '{"artifacts":[]}'
     expect(request.upgradeSurvivorScenarios).toEqual(["base"]);
 
     const result = spawnSync(
-      process.execPath,
+      testNodeExecPath,
       [
-        ...SCRIPT_ARGS,
+        SCRIPT,
         "discover",
         "--request-input",
         requestPath,
@@ -467,21 +465,17 @@ exit 1
     );
     chmodSync(ghPath, 0o755);
     writeFileSync(inputPath, JSON.stringify(fullReleaseCandidateManifestFixture().request));
-    const result = spawnSync(
-      process.execPath,
-      [...SCRIPT_ARGS, "discover", "--request-input", inputPath],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          FAKE_GH_COUNT: countPath,
-          GH_TOKEN: "test-token",
-          GITHUB_OUTPUT: outputPath,
-          PATH: `${bin}:${process.env.PATH}`,
-        },
-        timeout: 10_000,
+    const result = spawnSync(testNodeExecPath, [SCRIPT, "discover", "--request-input", inputPath], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_GH_COUNT: countPath,
+        GH_TOKEN: "test-token",
+        GITHUB_OUTPUT: outputPath,
+        PATH: `${bin}:${process.env.PATH}`,
       },
-    );
+      timeout: 10_000,
+    });
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(countPath, "utf8").trim()).toBe("2");
     expect(readFileSync(outputPath, "utf8")).toContain(
@@ -516,22 +510,18 @@ cat "$FAKE_GH_PAYLOAD"
       payloadPath,
       JSON.stringify({ artifacts: Array.from({ length: 100 }, () => ({})) }),
     );
-    const result = spawnSync(
-      process.execPath,
-      [...SCRIPT_ARGS, "discover", "--request-input", inputPath],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          FAKE_GH_COUNT: countPath,
-          FAKE_GH_PAYLOAD: payloadPath,
-          GH_TOKEN: "test-token",
-          GITHUB_OUTPUT: outputPath,
-          PATH: `${bin}:${process.env.PATH}`,
-        },
-        timeout: 10_000,
+    const result = spawnSync(testNodeExecPath, [SCRIPT, "discover", "--request-input", inputPath], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_GH_COUNT: countPath,
+        FAKE_GH_PAYLOAD: payloadPath,
+        GH_TOKEN: "test-token",
+        GITHUB_OUTPUT: outputPath,
+        PATH: `${bin}:${process.env.PATH}`,
       },
-    );
+      timeout: 10_000,
+    });
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(countPath, "utf8").trim()).toBe("10");
     expect(readFileSync(outputPath, "utf8")).toContain(
@@ -596,23 +586,19 @@ esac
     });
     writeFileSync(inputPath, JSON.stringify(fullReleaseCandidateManifestFixture().request));
     writeFileSync(artifactListingPath, JSON.stringify({ artifacts }));
-    const result = spawnSync(
-      process.execPath,
-      [...SCRIPT_ARGS, "discover", "--request-input", inputPath],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          FAKE_GH_ARTIFACT_LISTING: artifactListingPath,
-          FAKE_GH_CALL_LOG: callLogPath,
-          FAKE_GH_RESPONSES: responses,
-          GH_TOKEN: "test-token",
-          GITHUB_OUTPUT: outputPath,
-          PATH: `${bin}:${process.env.PATH}`,
-        },
-        timeout: 10_000,
+    const result = spawnSync(testNodeExecPath, [SCRIPT, "discover", "--request-input", inputPath], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_GH_ARTIFACT_LISTING: artifactListingPath,
+        FAKE_GH_CALL_LOG: callLogPath,
+        FAKE_GH_RESPONSES: responses,
+        GH_TOKEN: "test-token",
+        GITHUB_OUTPUT: outputPath,
+        PATH: `${bin}:${process.env.PATH}`,
       },
-    );
+      timeout: 10_000,
+    });
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(outputPath, "utf8")).toContain(
       "reuse_reason=candidate evaluation exceeded the bounded scan",
@@ -692,26 +678,22 @@ globalThis.fetch = async (url) => {
 };
 `,
     );
-    const result = spawnSync(
-      process.execPath,
-      [...SCRIPT_ARGS, "discover", "--request-input", inputPath],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          FAKE_ARTIFACT_ARCHIVE: archivePath,
-          FAKE_ARTIFACT_METADATA: artifactMetadataPath,
-          FAKE_GH_ARTIFACT_LISTING: artifactListingPath,
-          FAKE_GH_WORKFLOW_JOBS: workflowJobsPath,
-          FAKE_GH_WORKFLOW_RUN: workflowRunPath,
-          GH_TOKEN: "test-token",
-          GITHUB_OUTPUT: outputPath,
-          NODE_OPTIONS: `--import=${pathToFileURL(fetchPreloadPath).href}`,
-          PATH: `${bin}:${process.env.PATH}`,
-        },
-        timeout: 10_000,
+    const result = spawnSync(testNodeExecPath, [SCRIPT, "discover", "--request-input", inputPath], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_ARTIFACT_ARCHIVE: archivePath,
+        FAKE_ARTIFACT_METADATA: artifactMetadataPath,
+        FAKE_GH_ARTIFACT_LISTING: artifactListingPath,
+        FAKE_GH_WORKFLOW_JOBS: workflowJobsPath,
+        FAKE_GH_WORKFLOW_RUN: workflowRunPath,
+        GH_TOKEN: "test-token",
+        GITHUB_OUTPUT: outputPath,
+        NODE_OPTIONS: `--import=${pathToFileURL(fetchPreloadPath).href}`,
+        PATH: `${bin}:${process.env.PATH}`,
       },
-    );
+      timeout: 10_000,
+    });
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(outputPath, "utf8")).toContain(
       "reuse_reason=full release candidate package artifact is unavailable",

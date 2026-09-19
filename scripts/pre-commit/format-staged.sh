@@ -21,10 +21,10 @@ if [[ -n "$GIT_DIR" ]] && \
   { [[ -f "$GIT_DIR/MERGE_HEAD" ]] || \
     [[ -f "$GIT_DIR/CHERRY_PICK_HEAD" ]] || \
     [[ -f "$GIT_DIR/REVERT_HEAD" ]] || \
-    [[ -f "$GIT_DIR/REBASE_HEAD" ]] || \
+    [[ -d "$GIT_DIR/sequencer" ]] || \
     [[ -d "$GIT_DIR/rebase-merge" ]] || \
     [[ -d "$GIT_DIR/rebase-apply" ]]; }; then
-  # Sequencer commits stage the operation result, not just the user's local edits.
+  # Operation state owns staging; REBASE_HEAD alone does not establish an active rebase.
   exit 0
 fi
 
@@ -95,7 +95,7 @@ else
 fi
 
 if [ "${#inplace_files[@]}" -gt 0 ]; then
-  "$RUN_NODE_TOOL" oxfmt --write --no-error-on-unmatched-pattern "${inplace_files[@]}"
+  "$RUN_NODE_TOOL" oxfmt --write --threads=1 --no-error-on-unmatched-pattern "${inplace_files[@]}"
   git --literal-pathspecs add -- "${inplace_files[@]}"
 fi
 

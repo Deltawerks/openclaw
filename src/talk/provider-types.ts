@@ -171,16 +171,31 @@ export function normalizeRealtimeVoiceResponseOutcome(params: {
 
 export type RealtimeVoiceAudioClearReason = "barge-in";
 
+export type RealtimeVoiceAudioChunkMetadata = {
+  itemId: string;
+};
+
+export type RealtimeVoicePlaybackItem = {
+  itemId: string;
+  audioEndMs: number;
+};
+
 export type RealtimeVoiceBridgeCallbacks = {
-  onAudio: (audio: Buffer) => void;
+  onAudio: (audio: Buffer, metadata?: RealtimeVoiceAudioChunkMetadata) => void;
+  /** Retained native items in playback order; queued items have zero consumed duration.
+   * An empty snapshot is authoritative. Omit when the transport cannot measure playback.
+   */
+  getPlaybackState?: () => readonly RealtimeVoicePlaybackItem[];
   onClearAudio: (reason?: RealtimeVoiceAudioClearReason) => void;
-  onMark?: (markName: string) => void;
+  /** Scoped acknowledgments are valid only for the provider connection that emitted the mark. */
+  onMark?: (markName: string, acknowledge?: () => void) => void;
   onTranscript?: (role: RealtimeVoiceRole, text: string, isFinal: boolean) => void;
   /** Synchronously admits native control; only consult permits task fallthrough. Respond is call-bound. */
   handleDelegationInput?: (
     text: string,
     respond: (message: string) => void,
   ) => "control" | "consult";
+  /** Diagnostic observation; returning from this callback cannot veto an event. */
   onEvent?: (event: RealtimeVoiceBridgeEvent) => void;
   onResponseDone?: (outcome: RealtimeVoiceResponseOutcome) => void;
   onToolCall?: (event: RealtimeVoiceToolCallEvent) => void;
@@ -197,7 +212,7 @@ export type RealtimeVoiceProviderCapabilities = {
   outputAudioFormats: RealtimeVoiceAudioFormat[];
   supportsBrowserSession?: boolean;
   supportsBargeIn?: boolean;
-  /** True when provider VAD reports confirmed interruptions through onClearAudio("barge-in"). */
+  /** True when the provider owns interruption from incoming audio. */
   handlesInputAudioBargeIn?: boolean;
   supportsToolCalls?: boolean;
   /** True when user transcripts are reliable enough to gate responses on a leading wake name. */
@@ -209,6 +224,14 @@ export type RealtimeVoiceProviderCapabilities = {
 export type RealtimeVoiceProviderResolveConfigContext = {
   cfg: OpenClawConfig;
   rawConfig: RealtimeVoiceProviderConfig;
+  /** Host-selected agent scope for account-aware defaults. */
+  agentId?: string;
+  /** Runtime surface whose defaults are being resolved; omission retains bridge behavior. */
+  surface?: "browser-session" | "gateway-relay" | "bridge";
+  /** False when the host needs to control when audio input receives a response. */
+  autoRespondToAudio?: boolean;
+  /** Session requirements used to choose a compatible default model. */
+  requiredCapabilities?: Pick<RealtimeVoiceProviderCapabilities, "supportsVideoFrames">;
 };
 
 export type RealtimeVoiceProviderConfiguredContext = {
@@ -264,7 +287,7 @@ export type RealtimeVoiceBrowserSessionCreateRequest = {
 /** Narrow host/plugin seam for Gateway-owned control of a client-owned media session. */
 export type RealtimeVoiceGatewayControl = Omit<
   RealtimeVoiceBridgeCallbacks,
-  "onAudio" | "onClearAudio" | "onMark"
+  "onAudio" | "onClearAudio" | "onMark" | "getPlaybackState"
 > & {
   /** Bind only supported sideband commands; client-owned media needs no audio bridge. */
   bindControl?: (
@@ -333,6 +356,10 @@ export type RealtimeVoiceBrowserSession =
   | RealtimeVoiceBrowserManagedRoomSession;
 
 export type RealtimeVoiceBridge = {
+  /** Continuous audio has no response boundaries; the provider owns interruption. */
+  outputAudioMode?: "response" | "continuous";
+  /** Buffers input at its sample rate and supplies silence between microphone writes. */
+  pacesInputAudio?: boolean;
   supportsToolResultContinuation?: boolean;
   /** False when the provider cannot accept a tool result without starting a response. */
   supportsToolResultSuppression?: boolean;
@@ -357,7 +384,8 @@ export type RealtimeVoiceBridge = {
     options?: RealtimeVoiceToolResultOptions,
   ): void | Promise<void>;
   acknowledgeMark(markName?: string): void;
-  close(options?: RealtimeVoiceCloseOptions): void;
+  /** Stops admission immediately; an optional promise completes after final transcripts and cleanup. */
+  close(options?: RealtimeVoiceCloseOptions): void | Promise<void>;
   isConnected(): boolean;
 };
 

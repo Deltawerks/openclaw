@@ -37,6 +37,7 @@ export const ChatHistoryParamsSchema = closedObject({
   agentId: Type.Optional(NonEmptyString),
   cursor: Type.Optional(Type.String()),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: CHAT_HISTORY_MAX_ENTRIES })),
+  maxBytes: Type.Optional(Type.Integer({ minimum: 1024 })),
   offset: Type.Optional(Type.Integer({ minimum: 0 })),
   pendingBefore: Type.Optional(Type.Integer({ minimum: 1 })),
   inputRunIds: Type.Optional(
@@ -50,6 +51,18 @@ export const ChatHistoryParamsSchema = closedObject({
   sessionId: Type.Optional(NonEmptyString),
   maxChars: Type.Optional(Type.Integer({ minimum: 1, maximum: 500_000 })),
 });
+
+/** Resolve a short chat link and fetch its first page under the same discovery policy. */
+export const ChatStartupParamsSchema = Type.Union([
+  ChatHistoryParamsSchema,
+  closedObject({
+    shortId: NonEmptyString,
+    slugHint: Type.Optional(NonEmptyString),
+    agentId: NonEmptyString,
+    limit: ChatHistoryParamsSchema.properties.limit,
+    maxBytes: ChatHistoryParamsSchema.properties.maxBytes,
+  }),
+]);
 
 /** Accepted input awaiting a turn, separate from canonical model history. */
 export const ChatPendingInputsPageSchema = closedObject({
@@ -95,6 +108,40 @@ export const ChatInputConsumptionsSchema = Type.Array(
 );
 export type ChatInputConsumptions = Static<typeof ChatInputConsumptionsSchema>;
 
+export const AgentActivityItemSchema = closedObject({
+  itemId: NonEmptyString,
+  phase: Type.Union([Type.Literal("start"), Type.Literal("update"), Type.Literal("end")]),
+  kind: Type.String(),
+  title: Type.String(),
+  status: Type.Optional(
+    Type.Union([
+      Type.Literal("running"),
+      Type.Literal("completed"),
+      Type.Literal("failed"),
+      Type.Literal("blocked"),
+    ]),
+  ),
+  name: Type.Optional(Type.String()),
+  meta: Type.Optional(Type.String()),
+  commandBearing: Type.Optional(Type.Boolean()),
+  toolCallId: Type.Optional(Type.String()),
+  startedAt: Type.Optional(Type.Number()),
+  endedAt: Type.Optional(Type.Number()),
+  error: Type.Optional(Type.String()),
+  summary: Type.Optional(Type.String()),
+  progressText: Type.Optional(Type.String()),
+  suppressChannelProgress: Type.Optional(Type.Boolean()),
+  hideFromChannelProgress: Type.Optional(Type.Boolean()),
+  approvalId: Type.Optional(Type.String()),
+  approvalSlug: Type.Optional(Type.String()),
+});
+export type AgentActivityItem = Static<typeof AgentActivityItemSchema>;
+export const ChatHistoryActivitySchema = closedObject({
+  messageId: NonEmptyString,
+  items: Type.Array(AgentActivityItemSchema),
+});
+export type ChatHistoryActivity = Static<typeof ChatHistoryActivitySchema>;
+
 /**
  * Bounded forward catch-up response. Clients replay `messages` as `session.message`
  * payloads. There is no continuation loop: more than 200 raw events or the byte
@@ -103,6 +150,7 @@ export type ChatInputConsumptions = Static<typeof ChatInputConsumptionsSchema>;
 export const ChatHistoryDeltaResultSchema = closedObject({
   kind: Type.Literal("delta"),
   messages: Type.Array(Type.Unknown()),
+  activity: Type.Optional(Type.Array(ChatHistoryActivitySchema)),
   deltaCursor: Type.String(),
   sessionInfo: Type.Unknown(),
   agentsList: Type.Optional(Type.Unknown()),
@@ -198,6 +246,7 @@ export const ChatAttachmentSchema = Type.Object(
     type: Type.Optional(Type.String()),
     mimeType: Type.Optional(Type.String()),
     fileName: Type.Optional(Type.String()),
+    origin: Type.Optional(Type.Union([Type.Literal("paste"), Type.Literal("file")])),
     // Runtime normalization also accepts ArrayBuffer views from native/browser callers.
     content: Type.Optional(Type.Unknown()),
     sizeBytes: Type.Optional(Type.Number()),
@@ -308,14 +357,22 @@ export const ChatRunStartupPhaseSchema = Type.Union([
   Type.Literal("running_setup"),
   Type.Literal("provisioning_environment"),
   Type.Literal("preparing_context"),
+  Type.Literal("memory_flushing"),
   Type.Literal("starting_model"),
 ]);
 
-/** Non-terminal run status emitted before assistant or tool activity becomes visible. */
+/** Transient working status; only the run owner publishes terminal failures. */
 export const ChatStatusEventSchema = closedObject({
   ...ChatEventBaseSchema,
   state: Type.Literal("status"),
   phase: ChatRunStartupPhaseSchema,
+  retry: Type.Optional(
+    closedObject({
+      attempt: Type.Integer({ minimum: 1, maximum: 10 }),
+      maxAttempts: Type.Integer({ minimum: 1, maximum: 10 }),
+      reason: Type.Literal("rate_limit"),
+    }),
+  ),
 });
 
 /** Incremental assistant output event; `replace` marks full-content refresh deltas. */
@@ -418,6 +475,7 @@ export const ChatEventSchema = Type.Union([
 // Wire types derive directly from local schema consts so public d.ts graphs never
 // pull in the ProtocolSchemas registry.
 export type ChatHistoryParams = Static<typeof ChatHistoryParamsSchema>;
+export type ChatStartupParams = Static<typeof ChatStartupParamsSchema>;
 export type ChatHistoryDeltaResult = Static<typeof ChatHistoryDeltaResultSchema>;
 export type ChatHistoryResetResult = Static<typeof ChatHistoryResetResultSchema>;
 export type ChatHistoryCursorResult = Static<typeof ChatHistoryCursorResultSchema>;

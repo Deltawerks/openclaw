@@ -2,11 +2,9 @@
 import fs from "node:fs/promises";
 import { err as resultError, ok, type Result } from "@openclaw/normalization-core/result";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import {
-  downloadClawHubSkillArchive,
-  normalizeClawHubSha256Integrity,
-} from "../../infra/clawhub-artifacts.js";
+import { downloadClawHubSkillArchive } from "../../infra/clawhub-artifacts.js";
 import type { ClawHubTrustErrorCode } from "../../infra/clawhub-install-trust.js";
+import { normalizeClawHubSha256Integrity } from "../../infra/clawhub-integrity.js";
 import {
   CLAWHUB_SKILLS_SH_REF_PREFIX,
   fetchClawHubSkillVerification,
@@ -16,11 +14,6 @@ import { formatErrorMessage, isErrno } from "../../infra/errors.js";
 import { pathExists } from "../../infra/fs-safe.js";
 import type { InstallSafetyOverrides } from "../../plugins/install-security-scan.types.js";
 import { withClawPackageLifecycleLease } from "../../state/claw-package-lifecycle-lease.js";
-import {
-  normalizeTrackedSkillSlug,
-  resolveWorkspaceSkillInstallDir,
-  validateRequestedSkillSlug,
-} from "./archive-install.js";
 import {
   checkClawHubSkillTrust,
   isDefaultOfficialClawHubSkillSource,
@@ -45,23 +38,19 @@ import {
   planTrackedClawHubSkillState,
   type ClawHubSkillUninstallPlan,
 } from "./clawhub-uninstall.js";
+import {
+  normalizeTrackedSkillSlug,
+  resolveWorkspaceSkillInstallDir,
+  validateRequestedSkillSlug,
+} from "./install-paths.js";
 
 export { readVerifiedClawHubSkillSourceUrl } from "./clawhub-install-core.js";
 export {
   readLocalSkillCardContentSync,
-  resolveClawHubSkillStatusLinkSync,
   resolveClawHubSkillVerificationTarget,
-  resolveLocalSkillCardStatusSync,
   searchSkillsFromClawHub,
-  type ClawHubSkillStatusLink,
-  type LocalSkillCardStatus,
 } from "./clawhub-status.js";
-export {
-  readClawHubSkillsLockfileStatusSync,
-  readTrackedClawHubSkillSlugs,
-  untrackClawHubSkill,
-  type ClawHubSkillsLockfileStatusRead,
-} from "./clawhub-store.js";
+export { readTrackedClawHubSkillSlugs, untrackClawHubSkill } from "./clawhub-store.js";
 
 export async function verifySkillWithClawHub(
   params: Parameters<typeof fetchClawHubSkillVerification>[0],

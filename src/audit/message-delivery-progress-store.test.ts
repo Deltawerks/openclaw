@@ -15,6 +15,7 @@ import { STATE_SCHEMA_10_TO_9_DOWNGRADE_SQL } from "../state/openclaw-state-sche
 import { STATE_SCHEMA_11_TO_10_TABLES_SQL } from "../state/openclaw-state-schema-v11-retirement.test-support.js";
 import { STATE_SCHEMA_12_TO_11_DOWNGRADE_SQL } from "../state/openclaw-state-schema-v12-foldin.test-support.js";
 import { STATE_SCHEMA_13_TO_12_DOWNGRADE_SQL } from "../state/openclaw-state-schema-v13-widerow.test-support.js";
+import { removePreparedWorkerOwnershipColumns } from "../state/openclaw-state-schema-v17.test-support.js";
 import { recordAuditEvent } from "./audit-event-store.js";
 import type { OutboundMessageProgressInput } from "./audit-event-types.js";
 import {
@@ -22,8 +23,8 @@ import {
   type ExecutionIdentityAdmissionToken,
 } from "./execution-identity-admission.js";
 import {
-  countOutboundMessageAuditEventsForRun,
-  pageOutboundMessageAuditEventsForRun,
+  countOutboundMessageAuditEventsForRunInDatabase,
+  pageOutboundMessageAuditEventsForRunInDatabase,
 } from "./message-delivery-audit-store.js";
 import {
   pruneExpiredOutboundMessageProgress,
@@ -152,7 +153,11 @@ describe("outbound message progress companion", () => {
     expect(tableExists(opened.db, "outbound_message_progress")).toBe(false);
     expect(tableExists(opened.db, "outbound_message_execution_bindings")).toBe(false);
 
-    expect(countOutboundMessageAuditEventsForRun({ runId: "missing", database })).toBe(0);
+    expect(
+      countOutboundMessageAuditEventsForRunInDatabase(openOpenClawStateDatabase(database).db, {
+        runId: "missing",
+      }),
+    ).toBe(0);
     expect(tableExists(opened.db, "outbound_message_progress")).toBe(false);
 
     recordAuditEvent(terminalInput(), database);
@@ -220,38 +225,35 @@ describe("outbound message progress companion", () => {
     );
     recordAuditEvent(terminalInput({ occurredAt }), database);
 
-    const first = pageOutboundMessageAuditEventsForRun({
-      runId: "run-progress",
-      database,
-      now: occurredAt,
-      limit: 1,
-    });
+    const first = pageOutboundMessageAuditEventsForRunInDatabase(
+      openOpenClawStateDatabase(database).db,
+      { runId: "run-progress", now: occurredAt, limit: 1 },
+    );
     expect(first.entries).toHaveLength(1);
     expect(first.nextCursor).toBeDefined();
     closeOpenClawStateDatabaseForTest();
 
-    const second = pageOutboundMessageAuditEventsForRun({
-      runId: "run-progress",
-      database,
-      now: occurredAt,
-      after: first.nextCursor,
-      limit: 2,
-    });
+    const second = pageOutboundMessageAuditEventsForRunInDatabase(
+      openOpenClawStateDatabase(database).db,
+      { runId: "run-progress", now: occurredAt, after: first.nextCursor, limit: 2 },
+    );
     const allEntries = [...first.entries, ...second.entries];
     const all = allEntries.map((entry) => entry.event);
     expect(all.map((event) => event.outcome)).toEqual(["queued", "platform_started", "sent"]);
     expect(new Set(all.map((event) => event.eventId)).size).toBe(3);
     expect(new Set(allEntries.map((entry) => entry.rowId)).size).toBe(3);
     expect(
-      pageOutboundMessageAuditEventsForRun({
+      pageOutboundMessageAuditEventsForRunInDatabase(openOpenClawStateDatabase(database).db, {
         runId: "run-progress",
-        database,
         now: occurredAt,
         limit: 3,
       }).entries,
     ).toEqual(allEntries);
     expect(
-      countOutboundMessageAuditEventsForRun({ runId: "run-progress", database, now: occurredAt }),
+      countOutboundMessageAuditEventsForRunInDatabase(openOpenClawStateDatabase(database).db, {
+        runId: "run-progress",
+        now: occurredAt,
+      }),
     ).toBe(3);
   });
 
@@ -280,13 +282,17 @@ describe("outbound message progress companion", () => {
     const repositoryRoot = process.cwd();
     ensurePinnedReaderCommit(repositoryRoot);
     const projectedDatabase = openOpenClawStateDatabase(database).db;
-    // Only audit rows belong to this proof. Restore the empty binding table from
-    // the immutable reader's schema without inventing a production downgrade.
+    // Only audit rows belong to this proof. Restore empty unrelated owner tables
+    // for the immutable reader without inventing a production downgrade.
     expect(
       projectedDatabase
         .prepare("SELECT COUNT(*) AS count FROM current_conversation_bindings")
         .get(),
     ).toEqual({ count: 0 });
+    expect(
+      projectedDatabase.prepare("SELECT COUNT(*) AS count FROM worker_environments").get(),
+    ).toEqual({ count: 0 });
+    removePreparedWorkerOwnershipColumns(projectedDatabase);
     const pinnedSchemaDatabase = openNodeSqliteDatabase(":memory:");
     try {
       pinnedSchemaDatabase.exec(
@@ -296,26 +302,23 @@ describe("outbound message progress companion", () => {
           { cwd: repositoryRoot, encoding: "utf8" },
         ),
       );
-      const bindingStatements = pinnedSchemaDatabase
-        .prepare(
-          `SELECT sql FROM sqlite_schema
-           WHERE tbl_name = 'current_conversation_bindings'
-             AND type IN ('table', 'index') AND sql IS NOT NULL
-           ORDER BY type = 'table' DESC, name`,
-        )
-        .all() as Array<{ sql: string }>;
-      projectedDatabase.exec("DROP TABLE current_conversation_bindings;");
-      for (const { sql } of bindingStatements) {
-        projectedDatabase.exec(sql);
+      const pinnedStatements = pinnedSchemaDatabase.prepare(
+        `SELECT sql FROM sqlite_schema
+         WHERE tbl_name = ?
+           AND type IN ('table', 'index') AND sql IS NOT NULL
+         ORDER BY type = 'table' DESC, name`,
+      );
+      for (const table of ["current_conversation_bindings", "skill_workshop_proposals"]) {
+        projectedDatabase.exec(`DROP TABLE ${table};`);
+        for (const { sql } of pinnedStatements.all(table) as Array<{ sql: string }>) {
+          projectedDatabase.exec(sql);
+        }
       }
     } finally {
       pinnedSchemaDatabase.close();
     }
-    // This pinned reader predates the Workshop's first-use column and requires present lazy tables
-    // to retain its exact shape; project that unrelated table to the reader's historical contract.
     // The v9-era reader needs the v13 projection removal, v12 singleton fold-in,
     // v11 curator retirement, and v10 dead-table retirement reversed in order.
-    projectedDatabase.exec("ALTER TABLE skill_workshop_proposals DROP COLUMN claim_released_time;");
     projectedDatabase.exec(STATE_SCHEMA_13_TO_12_DOWNGRADE_SQL);
     projectedDatabase.exec(STATE_SCHEMA_12_TO_11_DOWNGRADE_SQL);
     projectedDatabase.exec(STATE_SCHEMA_11_TO_10_TABLES_SQL);
@@ -400,9 +403,8 @@ describe("outbound message progress companion", () => {
     });
     expect(reopened.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
     expect(
-      pageOutboundMessageAuditEventsForRun({
+      pageOutboundMessageAuditEventsForRunInDatabase(openOpenClawStateDatabase(database).db, {
         runId: "run-progress",
-        database,
         now: occurredAt,
         limit: 10,
       }).entries.map((entry) => entry.event.outcome),
@@ -451,13 +453,10 @@ describe("outbound message progress companion", () => {
       throw error;
     }
 
-    const page = pageOutboundMessageAuditEventsForRun({
-      runId: "run-progress",
-      database,
-      now: occurredAt,
-      offset: 510,
-      limit: 4,
-    });
+    const page = pageOutboundMessageAuditEventsForRunInDatabase(
+      openOpenClawStateDatabase(database).db,
+      { runId: "run-progress", now: occurredAt, offset: 510, limit: 4 },
+    );
     expect(page.entries.map((entry) => entry.event.outcome)).toEqual([
       "queued",
       "platform_started",
@@ -466,9 +465,8 @@ describe("outbound message progress companion", () => {
     ]);
     expect(page.nextCursor).toBeDefined();
     expect(
-      pageOutboundMessageAuditEventsForRun({
+      pageOutboundMessageAuditEventsForRunInDatabase(openOpenClawStateDatabase(database).db, {
         runId: "run-progress",
-        database,
         now: occurredAt,
         after: page.nextCursor,
         limit: 2,
@@ -484,12 +482,10 @@ describe("outbound message progress companion", () => {
       progressInput("message.outbound.queued", { occurredAt }),
       database,
     );
-    const first = pageOutboundMessageAuditEventsForRun({
-      runId: "run-progress",
-      database,
-      now: occurredAt,
-      limit: 2,
-    });
+    const first = pageOutboundMessageAuditEventsForRunInDatabase(
+      openOpenClawStateDatabase(database).db,
+      { runId: "run-progress", now: occurredAt, limit: 2 },
+    );
     const progress = first.entries.find((entry) => entry.event.outcome === "queued");
     expect(progress).toBeDefined();
     const progressCursor = {
@@ -499,18 +495,16 @@ describe("outbound message progress companion", () => {
     openOpenClawStateDatabase(database).db.prepare("DELETE FROM outbound_message_progress").run();
 
     expect(() =>
-      pageOutboundMessageAuditEventsForRun({
+      pageOutboundMessageAuditEventsForRunInDatabase(openOpenClawStateDatabase(database).db, {
         runId: "run-progress",
-        database,
         now: occurredAt,
         after: progressCursor,
         limit: 1,
       }),
     ).toThrow("cursor is no longer retained");
     expect(
-      pageOutboundMessageAuditEventsForRun({
+      pageOutboundMessageAuditEventsForRunInDatabase(openOpenClawStateDatabase(database).db, {
         runId: "run-progress",
-        database,
         now: occurredAt,
         limit: 10,
       }).entries.map((entry) => entry.event.outcome),

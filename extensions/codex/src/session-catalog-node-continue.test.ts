@@ -6,6 +6,7 @@ import {
   nodeHostMocks,
   CODEX_APP_SERVER_THREADS_LIST_COMMAND,
   CODEX_APP_SERVER_THREAD_TURNS_LIST_COMMAND,
+  CODEX_CATALOG_TRANSCRIPT_READ_COMMAND,
   CODEX_CLI_SESSION_RESUME_COMMAND,
   CODEX_NODE_CONTINUE_COMMANDS,
   tempDirs,
@@ -13,6 +14,7 @@ import {
   registerCodexSessionCatalog,
   config,
   idleThread,
+  catalogThreadItem,
   compatibilityOwnerConfig,
   createControl,
   createEligibleControl,
@@ -24,6 +26,7 @@ import {
   resolveCodexAppServerHomeDir,
   resolveCodexAppServerUserHomeDir,
   resolveDefaultAgentDir,
+  resolveSessionAgentIdsStrict,
   createCodexTestBindingStore,
   CODEX_TERMINAL_RESUME_COMMAND,
   CODEX_TERMINAL_START_COMMAND,
@@ -35,29 +38,33 @@ import {
 } from "./session-catalog.test-helpers.js";
 
 describe("Codex supervision actions", () => {
-  it("advertises creation from startup config before the live snapshot is available", () => {
-    const startupConfig = {
-      agents: {
-        defaults: {
-          model: { primary: "openai/gpt-5.6-sol" },
-          models: { "openai/gpt-5.6-sol": {} },
+  it.each(["openai/gpt-6-astra", "openai/gpt-5.6-sol"])(
+    "advertises creation for %s from startup config before the live snapshot is available",
+    (model) => {
+      const startupConfig = {
+        agents: {
+          defaults: {
+            model: { primary: model },
+            models: { [model]: {} },
+            modelPolicy: { allow: [model] },
+          },
         },
-      },
-    } satisfies OpenClawConfig;
-    const { runtime } = createRuntime();
-    const { api, getProvider } = createGatewayApi(runtime, startupConfig);
-    registerCodexSessionCatalog({
-      api,
-      bindingStore: createCodexTestBindingStore(),
-      control: createEligibleControl(),
-      getRuntimeConfig: () => undefined,
-    });
+      } satisfies OpenClawConfig;
+      const { runtime } = createRuntime();
+      const { api, getProvider } = createGatewayApi(runtime, startupConfig);
+      registerCodexSessionCatalog({
+        api,
+        bindingStore: createCodexTestBindingStore(),
+        control: createEligibleControl(),
+        getRuntimeConfig: () => undefined,
+      });
 
-    expect(getProvider()?.resolveCreateSession?.({ agentId: "main" })).toEqual({
-      model: "openai/gpt-5.6-sol",
-      agentRuntime: "codex",
-    });
-  });
+      expect(getProvider()?.resolveCreateSession?.({ agentId: "main" })).toEqual({
+        model,
+        agentRuntime: "codex",
+      });
+    },
+  );
 
   it("marks paired-node rows continuable only with complete permitted capabilities", async () => {
     const sourceByNode = new Map([
@@ -281,17 +288,25 @@ describe("Codex supervision actions", () => {
     });
   });
 
-  it("does not join concurrent paired-node continues across explicit agent owners", async () => {
+  it("keeps Gateway-first upgrades compatible with the released node selector and separates concurrent owners", async () => {
+    const threadId = "123e4567-e89b-12d3-a456-426614174001";
     const runtimeConfig = {
       agents: { ownership: "explicit", list: [{ id: "alpha" }, { id: "beta" }] },
     } as OpenClawConfig;
-    const invoke = vi.fn<PluginRuntime["nodes"]["invoke"]>(async ({ command }) => {
+    // v2026.9.4 resolves every catalog packet through the node's configured agent roster.
+    const selectReleasedNodeAgent = (params: unknown) =>
+      resolveSessionAgentIdsStrict({
+        config: runtimeConfig,
+        agentId: (params as { agentId?: string }).agentId,
+      }).sessionAgentId;
+    const invoke = vi.fn<PluginRuntime["nodes"]["invoke"]>(async ({ command, params }) => {
+      selectReleasedNodeAgent(params);
       if (command === CODEX_APP_SERVER_THREADS_LIST_COMMAND) {
         return {
           payloadJSON: JSON.stringify({
             sessions: [
               {
-                threadId: "thread-remote",
+                threadId,
                 name: "Remote task",
                 status: "idle",
                 source: "cli",
@@ -311,8 +326,8 @@ describe("Codex supervision actions", () => {
         {
           nodeId: "devbox",
           connected: true,
-          commands: [...CODEX_NODE_CONTINUE_COMMANDS],
-          invocableCommands: [...CODEX_NODE_CONTINUE_COMMANDS],
+          commands: [...CODEX_NODE_CONTINUE_COMMANDS, CODEX_TERMINAL_RESUME_COMMAND],
+          invocableCommands: [...CODEX_NODE_CONTINUE_COMMANDS, CODEX_TERMINAL_RESUME_COMMAND],
         },
       ],
       invoke,
@@ -330,12 +345,28 @@ describe("Codex supervision actions", () => {
       throw new Error("expected the Codex session catalog continue provider");
     }
 
+    await expect(
+      provider!.list({ agentId: "alpha", hostIds: ["node:devbox"] }),
+    ).resolves.toMatchObject([{ sessions: [{ threadId }] }]);
+    await expect(
+      provider!.read({ agentId: "alpha", hostId: "node:devbox", threadId }),
+    ).resolves.toMatchObject({ items: [] });
+    const terminal = await provider!.openTerminal!({
+      agentId: "alpha",
+      hostId: "node:devbox",
+      threadId,
+    });
+    expect(terminal.kind).toBe("node");
+    if (terminal.kind === "node") {
+      expect(selectReleasedNodeAgent(JSON.parse(terminal.paramsJSON))).toBe("alpha");
+    }
+
     const [alpha, beta] = await Promise.all(
       ["alpha", "beta"].map((agentId) =>
         continueSession({
           agentId,
           hostId: "node:devbox",
-          threadId: "thread-remote",
+          threadId,
           clientScopes: ["operator.admin"],
         }),
       ),
@@ -344,16 +375,21 @@ describe("Codex supervision actions", () => {
     expect(alpha?.sessionKey).toMatch(/^agent:alpha:harness:codex:node-session:/);
     expect(beta?.sessionKey).toMatch(/^agent:beta:harness:codex:node-session:/);
     expect(alpha?.sessionKey).not.toBe(beta?.sessionKey);
-    expect(alpha).toMatchObject({ conversationBinding: { data: { agentId: "alpha" } } });
-    expect(beta).toMatchObject({ conversationBinding: { data: { agentId: "beta" } } });
+    expect(alpha).toMatchObject({
+      conversationBinding: {
+        data: { agentId: "alpha", nodeId: "devbox", sessionId: threadId },
+      },
+    });
+    expect(beta).toMatchObject({
+      conversationBinding: {
+        data: { agentId: "beta", nodeId: "devbox", sessionId: threadId },
+      },
+    });
     expect(createSessionEntry).toHaveBeenCalledTimes(2);
-    expect(
-      new Set(
-        invoke.mock.calls.map(
-          ([request]) => (request.params as { agentId?: string } | undefined)?.agentId,
-        ),
-      ),
-    ).toEqual(new Set(["alpha", "beta"]));
+    for (const [request] of invoke.mock.calls) {
+      expect(request.nodeId).toBe("devbox");
+      expect(["alpha", "beta"]).toContain(selectReleasedNodeAgent(request.params));
+    }
   });
 
   it("rejects paired-node continue without the permitted run command", async () => {
@@ -619,6 +655,7 @@ describe("Codex supervision actions", () => {
       kind: "node",
       nodeId: "devbox",
       command: CODEX_TERMINAL_START_COMMAND,
+      uploadPathStyle: "native",
       paramsJSON: JSON.stringify({ cwd: "/workspace/node-new" }),
       cwd: "/workspace/node-new",
       title: "codex",
@@ -678,10 +715,9 @@ describe("Codex supervision actions", () => {
     await expect(
       getProvider()?.startTerminalSession?.({ agentId: "main", cwd: "/workspace/blank" }),
     ).resolves.toMatchObject({ argv: [executable], cwd: "/workspace/blank" });
-    const fresh = createCodexSessionCatalogNodeHostCommands(control, {
-      getPluginConfig: () => pluginConfig,
-      getRuntimeConfig: () => ({ agents: { ownership: "explicit", entries: { unrelated: {} } } }),
-    }).find((command) => command.command === CODEX_TERMINAL_START_COMMAND)!;
+    const fresh = createCodexSessionCatalogNodeHostCommands(control).find(
+      (command) => command.command === CODEX_TERMINAL_START_COMMAND,
+    )!;
     process.env.PATH = binDir;
     const io = { signal: new AbortController().signal, emitChunk: vi.fn(), onInput: vi.fn() };
     await fresh.handle(
@@ -759,18 +795,18 @@ describe("Codex supervision actions", () => {
     ]);
     expect(onHost.mock.calls.map(([host]) => host)).toEqual(expect.arrayContaining(catalogHosts!));
     expect(invoke).not.toHaveBeenCalled();
-    const userSource = terminalHosts?.find((host) => host.label === "Local Codex · user");
-    expect(userSource).toBeDefined();
+    expect(terminalHosts?.filter((host) => host.kind === "gateway")).toEqual([
+      expect.objectContaining({ hostId: CODEX_LOCAL_SESSION_HOST_ID }),
+    ]);
+    const userSource = catalogHosts?.find((host) => host.label === "Local Codex · user");
+    expect(userSource).toMatchObject({ canStartTerminal: false });
     await expect(
       getProvider()?.startTerminalSession?.({
         agentId: "main",
         hostId: userSource!.hostId,
         cwd: binDir,
       }),
-    ).resolves.toMatchObject({
-      env: { CODEX_HOME: resolveCodexAppServerUserHomeDir(process.env) },
-      cwd: binDir,
-    });
+    ).rejects.toThrow("select the local machine or a connected node");
     pluginConfig = { appServer: { homeScope: "user" } };
     registerCodexSessionCatalog({
       api,
@@ -790,6 +826,7 @@ describe("Codex supervision actions", () => {
       kind: "node",
       nodeId: "devbox",
       command: CODEX_TERMINAL_RESUME_COMMAND,
+      uploadPathStyle: "native",
       cwd: "/workspace/node",
     });
     expect(invoke.mock.calls.at(-1)?.[0].params).not.toHaveProperty("searchTerm");
@@ -841,16 +878,18 @@ describe("Codex supervision actions", () => {
   });
 
   it("reads local transcript turns one bounded App Server page at a time", async () => {
+    const question = catalogThreadItem("item-1", {
+      type: "userMessage",
+      content: [{ type: "text", text: "question" }],
+    });
+    const answer = catalogThreadItem("item-2", { text: "full answer" });
     const listTurnPage = vi.fn(async () => ({
       data: [
         {
           id: "turn-1",
-          items: [
-            { id: "item-1", type: "userMessage", text: "question" },
-            { id: "item-2", type: "agentMessage", text: "full answer" },
-          ],
+          items: [question, answer],
         },
-      ] as never,
+      ],
       nextCursor: "turns-page-2",
     }));
     const control = createEligibleControl({ listTurnPage });
@@ -868,85 +907,95 @@ describe("Codex supervision actions", () => {
       label: "Local Codex",
       threadId: "thread-1",
       items: [
-        { id: "item-2", type: "agentMessage", text: "full answer" },
-        { id: "item-1", type: "userMessage", text: "question" },
+        { id: "item-2", type: "agentMessage", text: "full answer", raw: answer },
+        { id: "item-1", type: "userMessage", text: "question", raw: question },
       ],
       nextCursor: "turns-page-2",
     });
     expect(listTurnPage).toHaveBeenCalledWith({
       threadId: "thread-1",
-      limit: 50,
+      limit: 1,
       sortDirection: "desc",
       itemsView: "full",
     });
     expect(control.readThread).not.toHaveBeenCalled();
   });
 
-  it("delegates paired-node transcript pagination to the eligible node command", async () => {
-    const invoke = vi.fn<PluginRuntime["nodes"]["invoke"]>(async (request) => {
-      if (request.command === CODEX_APP_SERVER_THREADS_LIST_COMMAND) {
-        return {
-          payloadJSON: JSON.stringify({
-            sessions: [
-              { threadId: "thread-remote", status: "idle", source: "cli", archived: false },
-            ],
-          }),
-        };
-      }
-      return {
-        payloadJSON: JSON.stringify({
-          data: [
-            {
-              id: "turn-remote",
-              items: [{ id: "item-remote", type: "userMessage", text: "remote prompt" }],
-            },
-          ],
-          nextCursor: "remote-turns-2",
-        }),
+  it.each([
+    { mode: "bounded", command: CODEX_CATALOG_TRANSCRIPT_READ_COMMAND, nativeLimit: 25 },
+    { mode: "legacy", command: CODEX_APP_SERVER_THREAD_TURNS_LIST_COMMAND, nativeLimit: 1 },
+  ])(
+    "reads a paired-node transcript through its $mode command",
+    async ({ command, nativeLimit }) => {
+      const source = catalogThreadItem("item-remote", {
+        type: "userMessage",
+        content: [{ type: "text", text: "remote prompt" }],
+      });
+      const projected = {
+        id: "item-remote",
+        type: "userMessage",
+        text: "remote prompt",
+        raw: source,
       };
-    });
-    const { runtime } = createRuntime({
-      nodes: [
-        {
-          nodeId: "devbox",
-          displayName: "Devbox",
-          connected: true,
-          commands: [
-            CODEX_APP_SERVER_THREADS_LIST_COMMAND,
-            CODEX_APP_SERVER_THREAD_TURNS_LIST_COMMAND,
-          ],
-        },
-      ],
-      invoke,
-    });
+      const invoke = vi.fn<PluginRuntime["nodes"]["invoke"]>(async (request) => {
+        if (request.command !== command) {
+          throw new Error("unexpected node command");
+        }
+        return {
+          payloadJSON: JSON.stringify(
+            command === CODEX_CATALOG_TRANSCRIPT_READ_COMMAND
+              ? { items: [projected], nextCursor: "remote-position-2" }
+              : {
+                  data: [{ id: "turn-remote", items: [source] }],
+                  nextCursor: "remote-position-2",
+                },
+          ),
+        };
+      });
+      const { runtime } = createRuntime({
+        nodes: [
+          {
+            nodeId: "devbox",
+            displayName: "Devbox",
+            connected: true,
+            commands: [
+              CODEX_APP_SERVER_THREADS_LIST_COMMAND,
+              CODEX_APP_SERVER_THREAD_TURNS_LIST_COMMAND,
+              command,
+            ],
+          },
+        ],
+        invoke,
+      });
 
-    await expect(
-      readCodexSessionTranscript({
-        runtime,
-        control: createControl(),
+      await expect(
+        readCodexSessionTranscript({
+          runtime,
+          control: createControl(),
+          hostId: "node:devbox",
+          threadId: "thread-remote",
+          cursor: "remote-position-1",
+          limit: 25,
+        }),
+      ).resolves.toEqual({
         hostId: "node:devbox",
+        label: "Devbox",
         threadId: "thread-remote",
-        cursor: "remote-turns-1",
-        limit: 25,
-      }),
-    ).resolves.toEqual({
-      hostId: "node:devbox",
-      label: "Devbox",
-      threadId: "thread-remote",
-      items: [{ id: "item-remote", type: "userMessage", text: "remote prompt" }],
-      nextCursor: "remote-turns-2",
-    });
-    expect(invoke).toHaveBeenLastCalledWith({
-      nodeId: "devbox",
-      command: CODEX_APP_SERVER_THREAD_TURNS_LIST_COMMAND,
-      params: {
-        agentId: "main",
-        threadId: "thread-remote",
-        cursor: "remote-turns-1",
-        limit: 25,
-      },
-      timeoutMs: 65_000,
-      scopes: ["operator.write"],
-    });
-  });
+        items: [projected],
+        nextCursor: "remote-position-2",
+      });
+      expect(invoke).toHaveBeenLastCalledWith({
+        nodeId: "devbox",
+        command,
+        params: {
+          agentId: "main",
+          threadId: "thread-remote",
+          cursor: "remote-position-1",
+          limit: nativeLimit,
+        },
+        timeoutMs: 65_000,
+        scopes: ["operator.write"],
+      });
+    },
+  );
 });

@@ -1,3 +1,6 @@
+// Wall-clock render budgets must not compete with the UI's Chromium workers.
+export const uiTimingTestFiles = ["ui/src/components/markdown.progress.node.test.ts"];
+
 // These files launch Playwright from Node; all other .browser tests run in Chromium.
 export const uiNodeDrivenBrowserTestFiles = [
   "ui/src/pages/chat/chat-responsive.browser.test.ts",
@@ -24,9 +27,29 @@ export function isUiBrowserTestFile(relative) {
   );
 }
 
+export const pluginControlUiPathGlob = "extensions/*/browser/**";
+export const controlUiTestGlobs = ["ui/src/**/*.test.ts", "extensions/*/browser/**/*.test.ts"];
+export const controlUiE2eTestGlobs = [
+  "ui/src/**/*.e2e.test.ts",
+  "extensions/*/browser/**/*.e2e.test.ts",
+];
+
+/** Browser plugin source and tests share the Control UI owner, regardless of plugin id.
+ * @param {string} file
+ */
+export function isPluginControlUiPath(file) {
+  return /^extensions\/[^/]+\/browser(?:\/|$)/u.test(file);
+}
+
+/** @param {string} file */
+export function isControlUiSourcePath(file) {
+  return file.startsWith("ui/src/") || isPluginControlUiPath(file);
+}
+
+/** @param {string} relative */
 export function isUiTestTarget(relative) {
   return (
-    relative.startsWith("ui/src/") &&
+    isControlUiSourcePath(relative) &&
     relative.endsWith(".test.ts") &&
     !relative.endsWith(".e2e.test.ts")
   );
