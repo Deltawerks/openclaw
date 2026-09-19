@@ -35,6 +35,7 @@ import {
 } from "../../scripts/crabbox-wrapper-providers.mts";
 import { pnpmLockfileDocuments } from "../../scripts/lib/pnpm-lockfile-documents.mjs";
 import { resolvePnpmRunner } from "../../scripts/pnpm-runner.mts";
+import { spawnTerminalPty } from "../../src/process/terminal-pty.js";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { isProcessAlive } from "../helpers/process-wait.js";
 import { makeTempDir, useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -724,6 +725,7 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
       );
       const capturePath = ".crabbox/captures/signal.txt";
       const captureBytes = Buffer.from("cancellation diagnostic\n");
+      const nodeExecPath = resolveTestNodeExecPath();
       const env = {
         ...process.env,
         ...testHomeEnv(home),
@@ -740,7 +742,11 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
             "corepack",
           ),
         NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require ${JSON.stringify(ownerPreload)}`,
-        PATH: [makeFakeCrabbox(defaultProviderHelp), process.env.PATH ?? ""].join(path.delimiter),
+        PATH: [
+          makeFakeCrabbox(defaultProviderHelp),
+          path.dirname(nodeExecPath),
+          process.env.PATH ?? "",
+        ].join(path.delimiter),
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_AUTHOR_NAME: "Signal fixture",
@@ -816,13 +822,23 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
       try {
         let exited: Promise<{ status: number | null; signal: NodeJS.Signals | null }>;
         if (entrypoint === "pnpm") {
-          const { spawn: spawnPty } = await import("@lydell/node-pty");
           const command = resolvePnpmRunner({
             cwd: producer,
             env,
             pnpmArgs: ["crabbox:run", "--", ...args],
           });
-          const terminal = spawnPty(command.command, command.args, { cwd: producer, env });
+          const terminal = await spawnTerminalPty({
+            file: command.command,
+            args: command.args,
+            cwd: producer,
+            env: Object.fromEntries(
+              Object.entries(env).filter(
+                (entry): entry is [string, string] => entry[1] !== undefined,
+              ),
+            ),
+            cols: 80,
+            rows: 24,
+          });
           entrypointPid = terminal.pid;
           terminal.onData((data) => {
             output += data;
@@ -4117,11 +4133,10 @@ process.on("uncaughtExceptionMonitor", (error) => {
       writeFileSync(path.join(deletionReferent, "canary.txt"), "private referent\n");
       const fakeBin = makeFakeCrabbox(defaultProviderHelp);
       const home = path.join(root, "home");
+      const nodeExecPath = resolveTestNodeExecPath();
       const env = {
         ...testHomeEnv(home),
-        PATH: [fakeBin, path.dirname(process.execPath), process.env.PATH ?? ""].join(
-          path.delimiter,
-        ),
+        PATH: [fakeBin, path.dirname(nodeExecPath), process.env.PATH ?? ""].join(path.delimiter),
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_OPTIONAL_LOCKS: "0",

@@ -1,5 +1,6 @@
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { createSqliteLifecycleAggregateError } from "./sqlite-coordinator.js";
+import { isSameSqliteReadOnlyWorkerLaunch } from "./sqlite-readonly-worker-session.js";
 import {
   captureSqliteReadOnlyWorkerLaunch,
   createScopedSqliteReadOnlyWorker,
@@ -9,6 +10,7 @@ import {
 function createStagingOwner() {
   let worker: ReturnType<typeof createScopedSqliteReadOnlyWorker> | undefined;
   let directories = 0;
+  let activeLaunch: ReturnType<typeof captureSqliteReadOnlyWorkerLaunch> | undefined;
   let closing: ReturnType<typeof createScopedSqliteReadOnlyWorker> | undefined;
   let pending = Promise.resolve();
   function run<T>(operation: () => Promise<T>): Promise<T> {
@@ -25,12 +27,19 @@ function createStagingOwner() {
     if (worker === current) {
       worker = undefined;
     }
+    if (directories === 0) {
+      activeLaunch = undefined;
+    }
     closing = undefined;
   }
-  async function session() {
-    const launch = captureSqliteReadOnlyWorkerLaunch();
+  async function session(launch: ReturnType<typeof captureSqliteReadOnlyWorkerLaunch>) {
     if (closing) {
       await closeSession(closing);
+    }
+    if (activeLaunch && !isSameSqliteReadOnlyWorkerLaunch(activeLaunch, launch)) {
+      throw new Error(
+        "SQLite snapshot staging owner launch context changed; retire its snapshots before retrying",
+      );
     }
     if (worker?.isRetired()) {
       await closeSession(worker);
@@ -50,6 +59,7 @@ function createStagingOwner() {
   async function retireToken(
     current: ReturnType<typeof createScopedSqliteReadOnlyWorker>,
     directory: string,
+    launch: ReturnType<typeof captureSqliteReadOnlyWorkerLaunch>,
   ) {
     let failure: unknown;
     if (!current.isRetired()) {
@@ -65,7 +75,7 @@ function createStagingOwner() {
     }
     try {
       await closeSession(current);
-      const replacement = await session();
+      const replacement = await session(launch);
       await replacement.run(directory, { mode: "staging-reconcile" });
       return replacement;
     } catch (error) {
@@ -80,11 +90,16 @@ function createStagingOwner() {
     }
   }
   return {
-    async allocate(root: string, allowLegacyWorker: boolean) {
+    async allocate(root: string, allowLegacyWorker: boolean, signal?: AbortSignal) {
+      signal?.throwIfAborted();
+      const launch = captureSqliteReadOnlyWorkerLaunch();
       return run(async () => {
-        const current = await session();
+        signal?.throwIfAborted();
+        const current = await session(launch);
         let directory: string;
         try {
+          signal?.throwIfAborted();
+          // Once dispatched, join the shared child without aborting sibling tokens.
           const result = await current.run(root, {
             mode: allowLegacyWorker ? "staging-create-legacy" : "staging-create",
           });
@@ -92,6 +107,7 @@ function createStagingOwner() {
             throw new Error("SQLite snapshot staging owner returned an invalid directory");
           }
           directory = result;
+          activeLaunch ??= launch;
           directories++;
         } catch (error) {
           if (directories === 0) {
@@ -119,7 +135,8 @@ function createStagingOwner() {
                 return;
               }
               if (!tokenRetired) {
-                retirementSession = await retireToken(current, directory);
+                // Cleanup stays with the allocation's captured launch, even after ambient changes.
+                retirementSession = await retireToken(current, directory, launch);
                 tokenRetired = true;
                 lastDirectory = --directories === 0;
               }
@@ -137,9 +154,10 @@ function createStagingOwner() {
 export function allocateWorkerOwnedSqliteSnapshotDirectory(
   root: string,
   allowLegacyWorker: boolean,
+  signal?: AbortSignal,
 ) {
   return resolveGlobalSingleton(
     Symbol.for("openclaw.sqliteSnapshotStagingOwner"),
     createStagingOwner,
-  ).allocate(root, allowLegacyWorker);
+  ).allocate(root, allowLegacyWorker, signal);
 }

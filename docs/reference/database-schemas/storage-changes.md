@@ -29,6 +29,9 @@ lifecycle coordinator custody before worker dispatch. Native host writers can
 then borrow that same owner while servicing the worker's grants, avoiding a
 coordinator wait that blocks the grant handler. A foreign coordinator owner is
 waited out asynchronously before dispatch, within the existing SQLite lock budget.
+Grant services reuse the physical worker owner's admitted path aliases, so native
+handles opened through symlinked directories reach the same service without new
+filesystem lookups.
 The waiting job retains its FIFO position and capacity reservation; cancellation
 or worker exit wakes the wait without replaying a dispatched write. Source
 authority and persisted transaction checks remain unchanged. Coordinator acquisition
@@ -852,6 +855,14 @@ keeps PID liveness checks on the host, then compares each complete candidate wit
 the authoritative row in the worker transaction before deletion. Reads retain
 existing-only admission, and all stages of a prune use the captured database
 context. The cold hook CLI retains its separate read-only locator worker.
+
+Browser board-change and deleted-session events discover retained dashboard tabs
+and Stop intents through the shared-state worker. Discovery reads the existing
+`browser.session-tabs` namespace without creating missing state. Browser service
+shutdown joins accepted board-event discovery and reconciliation; replaced
+runtimes discard late discovery results. Registration's alias bootstrap, tab
+mutations, and the final synchronous ownership check before closing a browser
+target retain their existing owners.
 
 ### Preserve the data and concurrency contracts
 
