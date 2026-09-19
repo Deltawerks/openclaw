@@ -4,6 +4,15 @@ import { en } from "./en.ts";
 // Settings copy loads with its lazy page or search, not the startup shell.
 const enSettings = {
   connection: {
+    browser: {
+      title: "Browser",
+      savedSignIn: "Saved sign-in for this gateway",
+      forgetDevice: "Forget this browser",
+      confirmTitle: "Forget this browser?",
+      confirmMessage:
+        "Removes the saved sign-in for {gateway} and signs this tab out, clearing any active password or session credential, then reconnects fresh. Other gateways, your preferences, and this browser’s device identity are kept. You may need to sign in or approve this browser again.",
+      confirmLabel: "Forget",
+    },
     ping: {
       title: "Gateway ping",
       latest: "Latest ping",
