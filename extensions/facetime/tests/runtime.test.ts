@@ -466,7 +466,7 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
-  it("retains suppression until absence is complete across the helper topology", async () => {
+  it("retains suppression when a surviving helper reports action absence without the carrier", async () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);
     const runtime = await createRuntime();
@@ -480,7 +480,14 @@ describe("FaceTime runtime call sequencing", () => {
     vi.clearAllMocks();
     mocks.helper.connectedSockets = 1;
     mocks.helper.connectedHelperBundles = ["com.apple.mobilephone"];
-    mocks.helper.leaveCall.mockRejectedValueOnce(new Error("Call not found!"));
+    const survivingHelperAbsence = {
+      helpersContacted: 1,
+      topologyGeneration: 1,
+      topologyComplete: true,
+      helperResults: [{ outcome: "absent", found: false }],
+    };
+    mocks.helper.safetyMute.mockResolvedValue(survivingHelperAbsence);
+    mocks.helper.leaveCall.mockResolvedValue(survivingHelperAbsence);
     mocks.helper.inspectCall.mockResolvedValue({
       helpersContacted: 1,
       topologyGeneration: 1,
@@ -525,7 +532,7 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
-  it("closes from stable action absence when call inspection is unavailable", async () => {
+  it("retains suppression after action absence until native closure when inspection is unavailable", async () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);
     const runtime = await createRuntime();
@@ -535,11 +542,13 @@ describe("FaceTime runtime call sequencing", () => {
     mocks.helper.leaveCall.mockResolvedValue(completeAbsence());
     mocks.helper.inspectCall.mockRejectedValue(new Error("inspection unavailable"));
 
-    await expect(runtime.hangup()).resolves.toEqual({ callUUID: "call-1" });
+    await expect(runtime.hangup()).rejects.toThrow("carrier hangup pending");
+    expect((await runtime.status()).calls).toMatchObject([{ carrierHangupPending: true }]);
+    expect(talk.close).not.toHaveBeenCalled();
 
-    expect(mocks.helper.inspectCall).not.toHaveBeenCalled();
-    expect((await runtime.status()).calls).toEqual([]);
-    expect(talk.close).toHaveBeenCalledWith("operator-hangup");
+    mocks.helperParams?.onMessage(incomingCall(6));
+    await vi.waitFor(async () => expect((await runtime.status()).calls).toEqual([]));
+    expect(talk.close).toHaveBeenCalledWith("native-ended");
     await runtime.stop();
   });
 

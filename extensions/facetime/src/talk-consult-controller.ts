@@ -350,13 +350,13 @@ export function createFaceTimeConsultController(params: {
       },
     }).then(
       (result) => deliverResult(result),
-      (error: unknown) => {
+      async (error: unknown) => {
         if (!ownsConsult(consult) || consult.cancelRequested) {
           return;
         }
         const message = formatErrorMessage(error);
         params.logger.warn?.(`[facetime] agent consult failed: ${message}`);
-        return deliverResult({ error: message }, message);
+        await deliverResult({ error: message }, message);
       },
     );
   };

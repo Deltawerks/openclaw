@@ -212,7 +212,6 @@ export function createFaceTimeCallControl(params: {
             return undefined;
           }
         };
-        let mutedAbsenceGeneration: number | undefined;
         try {
           const muted = await runCarrierActionAcrossAliases({
             call,
@@ -222,14 +221,12 @@ export function createFaceTimeCallControl(params: {
           });
           params.retainHelperResultPeers(call, muted);
         } catch (error) {
-          mutedAbsenceGeneration = readCompleteAbsenceGeneration(error);
-          if (mutedAbsenceGeneration === undefined) {
+          if (readCompleteAbsenceGeneration(error) === undefined) {
             params.logger.warn(
               `[facetime] failed to confirm carrier safety mute: ${formatErrorMessage(error)}`,
             );
           }
         }
-        let terminatedAbsenceGeneration: number | undefined;
         try {
           const leave = await runCarrierActionAcrossAliases({
             call,
@@ -239,20 +236,14 @@ export function createFaceTimeCallControl(params: {
           });
           params.retainHelperResultPeers(call, leave);
         } catch (error) {
-          terminatedAbsenceGeneration = readCompleteAbsenceGeneration(error);
-          if (terminatedAbsenceGeneration === undefined) {
+          if (readCompleteAbsenceGeneration(error) === undefined) {
             params.logger.warn(
               `[facetime] carrier termination request failed: ${formatErrorMessage(error)}`,
             );
           }
         }
-        if (
-          mutedAbsenceGeneration !== undefined &&
-          mutedAbsenceGeneration === terminatedAbsenceGeneration &&
-          params.getHelperTopologyVersion() === topologyVersion
-        ) {
-          return true;
-        }
+        // Action replies cover connected helpers only. Closure also requires
+        // every retained carrier peer, including one that has disconnected.
         try {
           const inspect = async () =>
             await call.runCarrierCommand({
