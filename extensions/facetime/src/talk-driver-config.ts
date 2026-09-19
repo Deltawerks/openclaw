@@ -20,7 +20,7 @@ export const CONSULT_SYSTEM_PROMPT = [
   "When a direct tool returns usable data that answers the caller, answer immediately from that result.",
   "Do not contact another agent or session merely to enrich or double-check a successful direct tool result unless the caller explicitly asks you to.",
   "Never claim completion unless the relevant tool result confirms it.",
-  "Return a concise, speakable answer suitable for realtime TTS.",
+  "Return a concise plain-text answer. The realtime voice provider speaks your answer; do not call tts or generate an audio attachment.",
 ].join(" ");
 export const INPUT_AUDIO_STATUS_INTERVAL_MS = 1_000;
 export const REALTIME_READY_TIMEOUT_MS = 15_000;
