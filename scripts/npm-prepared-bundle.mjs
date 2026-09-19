@@ -143,7 +143,7 @@ function validateProducer(producer, { repository, toolingSha, jobName }) {
   return producer;
 }
 
-function validateCorePackages(corePackages, version) {
+export function validatePreparedCorePackages(corePackages, version) {
   if (!Array.isArray(corePackages) || corePackages.length > CORE_PACKAGES.length) {
     throw new Error("Invalid prepared core package inventory.");
   }
@@ -208,7 +208,7 @@ export function validatePreparedNpmBundleDescriptor({
   fileName(pkg.fileName);
   digest(pkg.sha256, "root tarball digest");
   digest(descriptor.manifestSha256, "package manifest digest");
-  validateCorePackages(descriptor.corePackages, pkg.version);
+  validatePreparedCorePackages(descriptor.corePackages, pkg.version);
   if (descriptor.corePackages.some((entry) => entry.tarballName === pkg.fileName)) {
     throw new Error("Prepared root and core tarball filenames overlap.");
   }
@@ -700,6 +700,18 @@ export function prepareNpmPackageBundle({
   releaseTag: requestedReleaseTag = "",
   npmDistTag,
   producer,
+  prepareRootShrinkwrap = ({ aiTarballPath }) => {
+    execFileSync(
+      process.execPath,
+      [
+        "--import",
+        join(sourceDir, "scripts/tsx.mjs"),
+        join(sourceDir, "scripts/prepare-openclaw-npm-shrinkwrap.ts"),
+        aiTarballPath,
+      ],
+      { cwd: sourceDir, stdio: "inherit" },
+    );
+  },
   runPack = (directory, destination) =>
     execFileSync("pnpm", ["--dir", directory, "pack", "--pack-destination", destination], {
       env: {
@@ -793,6 +805,13 @@ export function prepareNpmPackageBundle({
     }
     return [pack(directory, packageName)];
   });
+  const aiPackage = corePackageTarballs.find(({ packageName }) => packageName === "@openclaw/ai");
+  const hasRootShrinkwrap = existsSync(join(sourceDir, "npm-shrinkwrap.json"));
+  if (aiPackage && hasRootShrinkwrap) {
+    prepareRootShrinkwrap({
+      aiTarballPath: join(outputDir, aiPackage.tarballName),
+    });
+  }
   const packed = pack(sourceDir, "openclaw");
   const manifest = {
     schema: PACKAGE_MANIFEST_SCHEMA,
