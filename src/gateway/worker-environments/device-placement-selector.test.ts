@@ -64,6 +64,7 @@ async function selectNodes(
   options: {
     requirement?: DevicePlacementRequirement;
     availability?: (deviceId: string) => Promise<DeviceWorkerAvailability>;
+    admittedSessions?: ReadonlyMap<string, number>;
   } = {},
 ) {
   const proofs = new Map(
@@ -90,10 +91,59 @@ async function selectNodes(
     requirement: options.requirement ?? WORKER_REQUIREMENT,
     runtimeId: "test-runtime",
     config: CONFIG,
+    getAdmittedSessionCounts: () => options.admittedSessions,
   });
 }
 
 describe("paired-device automatic placement selection", () => {
+  it.each([1, 2])(
+    "prefers lower admitted demand while a third host still advertises %s free slots",
+    async (available) => {
+      const result = await selectNodes(
+        [
+          nodeEnvironment("alpha", available, { workerSlots: { total: 2, available } }),
+          nodeEnvironment("bravo", 1, { workerSlots: { total: 2, available: 1 } }),
+          nodeEnvironment("charlie", 1, { workerSlots: { total: 2, available: 1 } }),
+        ],
+        {
+          admittedSessions: new Map([
+            ["alpha", 2],
+            ["bravo", 1],
+            ["charlie", 1],
+          ]),
+        },
+      );
+
+      expect(result).toEqual({
+        ok: true,
+        candidates: [
+          { deviceId: "bravo", availableSlots: 1 },
+          { deviceId: "charlie", availableSlots: 1 },
+          { deviceId: "alpha", availableSlots: available },
+        ],
+      });
+    },
+  );
+
+  it("retains physical occupancy for idle workers without double-counting admitted demand", async () => {
+    const result = await selectNodes(
+      [
+        nodeEnvironment("idle-full", 0, { workerSlots: { total: 2, available: 0 } }),
+        nodeEnvironment("admitted", 1, { workerSlots: { total: 2, available: 1 } }),
+        nodeEnvironment("idle-spare", 1, { workerSlots: { total: 2, available: 1 } }),
+      ],
+      { admittedSessions: new Map([["admitted", 1]]) },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      candidates: [
+        { deviceId: "idle-spare", availableSlots: 1 },
+        { deviceId: "admitted", availableSlots: 1 },
+      ],
+    });
+  });
+
   it("prefers hosts with the most available worker slots", async () => {
     const result = await selectNodes([
       nodeEnvironment("alpha", 1),
@@ -107,6 +157,47 @@ describe("paired-device automatic placement selection", () => {
         { deviceId: "bravo", availableSlots: 4 },
         { deviceId: "charlie", availableSlots: 2 },
         { deviceId: "alpha", availableSlots: 1 },
+      ],
+    });
+  });
+
+  it("ranks current worker capacity instead of stale environment snapshots", async () => {
+    const environments = [
+      nodeEnvironment("alpha", 9),
+      nodeEnvironment("bravo", 1),
+      nodeEnvironment("charlie", 5),
+    ];
+    const liveCapacity = new Map([
+      ["alpha", 2],
+      ["bravo", 4],
+      ["charlie", 2],
+    ]);
+    const currentNodes = new Map(
+      environments.map((environment) => {
+        const node = nodeProof(environment);
+        return [
+          node.nodeId,
+          {
+            ...node,
+            workerHost: {
+              ...node.workerHost,
+              capacity: { total: 9, available: liveCapacity.get(node.nodeId) ?? 0 },
+            },
+          },
+        ] as const;
+      }),
+    );
+
+    const result = await selectNodes(environments, {
+      availability: async (deviceId) => ({ available: true, node: currentNodes.get(deviceId) }),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      candidates: [
+        { deviceId: "bravo", availableSlots: 4 },
+        { deviceId: "alpha", availableSlots: 2 },
+        { deviceId: "charlie", availableSlots: 2 },
       ],
     });
   });
@@ -157,7 +248,7 @@ describe("paired-device automatic placement selection", () => {
   it("orders remote-exec hosts only by device identity, including hosts with no free slots", async () => {
     const result = await selectNodes(
       [nodeEnvironment("charlie", 5), nodeEnvironment("alpha", 0), nodeEnvironment("bravo", 2)],
-      { requirement: REMOTE_REQUIREMENT },
+      { requirement: REMOTE_REQUIREMENT, admittedSessions: new Map([["alpha", 20]]) },
     );
 
     expect(result).toEqual({
