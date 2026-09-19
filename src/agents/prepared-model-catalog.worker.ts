@@ -412,11 +412,7 @@ export async function runPreparedModelCatalogWorkerRequest(
       ...credentials,
     };
     const runtimeModels = new Map<string, Model[]>();
-    // Lazy transport normalization must not open another unowned plugin registry.
-    const catalogModels = withPluginRuntimeGenerationScope(pluginGenerationScope, () =>
-      facts.templateModelRegistry.getAll(),
-    );
-    for (const model of catalogModels) {
+    for (const model of facts.templateModelRegistry.getAll()) {
       const provider = normalizeProviderId(model.provider);
       const models = runtimeModels.get(provider) ?? [];
       models.push(model);

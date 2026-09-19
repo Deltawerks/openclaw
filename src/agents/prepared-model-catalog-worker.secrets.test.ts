@@ -16,7 +16,6 @@ import {
 import { captureRuntimeConfig } from "../config/runtime-source-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withPluginSourceCaptureDirectory } from "../plugins/plugin-package-metadata-capture.js";
-import { getPluginRuntimeGenerationRegistry } from "../plugins/runtime/generation-scope.js";
 import { NON_ENV_SECRETREF_MARKER } from "../secrets/provider-credential-values.js";
 import {
   createOpenClawTestState,
@@ -306,18 +305,6 @@ module.exports = {
         // Workers inherit neither the parent's source snapshot nor its WeakMap resolution facts.
         clearRuntimeConfigSnapshot();
         clearRuntimeAuthProfileStoreSnapshots();
-        const prepareFull = fullCatalog.prepareFullCatalogFacts;
-        const scopedReads: boolean[] = [];
-        vi.spyOn(fullCatalog, "prepareFullCatalogFacts").mockImplementation(async (...args) => {
-          const facts = await prepareFull(...args);
-          const getAll = facts.templateModelRegistry.getAll.bind(facts.templateModelRegistry);
-          facts.templateModelRegistry.getAll = () => {
-            // Lazy normalization may load plugins; it must use the acquired catalog owner.
-            scopedReads.push(getPluginRuntimeGenerationRegistry() === args[1].pluginRegistry);
-            return getAll();
-          };
-          return facts;
-        });
         const plans: Array<Awaited<ReturnType<typeof modelsConfig.planOpenClawModelsJsonSource>>> =
           [];
         const plan = modelsConfig.planOpenClawModelsJsonSource;
@@ -340,7 +327,6 @@ module.exports = {
         const result = await request();
         expect(result.status).toBe("ok");
         expect(fs.readdirSync(captures)).toEqual([]);
-        expect(scopedReads).toEqual([true]);
         const runtimeFacts = getConfigResolutionFacts(serialized.input.config);
         const sourceFacts = getConfigResolutionFacts(serialized.sourceConfigForSecrets);
         expect(runtimeFacts === null).toBe(nativeRuntimeFacts === null);
