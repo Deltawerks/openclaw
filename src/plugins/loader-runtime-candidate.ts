@@ -200,28 +200,6 @@ export function loadRuntimePluginCandidate(params: {
     return;
   }
 
-  const preferBuiltPluginArtifacts = prefersBuiltPluginArtifacts(
-    context.artifactPreference,
-    candidate.origin,
-  );
-  const artifactParams = {
-    pluginId,
-    rootDir: pluginRoot,
-    origin: candidate.origin,
-    preferBuiltPluginArtifacts,
-    sourcePreferred: manifestRecord.sourcePreferred,
-    packageManifest: candidate.packageManifest,
-    registry,
-  };
-  const runtimeCandidateEntry =
-    recovery?.runtimeEntry ??
-    (cliMetadata
-      ? { source: candidate.source, rootDir: pluginRoot }
-      : resolvePluginRuntimeArtifact({
-          ...artifactParams,
-          entryKind: "runtime",
-          source: candidate.source,
-        }));
   const scopedSetupOnlyChannelPluginRequested =
     context.includeSetupOnlyChannelPlugins &&
     !params.validateOnly &&
@@ -250,17 +228,6 @@ export function loadRuntimePluginCandidate(params: {
     state.seenIds.set(pluginId, candidate.origin);
     return;
   }
-  let selectedEntry =
-    (registrationPlan.loadSetupEntry &&
-      (recovery
-        ? recovery.setupEntry
-        : manifestRecord.setupSource &&
-          resolvePluginRuntimeArtifact({
-            ...artifactParams,
-            entryKind: "setup",
-            source: manifestRecord.setupSource,
-          }))) ||
-    runtimeCandidateEntry;
   if (!enableState.enabled) {
     markPluginActivationDisabled(record, enableState.reason);
   }
@@ -335,6 +302,18 @@ export function loadRuntimePluginCandidate(params: {
     return;
   }
 
+  const artifactParams = {
+    pluginId,
+    rootDir: pluginRoot,
+    origin: candidate.origin,
+    preferBuiltPluginArtifacts: prefersBuiltPluginArtifacts(
+      context.artifactPreference,
+      candidate.origin,
+    ),
+    sourcePreferred: manifestRecord.sourcePreferred,
+    packageManifest: candidate.packageManifest,
+    registry,
+  };
   const catalogRequest = params.options.capabilityCatalog;
   if (catalogRequest && manifestRecord.capabilityCatalogSource !== undefined) {
     try {
@@ -401,6 +380,26 @@ export function loadRuntimePluginCandidate(params: {
     // Shipped register()-only plugins and families omitted by a catalog keep runtime discovery.
   }
 
+  const runtimeCandidateEntry =
+    recovery?.runtimeEntry ??
+    (cliMetadata
+      ? { source: candidate.source, rootDir: pluginRoot }
+      : resolvePluginRuntimeArtifact({
+          ...artifactParams,
+          entryKind: "runtime",
+          source: candidate.source,
+        }));
+  let selectedEntry =
+    (registrationPlan.loadSetupEntry &&
+      (recovery
+        ? recovery.setupEntry
+        : manifestRecord.setupSource &&
+          resolvePluginRuntimeArtifact({
+            ...artifactParams,
+            entryKind: "setup",
+            source: manifestRecord.setupSource,
+          }))) ||
+    runtimeCandidateEntry;
   if (cliMetadata) {
     const source = resolveCliMetadataEntrySource(candidate.rootDir, candidate.source);
     // Bundled metadata must never initialize a heavy runtime entry just to render CLI help.
