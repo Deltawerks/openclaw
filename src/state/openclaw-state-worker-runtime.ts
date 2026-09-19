@@ -82,6 +82,7 @@ import {
   recordSessionStateEventInDatabase,
 } from "../sessions/session-state-events.kernel.js";
 import { listWatchedSessionUpstreamLinksInDatabase } from "../sessions/session-upstream-links.kernel.js";
+import { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
@@ -428,6 +429,9 @@ export function executeSharedStateCommand(
   };
   if (command.type === "deliveryQueue.failPending") {
     return executePendingDeliveryFailure(command.input, writeOptions);
+  }
+  if (command.type === "skillUploads.commit") {
+    return commitSkillUploadInDatabase(command.input, writeOptions);
   }
   if (
     command.type === "deviceAuth.store" ||
