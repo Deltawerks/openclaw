@@ -112,8 +112,11 @@ describe("host decision adapter", () => {
       }),
     ).rejects.toThrow("caller closed");
     vi.mocked(evaluate).mockRejectedValue(new Error("private detail"));
-    await expect(createDecisionProvider(() => config).evaluate(batch, context())).rejects.toThrow(
-      "adapter contract failure",
-    );
+    const failure = createDecisionProvider(() => config).evaluate(batch, context());
+    await expect(failure).rejects.toMatchObject({
+      name: "Error",
+      message: "TypeSafe decision adapter contract failure.",
+    });
+    await expect(failure).rejects.not.toHaveProperty("cause");
   });
 });

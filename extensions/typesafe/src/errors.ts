@@ -1,4 +1,4 @@
-import type { ProviderFailureReason } from "openclaw/plugin-sdk/decisions";
+import type { ProviderDecisionOutcome, ProviderFailureReason } from "openclaw/plugin-sdk/decisions";
 
 export class EvaluationError extends Error {
   constructor(
@@ -23,4 +23,16 @@ export function evaluationError(error: unknown, aborted: boolean): EvaluationErr
     "TypeSafe evaluation failed or returned an invalid response.",
     "invalid-response",
   );
+}
+
+/** Unexpected failures reject without retaining raw credentials or submitted state. */
+export function decisionFailure(error: unknown): ProviderDecisionOutcome {
+  if (error instanceof EvaluationError) {
+    return {
+      status: "unavailable",
+      reason: error.reason,
+      ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+    };
+  }
+  throw new Error("TypeSafe decision adapter contract failure.");
 }

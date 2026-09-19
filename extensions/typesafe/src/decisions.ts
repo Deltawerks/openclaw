@@ -5,7 +5,7 @@ import type {
 } from "openclaw/plugin-sdk/decisions";
 import { evaluate as evaluateTypeSafe } from "./client.js";
 import type { RuntimeConfig } from "./config.js";
-import { EvaluationError } from "./errors.js";
+import { decisionFailure } from "./errors.js";
 import { MAX_CHOICE_OPTIONS, MAX_SCORE_LEVELS, parseInput } from "./schema.js";
 
 /** Transport and result validation are shared with the independently usable agent tool. */
@@ -86,15 +86,7 @@ export function createDecisionProvider(getConfig: () => RuntimeConfig): Decision
         };
       } catch (error) {
         context.signal.throwIfAborted();
-        if (error instanceof EvaluationError) {
-          return {
-            status: "unavailable",
-            reason: error.reason,
-            ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
-          };
-        }
-        // oxlint-disable-next-line preserve-caught-error -- Raw vendor causes can contain credentials or supplied state.
-        throw new Error("TypeSafe decision adapter contract failure.");
+        return decisionFailure(error);
       }
     },
   };
