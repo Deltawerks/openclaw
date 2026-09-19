@@ -39,16 +39,81 @@ describe("host-owned workspace access", () => {
       isWorkspaceAccessUnavailableError(new Error("Workspace access is stopped or not ready")),
     ).toBe(false);
   });
+  it.each(["before", "after"])(
+    "preserves Memory publication outcome when revoked %s commit",
+    async (when) => {
+      const root = workspace();
+      const unexpected = async () => {
+        throw new Error("Unexpected Memory operation");
+      };
+      const commitContent = vi.fn(async () => {
+        release();
+      });
+      const release = registerAgentWorkspaceAccess(root, {
+        ...provider(),
+        memoryFiles: {
+          assertCurrent() {},
+          listFiles: unexpected,
+          inspectFile: unexpected,
+          readFile: unexpected,
+          readForIndexing: unexpected,
+          buildMultimodalChunk: unexpected,
+          watch: unexpected,
+          maintenance: {
+            readFile: unexpected,
+            stat: unexpected,
+            listDirectory: unexpected,
+            mkdir: unexpected,
+            rename: unexpected,
+            resolveWritePath: unexpected,
+            commitContent,
+            resolveDreamsPath: unexpected,
+            readDreams: unexpected,
+            writeDreams: unexpected,
+            replaceReport: unexpected,
+            appendCorpus: unexpected,
+          },
+        },
+      });
+      const retained = getAgentWorkspaceAccess(root)!.memoryFiles!.maintenance!;
+      if (when === "before") {
+        release();
+      }
+      try {
+        await expect(
+          retained.commitContent({
+            filePath: path.join(root, "MEMORY.md"),
+            tempPrefix: "memory",
+            content: "new",
+          }),
+        ).rejects.toMatchObject({
+          code: "WORKSPACE_ACCESS_UNAVAILABLE",
+          ...(when === "after" ? { publication: "committed" } : {}),
+        });
+        expect(commitContent).toHaveBeenCalledTimes(when === "after" ? 1 : 0);
+      } finally {
+        release();
+      }
+      expect(() => getAgentWorkspaceAccess(root, "memoryFiles")).toThrow(
+        WorkspaceAccessUnavailableError,
+      );
+    },
+  );
 
   it("leaves unconfigured workspaces local and declared workspaces unavailable until start", () => {
     const root = workspace();
     expect(getAgentWorkspaceAccess(root)).toBeUndefined();
     declareAgentWorkspaceAccess(root);
     expect(() => getAgentWorkspaceAccess(root)).toThrow(WorkspaceAccessUnavailableError);
+    expect(() => getAgentWorkspaceAccess(root, "memoryFiles")).toThrow(
+      WorkspaceAccessUnavailableError,
+    );
     const release = registerAgentWorkspaceAccess(root, provider());
     expect(getAgentWorkspaceAccess(root)).toBeDefined();
+    expect(getAgentWorkspaceAccess(root, "memoryFiles")).toBeUndefined();
     release();
     expect(() => getAgentWorkspaceAccess(root)).toThrow(WorkspaceAccessUnavailableError);
+    expect(getAgentWorkspaceAccess(root, "memoryFiles")).toBeUndefined();
   });
 
   it("rejects duplicate ownership and revokes retained methods without affecting a replacement", async () => {
