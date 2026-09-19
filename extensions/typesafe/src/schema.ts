@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { Type, type Static, type TSchema } from "typebox";
+import { Compile } from "typebox/compile";
 import { Check } from "typebox/value";
 
 // Transport/CPU guards, not Jev token limits. Jev enforces its own context budget.
@@ -114,6 +115,7 @@ export const EvaluateInput = Type.Object(
   objectOptions,
 );
 export type EvaluationInput = Static<typeof EvaluateInput>;
+const inputValidator = Compile(EvaluateInput);
 
 const distribution = map(probability, {
   minProperties: 2,
@@ -162,6 +164,7 @@ const VendorResult = Type.Object(
 );
 export const EvaluateOutput = Type.Object({ evaluation: VendorResult }, objectOptions);
 export type Evaluation = Static<typeof VendorResult>;
+const resultValidator = Compile(VendorResult);
 
 /** Reject non-JSON values and excessive structure before schema walking or serialization. */
 function assertBoundedJson(value: unknown): void {
@@ -202,7 +205,7 @@ function assertBoundedJson(value: unknown): void {
 /** Validate without including supplied state in diagnostics. */
 export function parseInput(value: unknown): EvaluationInput {
   assertBoundedJson(value);
-  if (!Check(EvaluateInput, value)) {
+  if (!inputValidator.Check(value)) {
     // Report fixed schema guidance and ordinal positions, never supplied values/keys.
     if (
       value &&
@@ -240,7 +243,7 @@ export function parseInput(value: unknown): EvaluationInput {
 export function parseResult(value: unknown, input: EvaluationInput): Evaluation {
   try {
     assertBoundedJson(value);
-    if (!Check(VendorResult, value)) {
+    if (!resultValidator.Check(value)) {
       throw new Error();
     }
     const questions = Object.entries(input.questions);

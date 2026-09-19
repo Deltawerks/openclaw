@@ -25,7 +25,6 @@ it("accepts named questions and rejects extra unmatched answer keys", () => {
   ).toThrow();
 });
 
-// Score rubrics must respect the vendor's ten-level request limit.
 it.each([2, 10])("accepts a Score rubric with %i levels", (count) => {
   const input = {
     state: null,

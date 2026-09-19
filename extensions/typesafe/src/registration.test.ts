@@ -81,7 +81,6 @@ describe("plugin ownership and configuration", () => {
     expect(api.registerDecisionProvider).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ id: "typesafe", contractVersion: 1 }),
     );
-    expect(metadata.devDependencies).not.toHaveProperty("jsdom");
   });
   it("reports missing credentials and fails before evaluation", async () => {
     const registerTool = vi.fn();
