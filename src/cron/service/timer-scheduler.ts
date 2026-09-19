@@ -307,16 +307,15 @@ async function onAdmittedTimer(state: CronServiceState) {
       }
     });
 
-    if (state.lifecycleGeneration !== generation) {
-      return;
-    }
-    // Future unclaimed work must stay armed while this batch executes. When
-    // overdue work is capacity-blocked, the release listener is the fast path
-    // and this minute timer is only a bounded safety recheck.
-    if (state.runAdmission.capacityListener) {
-      armRunningRecheckTimer(state);
-    } else {
-      armTimer(state);
+    if (state.lifecycleGeneration === generation) {
+      // Future unclaimed work must stay armed while this batch executes. When
+      // overdue work is capacity-blocked, the release listener is the fast path
+      // and this minute timer is only a bounded safety recheck.
+      if (state.runAdmission.capacityListener) {
+        armRunningRecheckTimer(state);
+      } else {
+        armTimer(state);
+      }
     }
 
     const concurrency = Math.min(resolveRunConcurrency(), Math.max(1, dueJobs.length));
@@ -344,9 +343,12 @@ async function onAdmittedTimer(state: CronServiceState) {
         }
       }
     };
-    if (state.stopped) {
+    // Retired batches still own their reservations until canonical cleanup settles.
+    if (state.stopped || state.lifecycleGeneration !== generation) {
       capacityRechecks.abort();
-      await releaseUnclaimedDueJobReservationsWithRetry();
+      if (dueJobs.length > 0) {
+        await releaseUnclaimedDueJobReservationsWithRetry();
+      }
       return;
     }
     // Skipped mappers must not claim reservations: recovery releases those rows,

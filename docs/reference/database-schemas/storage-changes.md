@@ -171,7 +171,8 @@ Timer recovery collects every proposal before its synchronous repair batch, so
 retirement during observation cannot strand an earlier committed interruption.
 Startup and timer recovery publish committed interruption facts under the same
 partition lock after the existing reload, before new scheduling work rechecks
-its lifecycle.
+its lifecycle. Retired timer batches still join the existing reservation cleanup
+and release only the execution slots they acquired.
 Process liveness and local receipt ownership remain with the host. The final
 recovery transaction still rereads and compares the exact receipt and job markers
 before repairing them; proposal facts do not grant authority. Recovery writes,
