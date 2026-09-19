@@ -609,6 +609,25 @@ describe("createReplyMediaPathNormalizer", () => {
     expect(payload).toEqual(original);
   });
 
+  it("does not reuse dropped positional metadata for surviving media", async () => {
+    const remoteSource = "https://example.com/surviving.png";
+    resolveOutboundAttachmentFromUrl.mockRejectedValueOnce(
+      new LocalMediaAccessError("not-found", "missing test fixture"),
+    );
+    const normalize = createTestReplyMediaNormalizer();
+
+    const result = await normalize({
+      mediaUrls: ["./out/missing.pdf", remoteSource],
+      attachments: [{ name: "first-only", mimeType: "application/pdf" }],
+    });
+
+    expectMedia(result, remoteSource, [remoteSource]);
+    const [entry] = collectReplyMediaEntries(result, [remoteSource]);
+    expect(entry?.url).toBe(remoteSource);
+    expect(entry?.attachment?.name).toBeUndefined();
+    expect(entry?.attachment?.mimeType).toBeUndefined();
+  });
+
   it("returns a warning-only text reply when media-only output is dropped upstream", async () => {
     resolveOutboundAttachmentFromUrl.mockRejectedValueOnce(
       new LocalMediaAccessError("not-found", "missing test fixture"),

@@ -444,6 +444,7 @@ export function createReplyMediaPathNormalizer(params: {
         text,
         mediaUrl: undefined,
         mediaUrls: undefined,
+        attachments: undefined,
       });
       return setReplyPayloadMetadata(normalized, {
         replyMediaSourceUrls: undefined,
@@ -456,9 +457,9 @@ export function createReplyMediaPathNormalizer(params: {
       text,
       mediaUrl: normalizedMedia[0],
       mediaUrls: normalizedMedia,
-      ...(normalizedAttachments.some((attachment) => Object.keys(attachment).length > 0)
-        ? { attachments: normalizedAttachments }
-        : {}),
+      attachments: normalizedAttachments.some((attachment) => Object.keys(attachment).length > 0)
+        ? normalizedAttachments
+        : undefined,
       ...(hasTrustedLocalMedia ? { trustedLocalMedia: true } : {}),
     });
     return setReplyPayloadMetadata(normalized, {
