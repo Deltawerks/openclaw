@@ -1,8 +1,6 @@
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
-import type {
-  OpenClawStateDatabase,
-  OpenClawStateDatabaseOptions,
-} from "../state/openclaw-state-db-contract.js";
+import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import type { OpenClawStateDatabase } from "../state/openclaw-state-db-contract.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import {
   pluginBlobClearInDatabase,
@@ -20,9 +18,10 @@ import {
 
 export function executePluginBlobCommand(
   command: SqliteWorkerCommand<PluginBlobWorkerOperations>,
-  options: OpenClawStateDatabaseOptions & { path: string },
+  databasePath: string,
   openDatabase: () => OpenClawStateDatabase,
 ): PluginBlobWorkerOperations[keyof PluginBlobWorkerOperations]["output"] {
+  const options = { path: databasePath, env: getSqliteWorkerStateContext().environment };
   const description = pluginBlobWorkerOperations[command.type];
   let opened = false;
   try {

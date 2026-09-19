@@ -1,10 +1,13 @@
 import { SHARED_AUTH_STORE_STATE_KEY } from "../agents/auth-profiles/path-resolve.js";
-import { inspectAuthProfileJsonCellReadOnly } from "../agents/auth-profiles/sqlite.js";
+import { readAuthProfileRows } from "../agents/auth-profiles/sqlite-json.js";
+import { isMissingDatabasePath } from "../agents/auth-profiles/sqlite-read-pool.js";
+import type { AuthProfileRowRead } from "../agents/auth-profiles/types.js";
 import {
   readNativeHookRelayBridgeSnapshotFromDatabase,
   listNativeHookRelayBridgeSnapshotsInDatabase,
 } from "../agents/harness/native-hook-relay-store.kernel.js";
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
+import { listAuditEventsInDatabase } from "../audit/audit-event-read.kernel.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import { readWorkshopMigrationRecordsInDatabase } from "../commands/doctor-skill-workshop-read.kernel.js";
@@ -117,6 +120,7 @@ import type {
 } from "./openclaw-state-worker-contract.js";
 import { readUserModelAuthProfile } from "./user-model-accounts.js";
 import { executeUserPreferenceCommand } from "./user-preferences.worker.js";
+import { executeUserProfileReadCommand } from "./user-profiles.worker.js";
 
 export function createSqliteWorkerBackend(
   _input: undefined,
@@ -170,6 +174,9 @@ function createSharedStateWorkerBackend(
       if (closed) {
         throw new Error("Shared-state worker is closed");
       }
+      if (command.type === "audit.events.list") {
+        return listAuditEventsInDatabase(open().db, command.input);
+      }
       if (
         command.type === "authProfiles.read" ||
         command.type === "authProfiles.sharedOwnership" ||
@@ -186,11 +193,27 @@ function createSharedStateWorkerBackend(
           if (command.type === "authProfiles.personal") {
             return readUserModelAuthProfile(command.input.profileId, options);
           }
-          const target = { kind: "shared-state" as const, ...options };
-          return {
-            store: inspectAuthProfileJsonCellReadOnly(target, "store"),
-            state: inspectAuthProfileJsonCellReadOnly(target, "state"),
+          const missing: AuthProfileRowRead = {
+            store: { status: "missing", reason: "database" },
+            state: { status: "missing", reason: "database" },
+            cacheable: false,
           };
+          try {
+            return (
+              withExistingOpenClawStateDatabaseReadOnly(
+                ({ db }) => readAuthProfileRows(db, context.databasePath, "shared-state"),
+                options,
+              ) ?? missing
+            );
+          } catch {
+            return isMissingDatabasePath(context.databasePath)
+              ? missing
+              : {
+                  store: { status: "unreadable" as const },
+                  state: { status: "unreadable" as const },
+                  cacheable: false,
+                };
+          }
         };
         return command.input.artifactPreserving ? withArtifactPreservingStateReads(read) : read();
       }
@@ -319,6 +342,18 @@ function createSharedStateWorkerBackend(
           readStableSqliteFileGeneration(context.databasePath),
         );
       }
+      if (command.type === "database.inspectIdle") {
+        // Idle maintenance must never materialize a connection for an artifact-preserving reader.
+        if (
+          !nativeDatabase?.db.isOpen ||
+          openClawStateDatabaseCache.getCachedOpenClawStateDatabase(nativeDatabase.path) !==
+            nativeDatabase
+        ) {
+          return "retire";
+        }
+        assertOpenClawStateDatabaseOwner(nativeDatabase.db, { pathname: nativeDatabase.path });
+        return nativeDatabase.walMaintenance.inspectIdle?.() ?? "retire";
+      }
       if (command.type === "userPreferences.read" || command.type === "userPreferences.write") {
         return executeUserPreferenceCommand(command, {
           database: open(),
@@ -327,14 +362,14 @@ function createSharedStateWorkerBackend(
         });
       }
       if (isPluginBlobWorkerCommand(command)) {
-        return executePluginBlobCommand(
-          command,
-          {
-            path: context.databasePath,
-            env: getSqliteWorkerStateContext().environment,
-          },
-          open,
-        );
+        return executePluginBlobCommand(command, context.databasePath, open);
+      }
+      if (command.type === "userProfiles.list" || command.type === "userProfiles.directory") {
+        return executeUserProfileReadCommand(command, {
+          database: open(),
+          path: context.databasePath,
+          env: getSqliteWorkerStateContext().environment,
+        });
       }
       if (isPluginStateWorkerCommand(command)) {
         return executePluginStateCommand(
@@ -384,6 +419,7 @@ function createSharedStateWorkerBackend(
         case "transcripts.libraryEntry":
         case "transcripts.recentStopped":
         case "transcripts.summaryRevision":
+        case "transcripts.summarySnapshot":
         case "transcripts.utterances":
         case "transcripts.summary": {
           ensureMeetingTranscriptsSchema({
