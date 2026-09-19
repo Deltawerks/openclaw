@@ -5,7 +5,6 @@ import {
   buildControlPlaneUpdateRestartHealthPendingResult,
   resolveManagedServiceUpdateFailureExitCode,
 } from "../../infra/update-control-plane-sentinel.js";
-import { collectUpdateDoctorFailureFacts } from "../../infra/update-doctor-result.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
@@ -13,8 +12,8 @@ import { defaultRuntime } from "../../runtime.js";
 import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
-import { retireStandaloneGitWrapper } from "./update-command-git.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
+import { completePostUpdateMaintenance } from "./update-command-post-update-maintenance.js";
 import {
   assertUpdateCommandPackageFinalization,
   createUpdateCommandFinalizationFence,
@@ -23,8 +22,6 @@ import {
 import { repairUpdateService } from "./update-command-repair-service.js";
 import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import {
-  buildPostUpdateFailureResult,
-  completePostUpdateResult,
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
@@ -47,14 +44,20 @@ import {
   maybeRestartServiceAfterFailedMutableUpdate,
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
   maybeStopManagedServiceBeforeMutableUpdate,
-  tryInstallShellCompletion,
   type PreManagedServiceStop,
 } from "./update-command-service.js";
 import {
+  completeUpdateCommandResult,
+  createPostUpdateFailureResult,
+  publishSettledUpdateCommandResult,
+} from "./update-command-terminal-publication.js";
+import {
+  captureUpdateCommandTerminalRecord,
+  type UpdateCommandTerminalRecord,
+} from "./update-command-terminal-record.js";
+import {
   deferUpdateCommandTerminalResult,
   recordUpdatePackageCompletion,
-  publishUpdateCommandTerminalResult,
-  resolveSettledUpdateCommandResult,
 } from "./update-command-terminal.js";
 
 export type { FinishUpdateParams } from "./update-command-finish-types.js";
@@ -139,31 +142,42 @@ export async function finishUpdate(
       pendingRestartAtMs = undefined;
     }
   };
-  const recordNextAction = (result: UpdateRunResult) => {
+  const completedResult = (result: UpdateRunResult) => completeUpdateCommandResult(params, result);
+  const recordNextAction = (
+    result: UpdateRunResult,
+    committed?: UpdateCommandTerminalRecord["record"],
+  ) => {
     assertCurrent();
-    return recordUpdateResultNextAction(params, result);
+    return recordUpdateResultNextAction(params, result, committed);
   };
   // Restart can let the new Gateway finish the row before CLI finalization resumes.
   // Store the next action before that handoff, and refresh it if recovery changes the outcome.
   recordNextAction(params.result);
 
   let pendingResult = params.result;
+  let terminalRecord: UpdateCommandTerminalRecord | undefined;
   let pendingNotify = true;
   const writeRestartSentinel = (result: UpdateRunResult) =>
     writeControlPlaneUpdateRestartSentinelBestEffort({ ...sentinelOptions, result });
-  const publishFinalResult = async (failure?: unknown): Promise<UpdateRunResult> => {
-    const settled = await resolveSettledUpdateCommandResult(params, pendingResult, failure);
-    const result = completePostUpdateResult(params, settled.result);
-    result.recovery = settled.settlementFailed ? undefined : result.recovery;
-    const reportDowntime = !settled.settlementFailed && pendingRestartAtMs === undefined;
-    if (pendingNotify) {
-      await writeRestartSentinel(result);
-    }
-    return publishUpdateCommandTerminalResult(params, result, {
-      rolledBack: rolledBack && !settled.settlementFailed,
-      downtimeMs: reportDowntime ? completedDowntimeMs : undefined,
-    });
-  };
+  const publishFinalResult = (
+    failure?: unknown,
+    onTerminalRecord?: (record: UpdateCommandTerminalRecord["record"]) => void,
+  ) =>
+    publishSettledUpdateCommandResult(
+      params,
+      {
+        pendingResult,
+        failure,
+        terminalRecord,
+        readReportingState: () => ({
+          notify: pendingNotify ? writeRestartSentinel : undefined,
+          rolledBack,
+          pendingRestartAtMs,
+          completedDowntimeMs,
+        }),
+      },
+      onTerminalRecord,
+    );
   const deferredTerminal = deferUpdateCommandTerminalResult(params.opts.run, publishFinalResult);
   const recoverFailedResult = async (
     initialResult: UpdateRunResult,
@@ -274,7 +288,7 @@ export async function finishUpdate(
     );
     assertCurrent();
     let restoreFailure = initialRestoreFailure;
-    const finalResult = completePostUpdateResult(params, {
+    const finalResult = completedResult({
       ...result,
       ...(result.status === "error" && !recoverService && !rolledBack
         ? {
@@ -339,7 +353,11 @@ export async function finishUpdate(
         currentServiceStop()?.serviceEnv ?? process.env,
       );
     }
-    recordNextAction(finalResult);
+    const completedBeforeCleanup = deferredTerminal
+      ? await captureUpdateCommandTerminalRecord(params, finalResult, assertCurrent)
+      : undefined;
+    assertCurrent();
+    recordNextAction(finalResult, completedBeforeCleanup?.record);
     if (notify && recoverService) {
       pendingNotify = false;
       await writeRestartSentinel(finalResult);
@@ -382,7 +400,11 @@ export async function finishUpdate(
     assertCurrent();
     const cleanupFailure = await recordUpdatePackageCompletion(params, finalResult, assertCurrent);
     assertCurrent();
-    pendingResult = completePostUpdateResult(params, cleanupFailure?.result ?? finalResult);
+    pendingResult = completedResult(cleanupFailure?.result ?? finalResult);
+    terminalRecord = deferredTerminal
+      ? await captureUpdateCommandTerminalRecord(params, pendingResult, assertCurrent)
+      : undefined;
+    assertCurrent();
     const reportedResult = deferredTerminal ? pendingResult : await publishFinalResult();
     if (cleanupFailure) {
       const { detail } = cleanupFailure;
@@ -668,36 +690,15 @@ export async function finishUpdate(
       }
       return await reportResult(resultWithPostUpdate);
     }
-    // Refresh optional completions only after restart and health recovery settle.
-    await tryInstallShellCompletion({
-      root: postUpdateRoot,
-      jsonMode: Boolean(params.opts.json),
-      skipPrompt: Boolean(params.opts.yes),
-    });
-
-    if (params.installKindChanged && resultWithPostUpdate.mode !== "git") {
-      const retirement = await retireStandaloneGitWrapper({
-        previousRoot: params.previousInstallRoot ?? params.root,
-        assertCurrent,
-      });
-      if (retirement.error) {
-        defaultRuntime.error(retirement.error);
-        await markControlPlaneUpdateRestartSentinelFailureBestEffort({
-          ...sentinelOptions,
-          reason: "wrapper-retirement-failed",
-        });
-        const reported = await reportResult(
-          {
-            ...resultWithPostUpdate,
-            status: "error",
-            reason: "wrapper-retirement-failed",
-          },
-          false,
-          undefined,
-          false,
-        );
-        throw createFailure(reported, 1, retirement.error);
-      }
+    const maintenanceFailure = await completePostUpdateMaintenance(
+      params,
+      resultWithPostUpdate,
+      assertCurrent,
+      { root: postUpdateRoot, sentinel: sentinelOptions },
+    );
+    if (maintenanceFailure) {
+      const reported = await reportResult(maintenanceFailure.result, false, undefined, false);
+      throw createFailure(reported, 1, maintenanceFailure.detail);
     }
 
     return await reportResult(resultWithPostUpdate);
@@ -714,12 +715,9 @@ export async function finishUpdate(
       // Staging may already have changed files. Keep intent/material for fenced reconciliation.
       throw error;
     }
-    const message = formatErrorMessage(error);
-    const failureFacts = collectUpdateDoctorFailureFacts(error);
+    const { result, message } = createPostUpdateFailureResult(params, error);
     defaultRuntime.error(`Post-update verification failed: ${message}`);
-    const reported = await reportResult(
-      buildPostUpdateFailureResult(params, message, failureFacts),
-    );
+    const reported = await reportResult(result);
     throw createFailure(reported, resolveManagedServiceUpdateFailureExitCode(reported), message, {
       cause: error,
     });

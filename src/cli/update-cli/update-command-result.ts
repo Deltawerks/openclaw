@@ -22,11 +22,11 @@ import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownersh
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
+import type { UpdateRunRecord } from "../../infra/update-run-record.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { UpdateRecoveryStep } from "../../shared/update-outcome.js";
-import { UPDATE_ACTIVATION_TIMEOUT_REASON } from "../../shared/update-outcome.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
@@ -424,9 +424,10 @@ export async function markControlPlaneUpdateRestartSentinelFailureBestEffort(par
 export function recordUpdateResultNextAction(
   params: Pick<FinishUpdateParams, "opts" | "coreAlreadyCurrent" | "ownedManagedUpdateEnv">,
   result: UpdateRunResult,
+  committed?: UpdateRunRecord,
 ) {
   const run = params.opts.run;
-  const active = run ? getUpdateRun(run.runId, { env: run.env }) : undefined;
+  const active = committed ?? (run ? getUpdateRun(run.runId, { env: run.env }) : undefined);
   const nextAction = resolveUpdateResultNextAction({
     result,
     restart: params.coreAlreadyCurrent ? params.opts.restart : undefined,
@@ -441,45 +442,4 @@ export function recordUpdateResultNextAction(
     recordUpdateRunPhase(run.runId, active.phase, { origin: { nextAction } }, { env: run.env });
   }
   return nextAction;
-}
-
-/** Finalization includes recovery, restart, and completion without masking activation timeout. */
-export function completePostUpdateResult(
-  params: Pick<FinishUpdateParams, "rollbackBlockedReason" | "startedAt">,
-  result: UpdateRunResult,
-): UpdateRunResult {
-  return {
-    ...result,
-    ...(result.status === "error" &&
-    result.reason !== UPDATE_ACTIVATION_TIMEOUT_REASON &&
-    params.rollbackBlockedReason
-      ? { reason: params.rollbackBlockedReason }
-      : {}),
-    durationMs: Math.max(0, Date.now() - params.startedAt),
-  };
-}
-
-/** Construct the ordinary post-update failure without changing its recovery owner. */
-export function buildPostUpdateFailureResult(
-  params: Pick<FinishUpdateParams, "result" | "root" | "startedAt">,
-  message: string,
-  failureFacts: NonNullable<UpdateRunResult["steps"][number]["failureFacts"]> = [],
-): UpdateRunResult {
-  return {
-    ...params.result,
-    status: "error",
-    reason: "post-update-failed",
-    steps: [
-      ...params.result.steps,
-      {
-        name: "post-update verification",
-        command: "openclaw update",
-        cwd: params.result.root ?? params.root,
-        durationMs: Math.max(0, Date.now() - params.startedAt),
-        exitCode: 1,
-        stderrTail: message,
-        ...(failureFacts.length ? { failureFacts } : {}),
-      },
-    ],
-  };
 }
