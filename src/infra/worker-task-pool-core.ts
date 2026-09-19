@@ -1,12 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { availableParallelism } from "node:os";
-import { Worker } from "node:worker_threads";
+import type { Worker } from "node:worker_threads";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createDeferredCore } from "../shared/deferred.js";
 import { runBestEffortCleanup } from "./non-fatal-cleanup.js";
 import { resolveRuntimeWorkerThreadExecArgv } from "./runtime-worker-url.js";
+import { createCpuTrackedWorker } from "./worker-cpu.js";
 import {
   DEFAULT_WORKER_PENDING_BYTES,
   DEFAULT_WORKER_PENDING_TASKS,
@@ -347,7 +348,7 @@ class WorkerTaskPoolCore<Input, Output> {
       if (slot.retiring) {
         throw new WorkerTaskError("worker creation closed during preparation", "unavailable");
       }
-      return new Worker(workerUrl, workerOptions);
+      return createCpuTrackedWorker(workerUrl, workerOptions);
     });
     this.workers++;
     this.workersCreated++;
