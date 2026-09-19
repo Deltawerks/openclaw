@@ -42,6 +42,7 @@ import {
   type DeferredPluginMigration,
 } from "../infra/deferred-plugin-migrations.js";
 import { prepareSqliteReadOnlyLocationSync } from "../infra/sqlite-snapshot-source.js";
+import { formatUpdateDoctorLintFinding } from "../infra/update-doctor-lint.js";
 import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import {
   resolvePluginInstallRoots,
@@ -615,6 +616,14 @@ function writeJsonResult(result: {
       ...(result.warnings?.length ? { warnings: result.warnings.map(toJsonFinding) } : {}),
     }) + "\n",
   );
+  if (isUpdateDoctorLintPass(process.env)) {
+    // Shipped parents keep line tails; print blockers last, outside the single JSON line.
+    for (const finding of [...(result.warnings ?? []), ...result.findings].toSorted(
+      (a, b) => Number(a.severity === "error") - Number(b.severity === "error"),
+    )) {
+      process.stderr.write(`${formatUpdateDoctorLintFinding(finding)}\n`);
+    }
+  }
 }
 
 function toJsonFinding(f: HealthFinding): Record<string, unknown> {
