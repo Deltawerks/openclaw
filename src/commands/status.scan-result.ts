@@ -68,9 +68,6 @@ export function buildStatusScanResult<
     gatewayProbeAuthWarning: gatewaySnapshot.gatewayProbeAuthWarning,
     gatewayProbe: gatewaySnapshot.gatewayProbe,
     gatewayReachable: gatewaySnapshot.gatewayReachable,
-    ...(gatewaySnapshot.gatewayProbeDeadlineMs !== undefined
-      ? { gatewayProbeDeadlineMs: gatewaySnapshot.gatewayProbeDeadlineMs }
-      : {}),
     gatewaySelf: gatewaySnapshot.gatewaySelf,
   };
 }

@@ -9,6 +9,7 @@ import {
   resolveStatusServiceSummaries,
   resolveStatusUsageSummary,
 } from "./status-runtime-shared.ts";
+import { createStatusGatewayProbeBudget } from "./status.gateway-probe-budget.js";
 
 const mocks = vi.hoisted(() => ({
   loadProviderUsageSummary: vi.fn(),
@@ -128,7 +129,7 @@ describe("status-runtime-shared", () => {
       },
     };
 
-    await resolveStatusUsageSummary({ config });
+    await resolveStatusUsageSummary({ ...createStatusGatewayProbeBudget(), config });
 
     expect(mocks.loadProviderUsageSummary).toHaveBeenCalledWith({
       timeoutMs: 60_000,
@@ -140,6 +141,7 @@ describe("status-runtime-shared", () => {
   it("requires a system owner for usage credentials in an explicit multi-agent roster", async () => {
     await expect(
       resolveStatusUsageSummary({
+        ...createStatusGatewayProbeBudget(),
         config: {
           agents: {
             ownership: "explicit",
@@ -185,7 +187,7 @@ describe("status-runtime-shared", () => {
 
       await expect(
         resolveStatusUsageSummary({
-          timeoutMs: 3456,
+          ...createStatusGatewayProbeBudget(3456),
           config: {
             agents: {
               defaults: {
@@ -256,7 +258,7 @@ describe("status-runtime-shared", () => {
 
     await expect(
       resolveStatusUsageSummary({
-        timeoutMs: 3456,
+        ...createStatusGatewayProbeBudget(3456),
         config: {
           agents: {
             defaults: {
@@ -283,7 +285,7 @@ describe("status-runtime-shared", () => {
 
   it("does not add Codex synthetic usage for OpenAI routes pinned to OpenClaw runtime", async () => {
     await resolveStatusUsageSummary({
-      timeoutMs: 3456,
+      ...createStatusGatewayProbeBudget(3456),
       config: {
         agents: {
           defaults: {
@@ -305,7 +307,7 @@ describe("status-runtime-shared", () => {
     mocks.resolveModelAuthLabel.mockReturnValue("api-key (openai:api)");
 
     await resolveStatusUsageSummary({
-      timeoutMs: 3456,
+      ...createStatusGatewayProbeBudget(3456),
       config: {
         agents: {
           defaults: {
@@ -332,7 +334,7 @@ describe("status-runtime-shared", () => {
 
   it("resolves usage summaries with explicit agent scope", async () => {
     await resolveStatusUsageSummary({
-      timeoutMs: 2345,
+      ...createStatusGatewayProbeBudget(2345),
       config: { gateway: {} },
       agentDir: "/tmp/status-agent",
     });
@@ -356,7 +358,7 @@ describe("status-runtime-shared", () => {
     };
 
     await resolveStatusUsageSummary({
-      timeoutMs: 2345,
+      ...createStatusGatewayProbeBudget(2345),
       config,
       agentId: "beta",
     });
@@ -371,6 +373,7 @@ describe("status-runtime-shared", () => {
   it("rejects an unknown explicit usage owner", async () => {
     await expect(
       resolveStatusUsageSummary({
+        ...createStatusGatewayProbeBudget(),
         config: {
           agents: {
             ownership: "explicit",
@@ -386,7 +389,7 @@ describe("status-runtime-shared", () => {
   it("resolves gateway health with the shared probe call shape", async () => {
     await resolveStatusGatewayHealth({
       config: { gateway: {} },
-      timeoutMs: 5000,
+      ...createStatusGatewayProbeBudget(5000),
     });
 
     expect(mocks.callGateway).toHaveBeenCalledWith({
@@ -400,6 +403,7 @@ describe("status-runtime-shared", () => {
   it("returns a fallback health error when the gateway is unreachable", async () => {
     await expect(
       resolveStatusGatewayHealthSafe({
+        ...createStatusGatewayProbeBudget(),
         config: { gateway: {} },
         gatewayReachable: false,
         gatewayProbeError: "timeout",
@@ -411,7 +415,7 @@ describe("status-runtime-shared", () => {
   it("passes gateway call overrides through the safe health path", async () => {
     await resolveStatusGatewayHealthSafe({
       config: { gateway: {} },
-      timeoutMs: 4321,
+      ...createStatusGatewayProbeBudget(4321),
       gatewayReachable: true,
       callOverrides: {
         url: "ws://127.0.0.1:18789",
@@ -433,7 +437,7 @@ describe("status-runtime-shared", () => {
     await expect(
       resolveStatusGatewayDiagnosticsSafe({
         config: { gateway: {} },
-        timeoutMs: 4321,
+        ...createStatusGatewayProbeBudget(4321),
         gatewayReachable: true,
         type: "telemetry.exporter",
       }),
@@ -453,7 +457,7 @@ describe("status-runtime-shared", () => {
     await expect(
       resolveStatusGatewayDiagnosticsSafe({
         config: { gateway: {} },
-        timeoutMs: 4321,
+        ...createStatusGatewayProbeBudget(4321),
         gatewayReachable: true,
       }),
     ).resolves.toEqual({
@@ -474,7 +478,7 @@ describe("status-runtime-shared", () => {
       resolveStatusRuntimeSnapshot({
         config: { gateway: {} },
         sourceConfig: { gateway: { mode: "local" } },
-        timeoutMs: 1234,
+        ...createStatusGatewayProbeBudget(1234),
         usage: true,
         deep: true,
         gatewayReachable: true,
@@ -503,6 +507,7 @@ describe("status-runtime-shared", () => {
     const resolveUsage = vi.fn(async () => ({ updatedAt: 1, providers: [] }));
 
     await resolveStatusRuntimeSnapshot({
+      ...createStatusGatewayProbeBudget(),
       config: { gateway: {} },
       sourceConfig: { gateway: {} },
       agentId: "beta",
@@ -515,6 +520,7 @@ describe("status-runtime-shared", () => {
       config: { gateway: {} },
       agentId: "beta",
       timeoutMs: 60_000,
+      gatewayProbeDeadlineMs: 60_000,
     });
   });
 
@@ -523,6 +529,7 @@ describe("status-runtime-shared", () => {
 
     await expect(
       resolveStatusRuntimeSnapshot({
+        ...createStatusGatewayProbeBudget(),
         config: { gateway: {} },
         sourceConfig: { gateway: {} },
         deep: true,
@@ -570,6 +577,7 @@ describe("status-runtime-shared", () => {
     "uses the completed initial probe for deep health ($gatewayStartupPhase)",
     async ({ gatewayStartupPhase, health }) => {
       const snapshot = await resolveStatusRuntimeSnapshot({
+        ...createStatusGatewayProbeBudget(),
         config: {},
         sourceConfig: {},
         deep: true,
@@ -590,6 +598,7 @@ describe("status-runtime-shared", () => {
 
     await expect(
       resolveStatusRuntimeSnapshot({
+        ...createStatusGatewayProbeBudget(),
         config: { gateway: {} },
         sourceConfig: { gateway: {} },
         deep: true,

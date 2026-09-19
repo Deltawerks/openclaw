@@ -15,7 +15,10 @@ import type { StatusSessionStores } from "../status/session-stores.js";
 import type { StatusSummary } from "../status/summary.js";
 import type { buildChannelsTable as buildChannelsTableFn } from "./status-all/channels.js";
 import type { AgentLocalStatusesResult } from "./status.agent-local.js";
-import { resolveStatusGatewayProbeTimeoutMs } from "./status.gateway-probe-budget.js";
+import {
+  resolveStatusGatewayProbeTimeoutMs,
+  type StatusGatewayProbeBudget,
+} from "./status.gateway-probe-budget.js";
 import {
   buildColdStartStatusSummary,
   createStatusScanCoreBootstrap,
@@ -52,37 +55,28 @@ async function resolveStatusChannelsStatus(params: {
   cfg: OpenClawConfig;
   configPath: string;
   gatewayReachable: boolean;
-  gatewayProbeDeadlineMs?: number;
-  opts: { timeoutMs?: number; all?: boolean };
+  opts: StatusGatewayProbeBudget & { all?: boolean };
   gatewayCallOverrides?: GatewayProbeSnapshot["gatewayCallOverrides"];
   useGatewayCallOverrides?: boolean;
 }) {
-  if (
-    !params.gatewayReachable ||
-    resolveStatusGatewayProbeTimeoutMs({
-      ...params.opts,
-      gatewayProbeDeadlineMs: params.gatewayProbeDeadlineMs,
-    }) === 0
-  ) {
+  if (!params.gatewayReachable) {
     // Avoid a second gateway call after probe failure; channel tables can still summarize local config.
     return null;
   }
   const { callGateway } = await gatewayCallModuleLoader.load();
+  const timeoutMs = resolveStatusGatewayProbeTimeoutMs(params.opts);
+  if (timeoutMs === 0) {
+    return null;
+  }
   return await callGateway({
     config: params.cfg,
     configPath: params.configPath,
     method: "channels.status",
     params: {
       probe: false,
-      timeoutMs: Math.min(8000, params.opts.timeoutMs ?? 10_000),
+      timeoutMs: Math.min(8000, timeoutMs),
     },
-    timeoutMs: Math.min(
-      resolveStatusGatewayProbeTimeoutMs({
-        ...params.opts,
-        gatewayProbeDeadlineMs: params.gatewayProbeDeadlineMs,
-      }),
-      params.opts.timeoutMs ?? 10_000,
-    ),
+    timeoutMs,
     ...(params.useGatewayCallOverrides === true ? (params.gatewayCallOverrides ?? {}) : {}),
   }).catch(() => null);
 }
@@ -111,7 +105,6 @@ export type StatusScanOverviewResult = {
     | "gatewayProbeAuthWarning"
     | "gatewayProbe"
     | "gatewayReachable"
-    | "gatewayProbeDeadlineMs"
     | "gatewaySelf"
     | "gatewayCallOverrides"
   >;
@@ -137,7 +130,7 @@ export type StatusScanOverviewResult = {
 export async function collectStatusScanOverview(params: {
   env?: NodeJS.ProcessEnv;
   commandName: string;
-  opts: { timeoutMs?: number; all?: boolean };
+  opts: StatusGatewayProbeBudget & { all?: boolean };
   showSecrets: boolean;
   runtime?: RuntimeEnv;
   allowMissingConfigFastPath?: boolean;
@@ -151,7 +144,6 @@ export async function collectStatusScanOverview(params: {
   includeChannelsData?: boolean;
   includeLiveChannelStatus?: boolean;
   includeLocalStatusRpcFallback?: boolean;
-  gatewayProbeTimeoutMs?: number;
   gatewaySnapshot?: GatewayProbeSnapshot;
   includeChannelSetupRuntimeFallback?: boolean;
   useGatewayCallOverridesForChannelsStatus?: boolean;
@@ -192,8 +184,6 @@ export async function collectStatusScanOverview(params: {
   const configDiagnostics =
     skipMissingConfig || snapshot.valid ? null : { path: snapshot.path, issues: snapshot.issues };
   // Secret resolution precedes probing, and each request uses the scan's existing budget.
-  const gatewayProbeTimeoutMs =
-    params.gatewayProbeTimeoutMs ?? resolveStatusGatewayProbeTimeoutMs(params.opts);
   const { resolvedConfig: cfg, diagnostics } = skipMissingConfig
     ? { resolvedConfig: loadedConfig, diagnostics: [] }
     : await measureCliCommandStartup(
@@ -209,7 +199,7 @@ export async function collectStatusScanOverview(params: {
                   await commandSecretTargetsModuleLoader.load()
                 ).getStatusCommandSecretTargetIds(loadedConfig, env),
                 mode: "read_only_status",
-                gatewaySecretResolveTimeoutMs: gatewayProbeTimeoutMs,
+                gatewaySecretResolveTimeoutMs: resolveStatusGatewayProbeTimeoutMs(params.opts),
                 ...(params.runtime ? { runtime: params.runtime } : {}),
               }),
             ),
@@ -242,7 +232,6 @@ export async function collectStatusScanOverview(params: {
     fetchGitUpdate: params.fetchGitUpdate,
     includeRegistryUpdate: params.includeRegistryUpdate,
     includeLocalStatusRpcFallback: params.includeLocalStatusRpcFallback,
-    gatewayProbeTimeoutMs,
     gatewaySnapshot: params.gatewaySnapshot,
     onGatewayProgress: params.progress
       ? (phase) => {
@@ -302,7 +291,7 @@ export async function collectStatusScanOverview(params: {
   if (gatewaySnapshot.gatewayReachable) {
     const status =
       gatewaySnapshot.gatewayProbe?.status ??
-      (resolveStatusGatewayProbeTimeoutMs({ ...params.opts, ...gatewaySnapshot }) > 0
+      (resolveStatusGatewayProbeTimeoutMs(params.opts) > 0
         ? await measureCliCommandStartup(
             "status.gateway-degradation",
             () =>
@@ -312,10 +301,7 @@ export async function collectStatusScanOverview(params: {
                   configPath: snapshot.path,
                   method: "status",
                   params: { includeChannelSummary: false },
-                  timeoutMs: Math.min(
-                    5000,
-                    resolveStatusGatewayProbeTimeoutMs({ ...params.opts, ...gatewaySnapshot }),
-                  ),
+                  timeoutMs: Math.min(5000, resolveStatusGatewayProbeTimeoutMs(params.opts)),
                   ...gatewaySnapshot.gatewayCallOverrides,
                 }).catch(() => null),
               ),
@@ -360,7 +346,6 @@ export async function collectStatusScanOverview(params: {
               cfg,
               configPath: snapshot.path,
               gatewayReachable: gatewaySnapshot.gatewayReachable,
-              gatewayProbeDeadlineMs: gatewaySnapshot.gatewayProbeDeadlineMs,
               opts: params.opts,
               gatewayCallOverrides: gatewaySnapshot.gatewayCallOverrides,
               useGatewayCallOverrides: params.useGatewayCallOverridesForChannelsStatus,

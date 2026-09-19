@@ -59,6 +59,7 @@ async function resolveStatusAllLocalDiagnosis(params: {
   gatewayCallOverrides: StatusScanOverviewResult["gatewaySnapshot"]["gatewayCallOverrides"];
   nodeOnlyGateway: NodeOnlyGatewayInfo | null;
   timeoutMs?: number;
+  gatewayProbeDeadlineMs: number;
 }): Promise<{
   configPath: string;
   health: StatusGatewayHealthSafe | undefined;
@@ -91,7 +92,7 @@ async function resolveStatusAllLocalDiagnosis(params: {
   const configPath = resolveStatusAllConfigPath(snap?.path);
   const diagnosticsParams = {
     config: overview.cfg,
-    gatewayProbeDeadlineMs: overview.gatewaySnapshot.gatewayProbeDeadlineMs,
+    gatewayProbeDeadlineMs: params.gatewayProbeDeadlineMs,
     timeoutMs: Math.min(5000, params.timeoutMs ?? 10_000),
     gatewayReachable: params.gatewayReachable,
     ...(params.gatewayCallOverrides ? { callOverrides: params.gatewayCallOverrides } : {}),
@@ -103,7 +104,7 @@ async function resolveStatusAllLocalDiagnosis(params: {
       : await Promise.all([
           resolveStatusGatewayHealthSafe({
             config: overview.cfg,
-            gatewayProbeDeadlineMs: overview.gatewaySnapshot.gatewayProbeDeadlineMs,
+            gatewayProbeDeadlineMs: params.gatewayProbeDeadlineMs,
             timeoutMs: Math.min(8000, params.timeoutMs ?? 10_000),
             gatewayReachable: params.gatewayReachable,
             gatewayProbeError: params.gatewayProbe?.error ?? null,
@@ -202,6 +203,7 @@ export async function buildStatusAllReportData(params: {
   nodeOnlyGateway: NodeOnlyGatewayInfo | null;
   progress: StatusAllProgress;
   timeoutMs?: number;
+  gatewayProbeDeadlineMs: number;
 }) {
   const gatewaySnapshot = params.overview.gatewaySnapshot;
   const [{ configPath, health, diagnosis }, summary] = await Promise.all([
@@ -213,6 +215,7 @@ export async function buildStatusAllReportData(params: {
       gatewayCallOverrides: gatewaySnapshot.gatewayCallOverrides,
       nodeOnlyGateway: params.nodeOnlyGateway,
       timeoutMs: params.timeoutMs,
+      gatewayProbeDeadlineMs: params.gatewayProbeDeadlineMs,
     }),
     params.overview.runtimeDegradation ??
       resolveStatusSummaryFromOverview({ overview: params.overview }),

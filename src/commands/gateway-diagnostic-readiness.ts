@@ -11,28 +11,29 @@ export async function waitForGatewayDiagnostic(
   runtime: RuntimeEnv,
 ): Promise<number | undefined> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_RESTART_HEALTH_TIMEOUT_MS;
+  const startedAtMs = performance.now();
+  const deadlineMs = Math.min(opts.deadlineMs ?? Infinity, startedAtMs + timeoutMs);
   const readiness = await waitForGatewayDiagnosticReadiness({
     ...opts,
+    deadlineMs,
     onProgress: (phase) => {
       if (!opts.json) {
         runtime.log(`Gateway is still starting (phase: ${sanitizeTerminalText(phase)}).`);
       }
     },
   });
-  if (!readiness) {
-    return timeoutMs;
-  }
   // RPC timeout fields require integer milliseconds.
-  const remainingMs = Math.ceil(timeoutMs - (readiness.elapsedMs ?? 0));
+  const remainingMs = Math.max(0, Math.ceil(deadlineMs - performance.now()));
   if (
     remainingMs > 0 &&
-    (readiness.healthy ||
+    (!readiness ||
+      readiness.healthy ||
       readiness.waitOutcome === "channel-errors" ||
       readiness.waitOutcome === "plugin-errors")
   ) {
     return remainingMs;
   }
-  if (readiness.waitOutcome === "still-starting") {
+  if (readiness?.waitOutcome === "still-starting") {
     if (opts.json) {
       writeRuntimeJson(runtime, {
         status: "starting",
@@ -45,6 +46,6 @@ export async function waitForGatewayDiagnostic(
     kind: "timeout",
     timeoutMs,
     connectionDetails: await buildGatewayProbeConnectionDetails(opts),
-    message: `${readiness.healthy ? "Gateway diagnostic budget exhausted" : "Gateway not reachable"} after waiting ${Math.round((readiness.elapsedMs ?? 0) / 1000)} s.\n${sanitizeTerminalText(readiness.probeError ?? readiness.startupPhase ?? "Readiness could not be confirmed.")}\nRun openclaw gateway status --deep to diagnose.`,
+    message: `${!readiness || readiness.healthy ? "Gateway diagnostic budget exhausted" : "Gateway not reachable"} after waiting ${Math.round((performance.now() - startedAtMs) / 1000)} s.\n${sanitizeTerminalText(readiness?.probeError ?? readiness?.startupPhase ?? "Readiness could not be confirmed.")}\nRun openclaw gateway status --deep to diagnose.`,
   });
 }

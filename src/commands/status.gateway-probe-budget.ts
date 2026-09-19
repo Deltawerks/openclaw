@@ -1,11 +1,18 @@
 import { DEFAULT_RESTART_HEALTH_TIMEOUT_MS } from "../cli/daemon-cli/restart-health.constants.js";
 
-export function resolveStatusGatewayProbeTimeoutMs(opts: {
+export type StatusGatewayProbeBudget = {
   timeoutMs?: number;
-  gatewayProbeDeadlineMs?: number;
-}): number {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_RESTART_HEALTH_TIMEOUT_MS;
-  return opts.gatewayProbeDeadlineMs === undefined
-    ? timeoutMs
-    : Math.min(timeoutMs, Math.max(0, Math.ceil(opts.gatewayProbeDeadlineMs - performance.now())));
+  gatewayProbeDeadlineMs: number;
+};
+
+export function createStatusGatewayProbeBudget(timeoutMs?: number): StatusGatewayProbeBudget {
+  return {
+    timeoutMs,
+    gatewayProbeDeadlineMs: performance.now() + (timeoutMs ?? DEFAULT_RESTART_HEALTH_TIMEOUT_MS),
+  };
+}
+
+export function resolveStatusGatewayProbeTimeoutMs(opts: StatusGatewayProbeBudget): number {
+  const remainingMs = Math.max(0, Math.ceil(opts.gatewayProbeDeadlineMs - performance.now()));
+  return opts.timeoutMs === undefined ? remainingMs : Math.min(opts.timeoutMs, remainingMs);
 }

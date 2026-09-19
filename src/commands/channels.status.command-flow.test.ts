@@ -1,5 +1,5 @@
 // Channels status command-flow tests cover gateway calls, config fallback, and timeout validation.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../cli/daemon-cli/diagnostic-readiness.js", () => ({
   waitForGatewayDiagnosticReadiness: vi.fn(async () => undefined),
@@ -184,6 +184,7 @@ function createGatewayTransportError(message = "Gateway not reachable (ECONNREFU
 
 describe("channelsStatusCommand SecretRef fallback flow", () => {
   beforeEach(() => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
     mocks.callGateway.mockReset();
     mocks.resolveCommandConfigWithSecrets.mockReset();
     mocks.readConfigFileSnapshot.mockClear();
@@ -199,13 +200,16 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
 
   it("sends valid channel RPC parameters after fractional startup timing", async () => {
     const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
-    vi.mocked(waitForGatewayDiagnosticReadiness).mockResolvedValueOnce({
-      healthy: true,
-      waitOutcome: "healthy",
-      elapsedMs: 1250.25,
-      runtime: { status: "running", pid: 42 },
-      portUsage: { port: 18789, status: "busy", listeners: [{ pid: 42 }], hints: [] },
-      staleGatewayPids: [],
+    vi.mocked(waitForGatewayDiagnosticReadiness).mockImplementationOnce(async () => {
+      vi.spyOn(performance, "now").mockReturnValue(1250.25);
+      return {
+        healthy: true,
+        waitOutcome: "healthy",
+        elapsedMs: 1250.25,
+        runtime: { status: "running", pid: 42 },
+        portUsage: { port: 18789, status: "busy", listeners: [{ pid: 42 }], hints: [] },
+        staleGatewayPids: [],
+      };
     });
     mocks.callGateway.mockResolvedValueOnce({});
 
@@ -214,6 +218,11 @@ describe("channelsStatusCommand SecretRef fallback flow", () => {
     expect(mocks.callGateway).toHaveBeenCalledOnce();
     const request = mocks.callGateway.mock.calls[0]?.[0];
     expect(validateChannelsStatusParams(request?.params)).toBe(true);
+    expect(request?.params.timeoutMs).toBe(3750);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("reports pending startup in JSON without falling back to a Gateway error", async () => {

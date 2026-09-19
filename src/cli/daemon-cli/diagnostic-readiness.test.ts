@@ -68,6 +68,45 @@ describe("diagnostic Gateway readiness", () => {
     expect(callGateway).not.toHaveBeenCalled();
   });
 
+  it.each([22_000, 61_000])(
+    "charges %d ms of authentication preparation to the caller's absolute deadline",
+    async (authElapsedMs) => {
+      resolveGatewayProbeAuthSafeWithSecretInputs.mockImplementation(async () => {
+        monotonicClock.nowMs += authElapsedMs;
+        return { auth: { token: "fixture-token" } };
+      });
+      readGatewayOwnerLease.mockReturnValue({
+        owner: "fixture-owner",
+        pid: 8000,
+        host: "fixture-host",
+        startedAt: 1,
+        port: 18789,
+        mode: "foreground",
+        supervisor: null,
+        state: "live",
+        expired: false,
+      });
+
+      const result = await waitForGatewayDiagnosticReadiness({
+        config: { gateway: { auth: { mode: "token" } } },
+        timeoutMs: 60_000,
+        deadlineMs: 60_000,
+      });
+
+      expect(result).toMatchObject({
+        healthy: false,
+        waitOutcome: "timeout",
+        elapsedMs: Math.max(0, 60_000 - authElapsedMs),
+      });
+      expect(monotonicClock.nowMs).toBe(Math.max(60_000, authElapsedMs));
+      expect(callGateway).not.toHaveBeenCalled();
+      if (authElapsedMs >= 60_000) {
+        expect(inspectPortUsage).not.toHaveBeenCalled();
+        expect(result?.probeError).toBe("Gateway readiness budget exhausted.");
+      }
+    },
+  );
+
   it.each([20_000, 7_500])(
     "observes a foreground startup using the selected config, auth, port and %d ms budget",
     async (timeoutMs) => {

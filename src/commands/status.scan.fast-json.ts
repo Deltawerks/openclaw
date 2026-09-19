@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../config/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import { isRecord } from "../utils.js";
+import type { StatusGatewayProbeBudget } from "./status.gateway-probe-budget.js";
 import { executeStatusScanFromOverview } from "./status.scan-execute.ts";
 import { collectStatusScanOverview } from "./status.scan-overview.ts";
 import type { StatusJsonScanResult } from "./status.scan-result.ts";
@@ -73,8 +74,7 @@ function hasPotentialConfiguredChannelsForStatusJson(cfg: OpenClawConfig): boole
 
 /** Runs the default fast status JSON scan. */
 export async function scanStatusJsonFast(
-  opts: {
-    timeoutMs?: number;
+  opts: StatusGatewayProbeBudget & {
     all?: boolean;
   },
   runtime: RuntimeEnv,

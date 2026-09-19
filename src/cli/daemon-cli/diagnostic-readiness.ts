@@ -16,6 +16,7 @@ import { waitForGatewayHealthyRestart, type GatewayRestartSnapshot } from "./res
 export async function waitForGatewayDiagnosticReadiness(opts: {
   config?: OpenClawConfig;
   timeoutMs?: number;
+  deadlineMs?: number;
   url?: string;
   token?: string;
   password?: string;
@@ -54,6 +55,7 @@ export async function waitForGatewayDiagnosticReadiness(opts: {
   return waitForGatewayHealthyRestart({
     port,
     timeoutMs: opts.timeoutMs ?? DEFAULT_RESTART_HEALTH_TIMEOUT_MS,
+    deadlineMs: opts.deadlineMs,
     probeContext,
     probeHosts: LOOPBACK_PORT_PROBE_HOSTS,
     requirePluginHealth: false,

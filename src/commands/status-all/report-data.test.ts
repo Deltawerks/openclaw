@@ -1,7 +1,8 @@
 // Status-all report data tests cover local read-only diagnosis probes.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
+import { createStatusGatewayProbeBudget } from "../status.gateway-probe-budget.js";
 import { baseStatusGatewaySnapshot, baseStatusOverviewSurface } from "../status.test-support.ts";
 
 const mocks = vi.hoisted(() => ({
@@ -83,12 +84,17 @@ import { buildStatusAllReportData } from "./report-data.js";
 describe("buildStatusAllReportData", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(performance, "now").mockReturnValue(0);
     mocks.listUpdateRuns.mockReturnValue([]);
     mocks.findActiveUpdateRun.mockReturnValue(undefined);
     mocks.getUpdateRun.mockReturnValue(undefined);
     mocks.readRestartSentinelReadOnly.mockResolvedValue(null);
     mocks.resolveStatusGatewayDiagnosticsSafe.mockResolvedValue({ ok: true, value: {} });
     mocks.resolveStatusGatewayHealthSafe.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it.each([
@@ -172,6 +178,7 @@ describe("buildStatusAllReportData", () => {
         });
       }
       const report = await buildStatusAllReportData({
+        ...createStatusGatewayProbeBudget(),
         overview: {
           ...baseStatusOverviewSurface,
           cfg: {},
@@ -243,6 +250,7 @@ describe("buildStatusAllReportData", () => {
     "collects stability projections only after readiness (starting: %s)",
     async (starting) => {
       const report = await buildStatusAllReportData({
+        ...createStatusGatewayProbeBudget(),
         overview: {
           cfg: {},
           gatewaySnapshot: {
@@ -279,11 +287,13 @@ describe("buildStatusAllReportData", () => {
         [
           expect.objectContaining({
             gatewayReachable: true,
+            gatewayProbeDeadlineMs: 60_000,
           }),
         ],
         [
           expect.objectContaining({
             gatewayReachable: true,
+            gatewayProbeDeadlineMs: 60_000,
             type: "telemetry.exporter",
           }),
         ],
@@ -294,6 +304,7 @@ describe("buildStatusAllReportData", () => {
 
   it("uses the configured system agent for workspace skill diagnosis", async () => {
     await buildStatusAllReportData({
+      ...createStatusGatewayProbeBudget(),
       overview: {
         cfg: {
           agents: {
@@ -342,6 +353,7 @@ describe("buildStatusAllReportData", () => {
 
   it("does not inspect the first workspace when an explicit fleet has no owner", async () => {
     await buildStatusAllReportData({
+      ...createStatusGatewayProbeBudget(),
       overview: {
         cfg: {
           agents: {

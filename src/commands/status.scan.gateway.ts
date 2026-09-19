@@ -7,7 +7,10 @@ import { callGateway, isImplicitLocalGatewayTarget } from "../gateway/call.js";
 import { resolveOsSummary } from "../infra/os-summary.js";
 import { resolveMemoryPluginStatus } from "../status/memory-plugin.js";
 import type { StatusSummary } from "../status/summary.js";
-import { resolveStatusGatewayProbeTimeoutMs } from "./status.gateway-probe-budget.js";
+import {
+  resolveStatusGatewayProbeTimeoutMs,
+  type StatusGatewayProbeBudget,
+} from "./status.gateway-probe-budget.js";
 import { buildStatusScanResult, type StatusJsonScanResult } from "./status.scan-result.js";
 import {
   buildColdStartStatusSummary,
@@ -16,10 +19,11 @@ import {
 import { resolveGatewayProbeSnapshot, type GatewayProbeSnapshot } from "./status.scan.shared.js";
 
 /** The running Gateway owns fleet admission and status; local discovery is the offline fallback. */
-export async function scanStatusJsonGateway(opts: {
-  timeoutMs?: number;
-  all?: boolean;
-}): Promise<{ scan?: StatusJsonScanResult; gatewaySnapshot?: GatewayProbeSnapshot }> {
+export async function scanStatusJsonGateway(
+  opts: StatusGatewayProbeBudget & {
+    all?: boolean;
+  },
+): Promise<{ scan?: StatusJsonScanResult; gatewaySnapshot?: GatewayProbeSnapshot }> {
   const env = process.env;
   const configPath = resolveConfigPath(env);
   if (!existsSync(configPath)) {
@@ -46,7 +50,7 @@ export async function scanStatusJsonGateway(opts: {
   const status = await measureCliCommandStartup(
     "status.gateway-projection",
     () => {
-      const timeoutMs = resolveStatusGatewayProbeTimeoutMs({ ...opts, ...gatewaySnapshot });
+      const timeoutMs = resolveStatusGatewayProbeTimeoutMs(opts);
       if (timeoutMs === 0) {
         projectionError = "Gateway probe budget exhausted before status projection.";
         return Promise.resolve(null);

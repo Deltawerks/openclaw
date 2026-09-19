@@ -45,7 +45,7 @@ export async function resolveStatusUsageSummary(params: StatusUsageSummaryOption
 export async function resolveStatusGatewayHealth(params: {
   config: OpenClawConfig;
   timeoutMs?: number;
-  gatewayProbeDeadlineMs?: number;
+  gatewayProbeDeadlineMs: number;
 }) {
   const { callGateway } = await gatewayCallModuleLoader.load();
   const timeoutMs = resolveStatusGatewayProbeTimeoutMs(params);
@@ -64,7 +64,7 @@ export async function resolveStatusGatewayHealth(params: {
 export async function resolveStatusGatewayHealthSafe(params: {
   config: OpenClawConfig;
   timeoutMs?: number;
-  gatewayProbeDeadlineMs?: number;
+  gatewayProbeDeadlineMs: number;
   gatewayReachable: boolean;
   gatewayProbeError?: string | null;
   callOverrides?: {
@@ -97,7 +97,7 @@ export type StatusGatewayDiagnosticsResult = Result<unknown, string>;
 export async function resolveStatusGatewayDiagnosticsSafe(params: {
   config: OpenClawConfig;
   timeoutMs?: number;
-  gatewayProbeDeadlineMs?: number;
+  gatewayProbeDeadlineMs: number;
   gatewayReachable: boolean;
   type?: string;
   callOverrides?: {
@@ -130,7 +130,7 @@ export async function resolveStatusGatewayDiagnosticsSafe(params: {
 async function resolveStatusLastHeartbeat(params: {
   config: OpenClawConfig;
   timeoutMs?: number;
-  gatewayProbeDeadlineMs?: number;
+  gatewayProbeDeadlineMs: number;
   gatewayReachable: boolean;
 }) {
   if (!params.gatewayReachable) {
@@ -174,7 +174,7 @@ type StatusSecurityAudit = Awaited<ReturnType<typeof resolveStatusSecurityAudit>
 async function resolveStatusRuntimeDetails(params: {
   config: OpenClawConfig;
   timeoutMs?: number;
-  gatewayProbeDeadlineMs?: number;
+  gatewayProbeDeadlineMs: number;
   agentId?: string;
   usage?: boolean;
   deep?: boolean;
@@ -186,7 +186,7 @@ async function resolveStatusRuntimeDetails(params: {
   resolveHealth?: (input: {
     config: OpenClawConfig;
     timeoutMs?: number;
-    gatewayProbeDeadlineMs?: number;
+    gatewayProbeDeadlineMs: number;
   }) => Promise<StatusGatewayHealth>;
 }) {
   const resolveUsageSummary = params.resolveUsage ?? resolveStatusUsageSummary;
@@ -194,6 +194,7 @@ async function resolveStatusRuntimeDetails(params: {
   const usage = params.usage
     ? await resolveUsageSummary({
         timeoutMs: resolveStatusGatewayProbeTimeoutMs(params),
+        gatewayProbeDeadlineMs: params.gatewayProbeDeadlineMs,
         config: params.config,
         ...(params.agentId ? { agentId: params.agentId } : {}),
       })
@@ -247,7 +248,7 @@ export async function resolveStatusRuntimeSnapshot(params: {
   config: OpenClawConfig;
   sourceConfig: OpenClawConfig;
   timeoutMs?: number;
-  gatewayProbeDeadlineMs?: number;
+  gatewayProbeDeadlineMs: number;
   agentId?: string;
   usage?: boolean;
   deep?: boolean;
@@ -265,7 +266,7 @@ export async function resolveStatusRuntimeSnapshot(params: {
   resolveHealth?: (input: {
     config: OpenClawConfig;
     timeoutMs?: number;
-    gatewayProbeDeadlineMs?: number;
+    gatewayProbeDeadlineMs: number;
   }) => Promise<StatusGatewayHealth>;
 }) {
   const securityAudit = params.includeSecurityAudit

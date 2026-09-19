@@ -70,6 +70,7 @@ describe("checkGatewayHealth", () => {
   const cfg = {} as OpenClawConfig;
 
   beforeEach(() => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
     callGateway.mockReset();
     isGatewayCredentialsRequiredError.mockReset();
     isGatewayCredentialsRequiredError.mockReturnValue(false);
@@ -85,6 +86,7 @@ describe("checkGatewayHealth", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
 

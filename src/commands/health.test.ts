@@ -1,5 +1,5 @@
 // Health command tests cover gateway health probes, JSON output, and status formatting.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../cli/daemon-cli/diagnostic-readiness.js", () => ({
   waitForGatewayDiagnosticReadiness: vi.fn(async () => undefined),
@@ -152,6 +152,7 @@ function requireFirstGatewayRequest(): Record<string, unknown> {
 
 describe("healthCommand", () => {
   beforeEach(() => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
     vi.clearAllMocks();
     buildGatewayConnectionDetailsMock.mockReturnValue({
       message: TEST_GATEWAY_MESSAGE,
@@ -820,16 +821,30 @@ describe("healthCommand", () => {
     expect(probeGatewayStatusMock).not.toHaveBeenCalled();
   });
 
-  it.each([4000, 5000])(
-    "keeps the health RPC within the budget after %d ms of startup",
-    async (elapsedMs) => {
-      vi.mocked(waitForGatewayDiagnosticReadiness).mockResolvedValueOnce({
-        healthy: true,
-        waitOutcome: "healthy",
-        elapsedMs,
-        runtime: { status: "running", pid: 42 },
-        portUsage: { port: 18789, status: "busy", listeners: [{ pid: 42 }], hints: [] },
-        staleGatewayPids: [],
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    { elapsedMs: 4000, skipReadiness: false },
+    { elapsedMs: 5000, skipReadiness: false },
+    { elapsedMs: 4000, skipReadiness: true },
+    { elapsedMs: 5000, skipReadiness: true },
+  ])(
+    "charges target/auth preparation and readiness to one budget ($elapsedMs, $skipReadiness)",
+    async ({ elapsedMs, skipReadiness }) => {
+      vi.mocked(waitForGatewayDiagnosticReadiness).mockImplementationOnce(async () => {
+        vi.spyOn(performance, "now").mockReturnValue(elapsedMs);
+        return skipReadiness
+          ? undefined
+          : {
+              healthy: true,
+              waitOutcome: "healthy",
+              elapsedMs: 1000,
+              runtime: { status: "running", pid: 42 },
+              portUsage: { port: 18789, status: "busy", listeners: [{ pid: 42 }], hints: [] },
+              staleGatewayPids: [],
+            };
       });
       if (elapsedMs === 5000) {
         await expect(healthCommand({ timeoutMs: 5000, config: {} }, runtime)).rejects.toThrow(

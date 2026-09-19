@@ -62,16 +62,13 @@ function shouldUseConfiguredCodexSyntheticUsage(params: {
 export type StatusUsageSummaryOptions = {
   config: OpenClawConfig;
   timeoutMs?: number;
+  gatewayProbeDeadlineMs: number;
   agentId?: string;
   agentDir?: string;
 };
 
 /** Loads provider usage for status output from an explicit or ambient system-agent scope. */
 export async function resolveStatusUsageSummary(params: StatusUsageSummaryOptions) {
-  const budget = {
-    timeoutMs: params.timeoutMs,
-    gatewayProbeDeadlineMs: performance.now() + resolveStatusGatewayProbeTimeoutMs(params),
-  };
   const { loadProviderUsageSummary } = await providerUsageLoader.load();
   const rawAgentId = params.agentId?.trim();
   if (params.agentId !== undefined && !rawAgentId) {
@@ -91,7 +88,7 @@ export async function resolveStatusUsageSummary(params: StatusUsageSummaryOption
     agentDir = resolveAgentDir(params.config, resolvedAgentId);
   }
   const usage = await loadProviderUsageSummary({
-    timeoutMs: resolveStatusGatewayProbeTimeoutMs(budget),
+    timeoutMs: resolveStatusGatewayProbeTimeoutMs(params),
     config: params.config,
     agentDir,
   });
@@ -105,7 +102,7 @@ export async function resolveStatusUsageSummary(params: StatusUsageSummaryOption
     return usage;
   }
   const codexUsage = await loadProviderUsageSummary({
-    timeoutMs: resolveStatusGatewayProbeTimeoutMs(budget),
+    timeoutMs: resolveStatusGatewayProbeTimeoutMs(params),
     providers: ["openai"],
     auth: [buildCodexSyntheticUsageAuth()],
     config: params.config,

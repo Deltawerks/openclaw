@@ -1,7 +1,8 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createEmptyTaskAuditSummary } from "../tasks/task-registry.audit.shared.js";
 import { createEmptyTaskRegistrySummary } from "../tasks/task-registry.summary.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { createStatusGatewayProbeBudget } from "./status.gateway-probe-budget.js";
 import { scanStatusJsonFast } from "./status.scan.fast-json.js";
 
 const mocks = vi.hoisted(() => ({
@@ -52,6 +53,7 @@ vi.mock("../cli/daemon-cli/diagnostic-readiness.js", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(performance, "now").mockReturnValue(0);
   mocks.waitForGatewayDiagnosticReadiness.mockReset();
   mocks.fullConfigReads = 0;
   mocks.probeGateway.mockResolvedValue({
@@ -66,6 +68,10 @@ beforeEach(() => {
     presence: [],
     configSnapshot: null,
   });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 it.each([
@@ -142,24 +148,22 @@ it.each([
           sessions: { ...summary.sessions, count: 99 },
         });
 
-        const clock = readinessElapsedMs
-          ? vi.spyOn(performance, "now").mockReturnValue(0)
-          : undefined;
-        if (clock) {
-          mocks.waitForGatewayDiagnosticReadiness.mockResolvedValue({
-            healthy: true,
-            elapsedMs: readinessElapsedMs,
-            waitOutcome: "healthy",
+        const clock = vi.spyOn(performance, "now");
+        if (readinessElapsedMs) {
+          mocks.waitForGatewayDiagnosticReadiness.mockImplementationOnce(async () => {
+            clock.mockReturnValue(readinessElapsedMs);
+            return { healthy: true, elapsedMs: readinessElapsedMs, waitOutcome: "healthy" };
           });
           mocks.probeGateway.mockImplementationOnce(async () => {
-            clock.mockReturnValue(1000);
+            clock.mockReturnValue(readinessElapsedMs + 1000);
             return { ok: true, connectLatencyMs: 1, error: null, status: null, presence: [] };
           });
         }
-        const result = await scanStatusJsonFast(
-          {},
-          { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-        ).finally(() => clock?.mockRestore());
+        const result = await scanStatusJsonFast(createStatusGatewayProbeBudget(), {
+          log: vi.fn(),
+          error: vi.fn(),
+          exit: vi.fn(),
+        });
 
         expect(mocks.fullConfigReads).toBe(0);
         expect(mocks.localAgents).not.toHaveBeenCalled();
@@ -177,7 +181,7 @@ it.each([
           expect.objectContaining({
             method: "status",
             params: { includeChannelSummary: false, includeCliProjection: true },
-            ...(readinessElapsedMs ? { timeoutMs: 37_000 } : {}),
+            timeoutMs: readinessElapsedMs ? 37_000 : 60_000,
           }),
         );
       },
@@ -211,7 +215,11 @@ it("keeps offline config diagnostics and local collection", async () => {
       mocks.localAgents.mockResolvedValue({ agentStatus: local, sessionStores: undefined });
       mocks.localSummary.mockResolvedValue({ sessions: { count: 4 }, heartbeat: { agents: [] } });
 
-      const result = await scanStatusJsonFast({}, { log: vi.fn(), error: vi.fn(), exit: vi.fn() });
+      const result = await scanStatusJsonFast(createStatusGatewayProbeBudget(), {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn(),
+      });
 
       expect(mocks.fullConfigReads).toBe(1);
       expect(mocks.localAgents).toHaveBeenCalledOnce();

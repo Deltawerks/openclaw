@@ -337,6 +337,8 @@ type GatewayRestartWaitOptions = {
   attempts?: number;
   delayMs?: number;
   timeoutMs?: number;
+  /** Absolute performance.now() deadline supplied by a longer diagnostic operation. */
+  deadlineMs?: number;
   settle?: { probes: number };
   env?: NodeJS.ProcessEnv;
   expectedVersion?: string | null;
@@ -374,17 +376,41 @@ export async function waitForGatewayHealthyRestart(
     }),
   };
   const startedAtMs = performance.now();
+  const remainingDeadlineMs =
+    params.deadlineMs === undefined ? undefined : Math.max(0, params.deadlineMs - startedAtMs);
+  const timeoutMs =
+    remainingDeadlineMs === undefined
+      ? params.timeoutMs
+      : Math.min(params.timeoutMs ?? remainingDeadlineMs, remainingDeadlineMs);
+  if (remainingDeadlineMs === 0) {
+    return withWaitContext(
+      {
+        runtime: { status: "unknown" },
+        portUsage: { port: params.port, status: "unknown", listeners: [], hints: [] },
+        healthy: false,
+        staleGatewayPids: [],
+        probeError: "Gateway readiness budget exhausted.",
+      },
+      "timeout",
+      0,
+    );
+  }
   const attempts = params.attempts ?? DEFAULT_RESTART_HEALTH_ATTEMPTS;
   const delayMs = params.delayMs ?? DEFAULT_RESTART_HEALTH_DELAY_MS;
   const settleProbes = Math.max(1, params.settle?.probes ?? 1);
-  const settleDurationMs = (settleProbes - 1) * delayMs;
+  const settleDurationMs = Math.min(
+    (settleProbes - 1) * delayMs,
+    remainingDeadlineMs === undefined
+      ? Infinity
+      : Math.max(0, remainingDeadlineMs - (params.timeoutMs ?? remainingDeadlineMs)),
+  );
   // A longer update budget must not make an old heartbeat count as fresh progress.
   const progressWindowMs = attempts * delayMs;
-  const standardDeadlineMs = params.timeoutMs ?? progressWindowMs;
+  const standardDeadlineMs = timeoutMs ?? progressWindowMs;
   const probeTimeoutMs = () =>
-    params.timeoutMs === undefined
+    timeoutMs === undefined
       ? undefined
-      : Math.max(1, params.timeoutMs + settleDurationMs - (performance.now() - startedAtMs));
+      : Math.max(1, timeoutMs + settleDurationMs - (performance.now() - startedAtMs));
   const updateInProgress = (params.env ?? process.env).OPENCLAW_UPDATE_IN_PROGRESS === "1";
 
   const probeContext =
@@ -483,7 +509,7 @@ export async function waitForGatewayHealthyRestart(
       // process earns the startup watchdog; later phases never reset its finite cap.
       updateStartupDeadlineMs ??= Math.max(standardDeadlineMs, STARTUP_MIGRATION_LEASE_TTL_MS);
     }
-    const boundedDeadlineMs = params.timeoutMs ?? updateStartupDeadlineMs;
+    const boundedDeadlineMs = timeoutMs ?? updateStartupDeadlineMs;
     // A managed settle streak needs a concrete process identity. Scheduled Tasks can
     // report running without exposing a PID, so Windows retains status-only proof.
     const healthy =
