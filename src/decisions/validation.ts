@@ -180,7 +180,7 @@ function exactKeys(left: object, right: object): boolean {
 
 /** Validate all answers before returning any; provider data never grants partial acceptance. */
 export function validateDecisionResult(
-  batch: DecisionBatch,
+  batch: Pick<DecisionBatch, "questions">,
   value: unknown,
 ): value is DecisionBatchResult {
   if (

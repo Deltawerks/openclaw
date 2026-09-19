@@ -126,25 +126,25 @@ Consumers call `api.runtime.decisions.evaluate(batch, { agentId?, purpose, rubri
 timeoutMs, signal })`. State and rubric entries are finite JSON. Choices preserve
 all offered labels and probabilities; the chosen label is the provider's decision
 and need not equal the largest rounded probability. Consumers choose whether to
-use that label or an explicit distribution policy. Ordered scores are fractional estimated
-zero-based positions, with index-aligned probabilities; Boolean answers carry
-`probabilityTrue`. The host validates the entire batch atomically: exact answer
+use that label or an explicit distribution policy. Ordered scores are fractional
+estimated zero-based positions, with index-aligned probabilities; Boolean answers
+carry `probabilityTrue`. The host validates the entire batch atomically: exact answer
 keys, finite probabilities in [0, 1], positive distribution mass, and scores within
 the submitted rubric. Reported probabilities may be rounded and need not sum
 exactly to one; scores need not equal the expectation of that rounded distribution.
 The host preserves those values. Consumers that require normalized weights must
-apply their own explicit policy. Provider confidence is a provider-specific metric, not calibrated
-correctness. Results include model, optional token usage, and local rubric and
-runtime-generation provenance.
+apply their own explicit policy. Provider confidence is a provider-specific metric,
+not calibrated correctness. Results include model, optional token usage, and local
+rubric and runtime-generation provenance.
 
 Set `agents.defaults.decisionModel` to an explicit `provider/model` reference.
 Unset or empty means off. `agents.entries.<id>.decisionModel` overrides the global
 default; an empty agent value disables decisions for that agent. There is no
 automatic conversational-model fallback. Selection makes the provider available
-to supported consumers. Consumers own their feature activation and evidence selection;
-provider configuration alone does not schedule background work. Evidence sent to the
-selected provider may incur its normal usage charges. Plugin disablement wins;
-installing a tool or credential alone does not select a provider. Vendor adapters
+to supported consumers. Consumers own their feature activation and evidence
+selection; provider configuration alone does not schedule background work. Evidence
+sent to the selected provider may incur its normal usage charges. Plugin disablement
+wins; installing a tool or credential alone does not select a provider. Vendor adapters
 own transport and model-specific translation; no vendor is a core dependency.
 
 The bundled [TypeSafe AI plugin](/plugins/typesafe) supplies a Jev adapter. It remains
@@ -160,10 +160,10 @@ vendor transport and prepared credential input. This does not make conversationa
 model credentials interchangeable with decision-provider credentials.
 
 The operator must enable and configure the provider plugin and select
-`agents.defaults.decisionModel` (or an agent override). Third-party plugins own their
-feature's activation, evidence
-selection, and permission to send that evidence. Having credentials alone must not activate
-background collection or spending.
+`agents.defaults.decisionModel` (or an agent override). Third-party plugins own
+their feature's activation, evidence selection, and permission to send that
+evidence. Having credentials alone must not activate background collection or
+spending.
 
 Call from a live plugin tool, hook, or other owned operation, carrying its
 cancellation signal:
@@ -206,10 +206,9 @@ same prepared-secret path whether the caller is built-in or third-party.
 
 The host admits at most four requests, with no queue and a five-second maximum.
 Consumers choose their own bounded deadlines and fallback policy.
-Three unhealthy responses open
-a ten-second circuit; recovery admits one trial. Retry-After is bounded to one
-minute. Auth errors latch until the prepared-secret or configuration generation
-changes. There are no host retries or health probes.
+Three unhealthy responses open a ten-second circuit; recovery admits one trial.
+Retry-After is bounded to one minute. Auth errors latch until the prepared-secret
+or configuration generation changes. There are no host retries or health probes.
 
 Caller cancellation and closed consumer authority reject: do not start fallback.
 Provider retirement returns unavailable while a live consumer can fall back.

@@ -1,5 +1,5 @@
-import { parseProviderModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 // Defines agent model selection schema fragments.
+import { parseProviderModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { z } from "zod";
 
 /** Decision providers require an explicit model; an empty value disables the role. */

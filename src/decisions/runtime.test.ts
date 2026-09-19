@@ -26,7 +26,7 @@ const batch: DecisionBatch = {
     truth: { type: "boolean" },
   },
 };
-const answer: ProviderDecisionOutcome = {
+const answer = {
   status: "ok",
   result: {
     model: "fixture-v1",
@@ -37,7 +37,7 @@ const answer: ProviderDecisionOutcome = {
     },
     usage: { inputTokens: 25, outputTokens: 4 },
   },
-};
+} satisfies ProviderDecisionOutcome;
 const config: OpenClawConfig = { agents: { defaults: { decisionModel: "fixture/fixture-v1" } } };
 const options = (): Parameters<DecisionRuntimeV1["evaluate"]>[1] => ({
   purpose: "test",
@@ -221,9 +221,6 @@ describe("registered decision capability", () => {
   ])(
     "preserves provider labels and independently rounded probability estimates: %j",
     async (probabilities) => {
-      if (answer.status !== "ok") {
-        throw new Error("fixture");
-      }
       const independent: ProviderDecisionOutcome = {
         status: "ok",
         result: {
@@ -378,9 +375,6 @@ describe("registered decision capability", () => {
 describe("numerical contract", () => {
   it("accepts only exact answer IDs and bounded rubric positions", () => {
     expect(validateDecisionBatch(batch)).toBe(true);
-    if (answer.status !== "ok") {
-      throw new Error("fixture");
-    }
     expect(validateDecisionResult(batch, answer.result)).toBe(true);
     expect(
       validateDecisionResult(batch, {
@@ -406,9 +400,6 @@ describe("numerical contract", () => {
     { yes: Number.POSITIVE_INFINITY, unclear: 0 },
     { yes: 1 },
   ])("rejects unusable probability estimates: %j", (probabilities) => {
-    if (answer.status !== "ok") {
-      throw new Error("fixture");
-    }
     expect(
       validateDecisionResult(batch, {
         ...answer.result,
@@ -524,9 +515,6 @@ describe("immutable finite JSON boundaries", () => {
     "rejects a hidden output %s before returning an incomplete success",
     async (field) => {
       const returned = structuredClone(answer);
-      if (returned.status !== "ok") {
-        throw new Error("fixture");
-      }
       if (field === "model") {
         Object.defineProperty(returned.result, "model", { enumerable: false });
       } else {
@@ -549,14 +537,18 @@ describe("immutable finite JSON boundaries", () => {
   it("uses an admitted snapshot even if caller or provider mutates its input", async () => {
     let finish!: () => void;
     const host = registered(async (input) => {
+      expect(input.state).toEqual({ evidence: "synthetic" });
       Reflect.deleteProperty(input.questions, "pick");
       await new Promise<void>((resolve) => {
         finish = resolve;
       });
+      expect(input.state).toEqual({ evidence: "synthetic" });
       return answer;
     });
-    const submitted = structuredClone(batch);
+    const submitted = { ...structuredClone(batch), state: { evidence: "synthetic" } };
     const pending = evaluateDecisionInRegistry(submitted, options(), host.registry, config);
+    expect(Object.hasOwn(submitted.questions, "pick")).toBe(true);
+    submitted.state.evidence = "caller mutation";
     Reflect.deleteProperty(submitted.questions, "rank");
     finish();
     expect(await pending).toMatchObject({ status: "ok" });
