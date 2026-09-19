@@ -5,6 +5,7 @@ import {
 } from "../state/agent-database-admission.js";
 import type { OpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { startGatewayPostAttachRuntime } from "./server-startup-post-attach.js";
+import { logGatewayReady } from "./server-startup-readiness.js";
 import type { GatewayStartupTrace } from "./server-startup-trace.js";
 import type { ReadinessChecker } from "./server/readiness.js";
 
@@ -64,6 +65,9 @@ export function expectCoreAgentDatabaseReadiness(
         reason: `Agent ${agentId} requires session identity migration.`,
       });
       recordAgentDatabaseAdmissions([refusal], { source: "startup", env: state.env });
+      const log = { info: vi.fn() };
+      logGatewayReady({ getReadiness, log });
+      expect(log.info).toHaveBeenCalledTimes(agentId === "worker" ? 1 : 0);
       expect(getReadiness()).toMatchObject(
         agentId === "worker"
           ? { ready: true, failing: [] }
