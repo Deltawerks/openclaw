@@ -1,5 +1,10 @@
 import type { ChatSendIntent } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import { shouldForwardModelCommandToServer } from "../../../../src/auto-reply/commands-registry.shared.js";
+import { isAbortTrigger } from "../../../../src/auto-reply/reply/abort-trigger-text.js";
+import {
+  captureChatWorkContext,
+  formatChatWorkContext,
+} from "../../../../src/chat/work-context.js";
 import { normalizeChatFollowUpModeOverride } from "../../app/settings.ts";
 import { t } from "../../i18n/index.ts";
 import type { ChatAttachment, HumanMention } from "../../lib/chat/chat-types.ts";
@@ -500,17 +505,21 @@ export async function handleSendChat(
     : replyTarget?.sourceMessageId?.trim() || undefined;
   const quotedMessage =
     replyTarget && !replyToId && !intent ? prependReplyQuote(message, replyTarget) : message;
-  // Ambient work context is only for a new model message, never a command, Goal,
-  // or queued-row edit (which already contains its original frozen context).
-  const workContext =
-    !intent && !isInlineEditSubmission && !userMessage.startsWith("/")
-      ? host.getWorkContext?.()
-      : undefined;
-  // The person's words lead. Session titles are derived from the first user
-  // message, so a leading reference block would title the conversation after
-  // the snapshot instead of what was actually asked.
-  const effectiveMessage = workContext ? `${quotedMessage}\n\n${workContext}` : quotedMessage;
-  // Annotation and fallback-reply context prepend text; appended work context does not shift tokens.
+  // Edits retain the original snapshot only while the edited text remains
+  // ordinary model input; commands and Goals never acquire ambient context.
+  const acceptsWorkContext =
+    !intent &&
+    !userMessage.startsWith("/") &&
+    !userMessage.startsWith("!") &&
+    !isAbortTrigger(quotedMessage);
+  const context = acceptsWorkContext
+    ? isInlineEditSubmission
+      ? inlineEdit.source.workContext
+      : host.getWorkContext?.()
+    : undefined;
+  const workContext = context ? captureChatWorkContext(context) : undefined;
+  const effectiveMessage = quotedMessage;
+  // Annotation and fallback-reply prefixes shift mentions; structured work context never does.
   const mentionOffset = quotedMessage.length - userMessage.length;
   const effectiveMentions = submitted.mentions?.map((mention) => ({
     profileId: mention.profileId,
@@ -523,7 +532,7 @@ export async function handleSendChat(
   const submitKey = chatSubmitKey(
     host,
     requestedEditId ? "queued-edit" : intent ? "goal" : "message",
-    effectiveMessage,
+    workContext ? `${effectiveMessage}\n\n${formatChatWorkContext(workContext)}` : effectiveMessage,
     attachmentsToSend,
     effectiveMentions,
   );
@@ -597,6 +606,7 @@ export async function handleSendChat(
       intent,
       expectedLeafEntryId,
       effectiveMentions,
+      workContext,
     );
     if (!submission) {
       return;

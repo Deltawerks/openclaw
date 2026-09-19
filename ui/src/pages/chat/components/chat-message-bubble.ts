@@ -37,6 +37,7 @@ import {
   renderMessageAttachment,
   renderOmittedMedia,
 } from "./chat-message-attachments.ts";
+import { renderMessageWorkContext } from "./chat-message-context.ts";
 import { renderMessageImages } from "./chat-message-images.ts";
 import type {
   ChatMessageRenderPreparation,
@@ -662,5 +663,6 @@ export function renderGroupedMessage(
           : nothing
       }
     </div>
+    ${renderMessageWorkContext(message)}
   `;
 }

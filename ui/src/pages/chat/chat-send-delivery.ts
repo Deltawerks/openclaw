@@ -313,6 +313,7 @@ async function sendQueuedChatMessage(
       : expectedLeafEntryId;
     const ack = await requestChatSend(host, {
       message,
+      workContext: prepared.workContext,
       mentions: submitted.mentions,
       attachments: attachments.length ? attachments : undefined,
       runId,
@@ -397,13 +398,12 @@ async function sendQueuedChatMessage(
           agentId: prepared.agentId,
         });
         const projectedMessage = buildLocalUserMessage({
+          ...prepared,
           text: message,
           mentions: submitted.mentions,
-          ...(attachments.length ? { attachments } : {}),
+          attachments,
           createdAt: startedAt,
           runId,
-          ...(prepared.replyToId ? { replyToId: prepared.replyToId } : {}),
-          ...(prepared.sender ? { sender: prepared.sender } : {}),
         });
         if (projectedMessage) {
           reduceChatSessionProjection(
