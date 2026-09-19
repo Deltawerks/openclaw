@@ -13,7 +13,6 @@ import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { resolveChatAgentId } from "./chat-agent-id.ts";
 import { resolveChatMessageAccess } from "./chat-message-access.ts";
 import { availableSidebarSlots, sidebarPanelDefinitions } from "./chat-pane-embedded-panels.ts";
-import { createReviewFixture, renderPanelFixture } from "./chat-pane-review.test-support.ts";
 import { createGatewayBrowserClientFixture } from "./chat-pane.test-support.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
@@ -33,12 +32,12 @@ import {
 } from "./components/chat-session-workspace.ts";
 import type { SidebarContent } from "./components/chat-sidebar-content-types.ts";
 import { renderChatThread } from "./components/chat-thread.ts";
-import "./components/chat-sidebar-region.runtime.ts";
 import {
   installTranscriptDomMocks,
   resetTranscriptTestDom,
   threadProps,
 } from "./components/chat-transcript.test-support.ts";
+import "./components/chat-sidebar-region.runtime.ts";
 import type { SessionDiscussionPanelConfig } from "./components/session-discussion-panel.ts";
 import {
   closeSlot,
@@ -49,6 +48,7 @@ import {
   setSidebarOpen,
   type SidebarLayout,
 } from "./sidebar-layout.ts";
+import { createReviewFixture, renderPanelFixture } from "./test-helpers/chat-pane-review.ts";
 
 function discussionSlots(discussionAvailable: boolean) {
   const discussion = {} as SessionDiscussionPanelConfig;

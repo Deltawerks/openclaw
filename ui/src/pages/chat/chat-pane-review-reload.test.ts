@@ -3,8 +3,8 @@ import { nothing, render } from "lit";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { loadSettings, patchSettings } from "../../app/settings.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
-import { createReviewFixture } from "./chat-pane-review.test-support.ts";
 import { setSidebarOpen } from "./sidebar-layout.ts";
+import { createReviewFixture } from "./test-helpers/chat-pane-review.ts";
 afterEach(() => document.body.replaceChildren());
 
 it("restores the selected task from saved Review layout after a fresh page mount", async () => {

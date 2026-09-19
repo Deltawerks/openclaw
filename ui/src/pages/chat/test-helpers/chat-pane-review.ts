@@ -1,29 +1,29 @@
 import { html, render, type LitElement } from "lit";
 import { onTestFinished, vi } from "vitest";
-import { createDeferred } from "../../../../test/helpers/promise.js";
-import type { SessionWorkspaceGetResult, SessionWorkspaceListResult } from "../../api/types.ts";
-import type { TaskSummary } from "../../lib/tasks/task-summary.ts";
-import { sidebarPanelDefinitions, sidebarPanelTemplates } from "./chat-pane-embedded-panels.ts";
-import { createChatPaneRails } from "./chat-pane-rails.ts";
-import { renderSidebarRegion } from "./chat-pane-sidebar-layout.ts";
+import { createDeferred } from "../../../../../test/helpers/promise.js";
+import type { SessionWorkspaceGetResult, SessionWorkspaceListResult } from "../../../api/types.ts";
+import type { TaskSummary } from "../../../lib/tasks/task-summary.ts";
+import { sidebarPanelDefinitions, sidebarPanelTemplates } from "../chat-pane-embedded-panels.ts";
+import { createChatPaneRails } from "../chat-pane-rails.ts";
+import { renderSidebarRegion } from "../chat-pane-sidebar-layout.ts";
 import {
   createGatewayBrowserClientFixture,
   createInitializationContext,
   createSessionCapabilityFixture,
-} from "./chat-pane.test-support.ts";
-import { createPageState } from "./chat-state-page.ts";
-import type { ChatProps } from "./chat-view.ts";
-import { createBackgroundTasksProps } from "./components/chat-background-tasks.ts";
-import { renderChatDetailSlot } from "./components/chat-detail-slot.ts";
+} from "../chat-pane.test-support.ts";
+import { createPageState } from "../chat-state-page.ts";
+import type { ChatProps } from "../chat-view.ts";
+import { createBackgroundTasksProps } from "../components/chat-background-tasks.ts";
+import { renderChatDetailSlot } from "../components/chat-detail-slot.ts";
 import {
   createSessionWorkspaceProps,
   renderSessionWorkspaceRail,
-} from "./components/chat-session-workspace.ts";
-import { resetTaskDetail } from "./components/chat-task-detail-state.ts";
-import { threadProps } from "./components/chat-transcript.test-support.ts";
-import type { SidebarLayout, SidebarSlotId } from "./sidebar-layout.ts";
-import "./components/chat-detail-panel.ts";
-import "./components/chat-sidebar-region.runtime.ts";
+} from "../components/chat-session-workspace.ts";
+import { resetTaskDetail } from "../components/chat-task-detail-state.ts";
+import { threadProps } from "../components/chat-transcript.test-support.ts";
+import type { SidebarLayout, SidebarSlotId } from "../sidebar-layout.ts";
+import "../components/chat-detail-panel.ts";
+import "../components/chat-sidebar-region.runtime.ts";
 
 export async function renderPanelFixture(
   mount: HTMLElement,
