@@ -208,7 +208,7 @@ export function createScopedSqliteReadOnlyWorker(
     retainLifetime?: boolean;
     retainOnOperationError?: boolean;
   },
-) {
+): ReturnType<typeof createSqliteReadOnlyWorkerSession> {
   const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sqliteReadOnly);
   return createSqliteReadOnlyWorkerSession({
     ...launch,
