@@ -8,7 +8,10 @@ import { createConfigIO } from "../../config/io.js";
 import { asResolvedSourceConfig, asRuntimeConfig } from "../../config/materialize.js";
 import { appendTranscriptEventsInTransaction } from "../../config/sessions/session-accessor.sqlite-transcript-store.js";
 import { readDaemonRuntimePin } from "../../daemon/runtime-pin-state.js";
-import { createPackageIntegrityReader } from "../../infra/package-update-integrity.js";
+import {
+  createPackageIntegrityReader,
+  type PackageLauncherFingerprint,
+} from "../../infra/package-update-integrity.js";
 import { createRetainedPackageSwap } from "../../infra/package-update-swap.test-support.js";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
@@ -477,6 +480,13 @@ it.each([
         original && serviceRoot
           ? await createPackageIntegrityReader().tree(serviceRoot)
           : undefined;
+      const unverifiedLauncher: PackageLauncherFingerprint = {
+        type: "file",
+        mode: "33188",
+        uid: "0",
+        gid: "0",
+        contents: "unverified",
+      };
       const executorFence = await executor.enter(root, { serviceRoot });
       return await continueMigratedUpdateInFreshProcess(
         {
@@ -500,8 +510,8 @@ it.each([
                   launcher: {
                     path: path.join(serviceRoot, "unverified-launcher"),
                     realPath: path.join(serviceRoot, "unverified-launcher"),
-                    fingerprint: "unverified",
-                    targetFingerprint: "unverified",
+                    fingerprint: unverifiedLauncher,
+                    targetFingerprint: unverifiedLauncher,
                   },
                   nodeIdentity: "unverified-original-service-fixture",
                 },

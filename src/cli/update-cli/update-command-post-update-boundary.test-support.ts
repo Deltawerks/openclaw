@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, it, vi, type Mock } from "vitest";
+import type { PackageLauncherFingerprint } from "../../infra/package-update-integrity.js";
 import {
   createManagedServiceIdentityFixture,
   finishSuccessfulPackageSwitch,
@@ -34,6 +35,13 @@ export function registerBoundaryFinalizationControls({
           JSON.stringify({ name: "openclaw", type: "module" }),
         );
         await fs.writeFile(path.join(home, "dist", "index.js"), "export {};\n");
+        const launcherFingerprint: PackageLauncherFingerprint = {
+          type: "file",
+          mode: "33188",
+          uid: "0",
+          gid: "0",
+          contents: "fixture",
+        };
         const original: OriginalManagedServiceRuntime = {
           root: home,
           nodeRunner: process.execPath,
@@ -49,8 +57,8 @@ export function registerBoundaryFinalizationControls({
           launcher: {
             path: "fixture",
             realPath: "fixture",
-            fingerprint: "fixture",
-            targetFingerprint: "fixture",
+            fingerprint: launcherFingerprint,
+            targetFingerprint: launcherFingerprint,
           },
           nodeIdentity: "fixture-node",
         };

@@ -5,6 +5,7 @@ import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js"
 import type {
   PackageDirectoryIdentity,
   PackageIntegrityFingerprint,
+  PackageLauncherFingerprint,
 } from "../../infra/package-update-integrity.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
@@ -80,6 +81,11 @@ export type OriginalManagedServiceRuntime = {
   packageIdentity: PackageDirectoryIdentity;
   packageFingerprint?: PackageIntegrityFingerprint;
   packageFingerprintWarning?: string;
-  launcher: { path: string; realPath: string; fingerprint: string; targetFingerprint: string };
+  launcher: {
+    path: string;
+    realPath: string;
+    fingerprint: PackageLauncherFingerprint;
+    targetFingerprint: PackageLauncherFingerprint;
+  };
   nodeIdentity: string;
 };
