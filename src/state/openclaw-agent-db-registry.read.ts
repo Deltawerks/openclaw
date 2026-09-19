@@ -7,9 +7,6 @@ import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.gene
 import { resolveOpenClawRegisteredAgentDatabasePath } from "./openclaw-state-db.paths.js";
 
 type OpenClawAgentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "agent_databases">;
-export type OpenClawAgentDatabaseRegistryReadResult =
-  | { status: "available"; entries: OpenClawRegisteredAgentDatabase[] }
-  | { status: "unavailable" };
 
 /** Read durable registrations from an already opened live or captured database. */
 export function readOpenClawAgentDatabaseRegistryRows(database: DatabaseSync, pathname: string) {

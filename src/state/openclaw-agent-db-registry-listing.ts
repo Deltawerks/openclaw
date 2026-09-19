@@ -9,12 +9,10 @@ import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-dat
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
   OPENCLAW_AGENT_SCHEMA_VERSION,
+  type OpenClawAgentDatabaseRegistryReadResult,
   type OpenClawRegisteredAgentDatabase,
 } from "./openclaw-agent-db-contract.js";
-import {
-  readRegisteredAgentDatabaseRows,
-  type OpenClawAgentDatabaseRegistryReadResult,
-} from "./openclaw-agent-db-registry.read.js";
+import { readRegisteredAgentDatabaseRows } from "./openclaw-agent-db-registry.read.js";
 import {
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync,
   withExistingOpenClawStateDatabaseReadOnly,

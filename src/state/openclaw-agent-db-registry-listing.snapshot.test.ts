@@ -7,7 +7,7 @@ import {
   withStateDatabaseCoordinatorRuntimeDirectory,
 } from "../infra/state-database-coordinator.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
-import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-db-registry.read.js";
+import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-db-contract.js";
 
 const mocks = vi.hoisted(() => ({
   assertCurrent: vi.fn<() => void>(),

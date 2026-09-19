@@ -5,16 +5,15 @@ import {
   type OpenClawAgentDatabaseReadCandidateResource,
 } from "../../state/openclaw-agent-db-resources.js";
 import { resolveSessionStorePathCore } from "./paths.js";
-import type { SessionStoreTargetInventoryRequest } from "./session-store-target-inventory.js";
 
 export type CapturedSessionStorePaths = ReadonlyMap<
   string,
   { configured: string; default: string }
 >;
 
-export function measureSessionStoreTargetInventoryInputBytes(
-  request: SessionStoreTargetInventoryRequest,
-): number {
+export function measureSessionStoreTargetInventoryInputBytes(request: {
+  paths: CapturedSessionStorePaths;
+}): number {
   let bytes = JSON.stringify(request).length * 2;
   // JSON omits Map entries; retain the pool's UTF-16 string charge for captured paths.
   for (const [agentId, paths] of request.paths) {
