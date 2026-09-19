@@ -3,7 +3,7 @@ import { loadOfficialExternalChannelSecretContractApi } from "./official-externa
 import { createResolverContext } from "./runtime-shared.js";
 
 describe("official external channel secret contracts", () => {
-  it("collects active QQBot root and account SecretRefs for Tencent 2.0.1", () => {
+  it("binds active QQBot SecretRefs to their exact account owners", () => {
     const config = {
       channels: {
         qqbot: {
@@ -37,7 +37,7 @@ describe("official external channel secret contracts", () => {
         ownerContractDigest: expect.any(String),
       }),
       expect.objectContaining({
-        path: "channels.qqbot.accounts.Named.Team.clientSecret",
+        path: 'channels.qqbot.accounts["Named.Team"].clientSecret',
         ownerKind: "account",
         ownerId: "qqbot:named-team",
         requiredForGateway: false,
@@ -49,65 +49,6 @@ describe("official external channel secret contracts", () => {
     context.assignments[1]?.apply("resolved-named-secret");
     expect(config.channels.qqbot.clientSecret).toBe("resolved-root-secret");
     expect(config.channels.qqbot.accounts["Named.Team"].clientSecret).toBe("resolved-named-secret");
-  });
-
-  it("keeps each account owner contract independent of unrelated sibling credentials", () => {
-    const createConfig = () => ({
-      channels: {
-        qqbot: {
-          enabled: true,
-          appId: "root-app",
-          clientSecret: { source: "env" as const, provider: "default", id: "QQBOT_ROOT_SECRET" },
-          accounts: {
-            named: {
-              appId: "named-app",
-              clientSecret: {
-                source: "env" as const,
-                provider: "default",
-                id: "QQBOT_NAMED_SECRET",
-              },
-            },
-            sibling: {
-              appId: "sibling-app",
-              clientSecret: {
-                source: "env" as const,
-                provider: "default",
-                id: "QQBOT_SIBLING_SECRET",
-              },
-            },
-          },
-        },
-      },
-    });
-    const collectDigests = (config: ReturnType<typeof createConfig>) => {
-      const context = createResolverContext({ sourceConfig: config, env: {} });
-      loadOfficialExternalChannelSecretContractApi("qqbot")?.collectRuntimeConfigAssignments({
-        config,
-        defaults: undefined,
-        context,
-      });
-      return new Map(
-        context.assignments.map(({ ownerId, ownerContractDigest }) => [
-          ownerId,
-          ownerContractDigest,
-        ]),
-      );
-    };
-
-    const baseline = collectDigests(createConfig());
-    const changedSibling = createConfig();
-    changedSibling.channels.qqbot.accounts.sibling.appId = "different-sibling-app";
-    const siblingDigests = collectDigests(changedSibling);
-    expect(siblingDigests.get("qqbot:default")).toBe(baseline.get("qqbot:default"));
-    expect(siblingDigests.get("qqbot:named")).toBe(baseline.get("qqbot:named"));
-    expect(siblingDigests.get("qqbot:sibling")).not.toBe(baseline.get("qqbot:sibling"));
-
-    const changedRootCredential = createConfig();
-    changedRootCredential.channels.qqbot.clientSecret.id = "QQBOT_DIFFERENT_ROOT_SECRET";
-    const rootDigests = collectDigests(changedRootCredential);
-    expect(rootDigests.get("qqbot:default")).not.toBe(baseline.get("qqbot:default"));
-    expect(rootDigests.get("qqbot:named")).toBe(baseline.get("qqbot:named"));
-    expect(rootDigests.get("qqbot:sibling")).toBe(baseline.get("qqbot:sibling"));
   });
 
   it("uses QQBOT_APP_ID only for the default account and skips inactive credentials", () => {

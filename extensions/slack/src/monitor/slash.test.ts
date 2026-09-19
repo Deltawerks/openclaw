@@ -1,3 +1,5 @@
+import path from "node:path";
+import { WebClient } from "@slack/web-api";
 import type { ChatCommandDefinition } from "openclaw/plugin-sdk/command-auth-native";
 // Slack tests cover slash plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -18,6 +20,11 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import {
+  normalizeSessionDeliveryState,
+  upsertSessionEntry,
+} from "openclaw/plugin-sdk/session-store-runtime";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getSlackSlashMocks, resetSlackSlashMocks } from "./slash.test-harness.js";
 
@@ -110,14 +117,12 @@ const slashCommandFixtures = vi.hoisted(() => {
       choices: ["on", "off"],
     }),
   ];
-  const specs = commands.map(
-    (command): NativeCommandSpec => ({
-      name: command.nativeName!,
-      description: command.description,
-      acceptsArgs: true,
-      args: command.args,
-    }),
-  );
+  const specs = commands.map((command): NativeCommandSpec => ({
+    name: command.nativeName!,
+    description: command.description,
+    acceptsArgs: true,
+    args: command.args,
+  }));
   return {
     commandsByName: new Map(commands.map((command) => [command.nativeName!, command])),
     specs: [
@@ -135,26 +140,6 @@ const pluginCommandFixtures = vi.hoisted(() => ({
     }
   >,
 }));
-
-const retainNativeCatalog = vi.hoisted(() => vi.fn());
-
-vi.mock("openclaw/plugin-sdk/plugin-command-runtime", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("openclaw/plugin-sdk/plugin-command-runtime")>();
-  return {
-    ...actual,
-    createPluginCommandRuntime: () => {
-      const runtime = actual.createPluginCommandRuntime();
-      return {
-        ...runtime,
-        retainNativeCatalog: (provider: string) => {
-          retainNativeCatalog(provider);
-          runtime.retainNativeCatalog(provider);
-        },
-      };
-    },
-  };
-});
 
 const skillCommandFixtures = vi.hoisted(() => ({
   commands: [] as Array<{ name: string; skillName: string; description: string }>,
@@ -215,7 +200,6 @@ beforeEach(() => {
   clearRuntimeConfigSnapshot();
   resetSlackSlashMocks();
   clearPluginCommands();
-  retainNativeCatalog.mockClear();
 });
 
 afterEach(() => {
@@ -343,8 +327,9 @@ function createArgMenusHarness(
     isChannelAllowed: () => true,
     resolveChannelName: async () => ({ name: "dm", type: "im" }),
     resolveUserName: async () => ({ name: "Ada" }),
-  } as unknown;
+  };
 
+  Object.assign(ctx, { readRuntimeContext: async () => ctx, isRuntimePolicyCurrent: () => true });
   const account = {
     accountId: "acct",
     config: { commands: { native: true, nativeSkills: false } },
@@ -502,6 +487,8 @@ async function runArgMenuAction(
     userName?: string;
     channelId?: string;
     channelName?: string;
+    message?: { ts: string; thread_ts?: string };
+    container?: { message_ts: string; thread_ts?: string };
     respond?: ReturnType<typeof vi.fn>;
     includeRespond?: boolean;
   },
@@ -515,6 +502,8 @@ async function runArgMenuAction(
       user: { id: params.userId ?? "U1", name: params.userName ?? "Ada" },
       channel: { id: params.channelId ?? "C1", name: params.channelName ?? "directmessage" },
       trigger_id: "t1",
+      ...(params.message ? { message: params.message } : {}),
+      ...(params.container ? { container: params.container } : {}),
     },
   };
   if (includeRespond) {
@@ -637,6 +626,18 @@ describe("Slack native command argument menus", () => {
 
   beforeEach(() => {
     harness.postEphemeral.mockClear();
+    (harness.ctx as { dispatchReplyFromConfig?: unknown }).dispatchReplyFromConfig = undefined;
+  });
+
+  it("forwards the instance-bound reply dispatcher", async () => {
+    const dispatchReplyFromConfig = vi.fn();
+    (harness.ctx as { dispatchReplyFromConfig?: unknown }).dispatchReplyFromConfig =
+      dispatchReplyFromConfig;
+
+    await runCommandHandler(agentStatusHandler);
+
+    const { turnPlanMock } = getSlackSlashMocks();
+    expect(turnPlanMock).toHaveBeenCalledWith(expect.objectContaining({ dispatchReplyFromConfig }));
   });
 
   it("delivers native /login block replies before the command finishes", async () => {
@@ -815,7 +816,6 @@ describe("Slack native command argument menus", () => {
       ),
     ).toBe(true);
     expect(configuredHarness.commands.has("/usage")).toBe(false);
-    expect(retainNativeCatalog).not.toHaveBeenCalled();
   });
 
   it("does not register native argument handlers for a configured slash command", async () => {
@@ -857,9 +857,7 @@ describe("Slack native command argument menus", () => {
     const testHarness = createArgMenusHarness();
     const runtimeLog = vi.fn();
     const runtimeError = vi.fn();
-    (
-      testHarness.ctx as { runtime: { log: typeof runtimeLog; error: typeof runtimeError } }
-    ).runtime = { log: runtimeLog, error: runtimeError };
+    testHarness.ctx.runtime = { log: runtimeLog, error: runtimeError };
 
     await registerCommands(testHarness.ctx, testHarness.account);
 
@@ -872,8 +870,6 @@ describe("Slack native command argument menus", () => {
     );
     expect(runtimeLog).not.toHaveBeenCalled();
     expect(runtimeError).not.toHaveBeenCalled();
-    expect(retainNativeCatalog).toHaveBeenCalledOnce();
-    expect(retainNativeCatalog).toHaveBeenCalledWith("slack");
   });
 
   it("executes the exact selected plugin candidate with its native arguments", async () => {
@@ -935,7 +931,6 @@ describe("Slack native command argument menus", () => {
 
       expect(selectedDispatch).toEqual({ kind: "non-plugin" });
       expect(execute).not.toHaveBeenCalled();
-      expect(retainNativeCatalog).not.toHaveBeenCalled();
     },
   );
 
@@ -1042,7 +1037,7 @@ describe("Slack native command argument menus", () => {
   it("falls back to static menus when app.options() throws during registration", async () => {
     const testHarness = createArgMenusHarness();
     const runtimeLog = vi.fn();
-    (testHarness.ctx as { runtime: { log: typeof runtimeLog } }).runtime = { log: runtimeLog };
+    testHarness.ctx.runtime = { log: runtimeLog };
     testHarness.app.options = () => {
       throw new Error("Cannot read properties of undefined (reading 'listeners')");
     };
@@ -1162,12 +1157,12 @@ describe("Slack native command argument menus", () => {
     expect(element).toHaveProperty("confirm");
   });
 
-  it("escapes mrkdwn characters in confirm dialog text", async () => {
+  it("escapes only entities in confirm dialog text", async () => {
     const element = (await getFirstActionElementFromCommand(unsafeConfirmHandler)) as
       | { confirm?: { text?: { text?: string } } }
       | undefined;
     expect(element?.confirm?.text?.text).toContain(
-      "Run */unsafeconfirm* with *mode\\_\\*\\`\\~&lt;&amp;&gt;* set to this value?",
+      "Run */unsafeconfirm* with *mode_*`~&lt;&amp;&gt;* set to this value?",
     );
   });
 
@@ -1223,17 +1218,28 @@ describe("Slack native command argument menus", () => {
     expect(firstDispatchArg().ctx?.OriginatingTo).toBe("team:TGRID1:user:U1");
   });
 
-  it("does not apply the response_url call cap to Web API action replies", async () => {
+  it.each([
+    { name: "top-level", message: undefined, threadTs: undefined },
+    {
+      name: "threaded",
+      message: { ts: "171.222", thread_ts: "170.111" },
+      threadTs: "170.111",
+    },
+  ])("does not cap $name Web API action replies", async ({ message, threadTs }) => {
     mockSixDispatchedReplies();
 
     await runArgMenuAction(argMenuHandler, {
       action: {
         value: encodeValue({ command: "usage", arg: "mode", value: "tokens", userId: "U1" }),
       },
+      message,
       includeRespond: false,
     });
 
     expect(harness.postEphemeral).toHaveBeenCalledTimes(6);
+    for (const [payload] of harness.postEphemeral.mock.calls) {
+      expect(payload.thread_ts).toBe(threadTs);
+    }
   });
 
   it("keeps table fallback tokens literal in Web API action replies", async () => {
@@ -1280,6 +1286,7 @@ describe("Slack native command argument menus", () => {
       action: {
         value: encodeValue({ command: "usage", arg: "mode", value: "tokens", userId: "U1" }),
       },
+      message: { ts: "171.222", thread_ts: "170.111" },
     });
 
     expect(respond).toHaveBeenCalledTimes(5);
@@ -1488,17 +1495,37 @@ describe("Slack native command argument menus", () => {
     expect(trackEvent).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to postEphemeral with token when respond is unavailable", async () => {
-    await runArgMenuAction(argMenuHandler, {
-      action: { value: "garbage" },
-      includeRespond: false,
-    });
+  it.each([
+    { name: "a top-level action", message: undefined, container: undefined, threadTs: undefined },
+    {
+      name: "the action container's parent thread",
+      message: { ts: "171.222", thread_ts: "169.999" },
+      container: { message_ts: "171.222", thread_ts: "170.111" },
+      threadTs: "170.111",
+    },
+    {
+      name: "the action message's parent thread",
+      message: { ts: "171.222", thread_ts: "170.111" },
+      container: { message_ts: "171.222" },
+      threadTs: "170.111",
+    },
+  ])(
+    "keeps $name when respond falls back to postEphemeral",
+    async ({ message, container, threadTs }) => {
+      await runArgMenuAction(argMenuHandler, {
+        action: { value: "garbage" },
+        message,
+        container,
+        includeRespond: false,
+      });
 
-    const payload = firstCallPayload(harness.postEphemeral, "postEphemeral");
-    expect(payload.token).toBe("bot-token");
-    expect(payload.channel).toBe("C1");
-    expect(payload.user).toBe("U1");
-  });
+      const payload = firstCallPayload(harness.postEphemeral, "postEphemeral");
+      expect(payload.token).toBe("bot-token");
+      expect(payload.channel).toBe("C1");
+      expect(payload.user).toBe("U1");
+      expect(payload.thread_ts).toBe(threadTs);
+    },
+  );
 
   it("treats malformed percent-encoding as an invalid button", async () => {
     await runArgMenuAction(argMenuHandler, {
@@ -1595,8 +1622,9 @@ function createPolicyHarness(overrides?: {
     resolveChannelName:
       overrides?.resolveChannelName ?? (async () => ({ name: channelName, type: "channel" })),
     resolveUserName: async () => ({ name: "Ada" }),
-  } as unknown;
+  };
 
+  Object.assign(ctx, { readRuntimeContext: async () => ctx, isRuntimePolicyCurrent: () => true });
   const account = { accountId: "acct", config: { commands: { native: false } } } as unknown;
 
   return {
@@ -1913,16 +1941,88 @@ describe("slack slash commands access groups", () => {
 });
 
 describe("slack slash command session metadata", () => {
+  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
   const { deliverSlackSlashRepliesMock, recordSessionMetaFromInboundMock, resolveAgentRouteMock } =
     getSlackSlashMocks();
 
-  it("refreshes slash routing config between invocations", async () => {
+  it("routes threaded native Stop to the ordinary DM parent after a policy reload", async () => {
+    const { createInboundSlackTestContext, createSlackTestAccount } =
+      await import("./message-handler/prepare.test-helpers.js");
+    const { createSlackCommandHandler } = await import("./slash.js");
+    const storePath = path.join(tempDirs.make("slack-threaded-stop-"), "sessions.sqlite");
+    const cfg: OpenClawConfig = {
+      session: { store: storePath },
+      channels: { slack: { dmPolicy: "open", allowFrom: ["*"] } },
+    };
+    setRuntimeConfigSnapshot(cfg, cfg);
+    const client = new WebClient("xoxb-synthetic");
+    vi.spyOn(client.conversations, "replies").mockResolvedValue({ ok: true, messages: [] });
+    const ctx = createInboundSlackTestContext({ cfg, appClient: client });
+    ctx.resolveChannelName = async () => ({ name: "directmessage", type: "im" });
+    ctx.resolveUserName = async () => ({ name: "Ada" });
+    ctx.runtime.error = vi.fn();
+    const handleCommand = createSlackCommandHandler({ ctx, account: createSlackTestAccount() });
+    await upsertSessionEntry({
+      agentId: "main",
+      storePath,
+      sessionKey: "agent:main:main",
+      entry: {
+        sessionId: "ordinary-dm",
+        updatedAt: Date.now(),
+        chatType: "direct",
+        delivery: normalizeSessionDeliveryState({
+          context: { channel: "slack", accountId: "default", to: "U1" },
+        }),
+      },
+    });
+    const reloaded: OpenClawConfig = {
+      ...cfg,
+      channels: { slack: { ...cfg.channels?.slack, textChunkLimit: 24 } },
+    };
+    setRuntimeConfigSnapshot(reloaded, reloaded);
+
+    const admitted = await handleCommand({
+      command: createSlashCommand({ channel_id: "D123" }),
+      threadTs: "170.111",
+      eventTs: "171.222",
+      builtInCommand: "stop",
+      prompt: "/stop",
+      ack: vi.fn(),
+      respond: vi.fn(),
+    });
+
+    expect(ctx.runtime.error).not.toHaveBeenCalled();
+    expect(admitted).toBe(true);
+    expect(dispatchMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        cfg: reloaded,
+        ctx: expect.objectContaining({
+          CommandBody: "/stop",
+          CommandTargetSessionKey: "agent:main:main",
+          MessageThreadId: "170.111",
+        }),
+      }),
+    );
+  });
+
+  it("refreshes slash routing and access policy between invocations", async () => {
     const harness = createPolicyHarness({
       channelId: "D123",
       channelName: "directmessage",
       resolveChannelName: async () => ({ name: "directmessage", type: "im" }),
     });
-    const sourceCfg = (harness.ctx as { cfg: OpenClawConfig }).cfg;
+    const { createInboundSlackTestContext } =
+      await import("./message-handler/prepare.test-helpers.js");
+    const sourceCfg: OpenClawConfig = {
+      ...harness.ctx.cfg,
+      channels: { slack: { dmPolicy: "open", allowFrom: ["*"] } },
+    };
+    setRuntimeConfigSnapshot(sourceCfg, sourceCfg);
+    const ctx = createInboundSlackTestContext({ cfg: sourceCfg, accountId: "acct" });
+    Object.assign(ctx.app, harness.ctx.app);
+    ctx.resolveChannelName = async () => ({ name: "directmessage", type: "im" });
+    ctx.resolveUserName = harness.ctx.resolveUserName;
+    ctx.slashCommand = harness.ctx.slashCommand;
     const runtimeCfg = {
       ...sourceCfg,
       session: { dmScope: "per-channel-peer" },
@@ -1935,7 +2035,7 @@ describe("slack slash command session metadata", () => {
           ? "agent:main:slack:direct:U1"
           : "agent:main:main",
     }));
-    await registerCommands(harness.ctx, harness.account);
+    await registerCommands(ctx, harness.account);
 
     await runSlashHandler({
       commands: harness.commands,
@@ -1967,6 +2067,16 @@ describe("slack slash command session metadata", () => {
         }),
       }),
     );
+    const disabled: OpenClawConfig = {
+      ...runtimeCfg,
+      channels: { slack: { dmPolicy: "disabled" } },
+    };
+    setRuntimeConfigSnapshot(disabled, disabled);
+    await runSlashHandler({
+      commands: harness.commands,
+      command: { channel_id: harness.channelId, channel_name: harness.channelName },
+    });
+    expect(dispatchMock).toHaveBeenCalledTimes(2);
   });
 
   it("calls recordSessionMetaFromInbound after dispatching a slash command", async () => {

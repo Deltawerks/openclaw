@@ -6,6 +6,7 @@ import {
   getOfficialExternalPluginCatalogManifest,
   listOfficialExternalChannelCatalogEntries,
 } from "../plugins/official-external-plugin-catalog.js";
+import { appendConfigPathSegment } from "../shared/dot-path.js";
 import {
   createChannelAccountSecretOwner,
   createChannelSecretTargetRegistryEntries,
@@ -130,7 +131,7 @@ export function loadOfficialExternalChannelSecretContractApi(
           }
           collectSecretInputAssignment({
             value: account[field.field],
-            path: `channels.${contract.channelId}.accounts.${accountId}.${field.field}`,
+            path: `${appendConfigPathSegment(`channels.${contract.channelId}.accounts`, accountId)}.${field.field}`,
             expected: "string",
             defaults,
             context,
@@ -149,10 +150,7 @@ export function loadOfficialExternalChannelSecretContractApi(
               accountId,
               channel,
               account,
-              {
-                channel: sharedChannel,
-                account,
-              },
+              { channel: sharedChannel, account },
             ),
             apply: (value) => {
               account[field.field] = value;

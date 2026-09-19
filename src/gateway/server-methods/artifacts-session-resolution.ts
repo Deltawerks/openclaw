@@ -1,5 +1,9 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import {
+  ErrorCodes,
+  errorShape,
+  type ArtifactsListParams,
+} from "../../../packages/gateway-protocol/src/index.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -14,6 +18,7 @@ import { resolveSessionKeyForRun } from "../server-session-key.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import {
   authorizeIncognitoSessionTarget,
+  createSessionListEntryFilter,
   resolveSessionSharingTarget,
 } from "../session-sharing.js";
 import {
@@ -22,12 +27,7 @@ import {
 } from "../session-store-key.js";
 import type { GatewayClient } from "./types.js";
 
-export type ArtifactQuery = {
-  sessionKey?: string;
-  runId?: string;
-  taskId?: string;
-  agentId?: string;
-};
+export type ArtifactQuery = ArtifactsListParams;
 
 type ResolvedArtifactSession = {
   sessionKey: string;
@@ -169,20 +169,25 @@ export function resolveAuthorizedArtifactSession(
   if (!resolved) {
     return undefined;
   }
+  const target = resolveSessionSharingTarget({
+    cfg: cfg ?? {},
+    sessionKey: resolved.sessionKey,
+    agentId: resolved.agentId,
+  });
   const error = authorizeIncognitoSessionTarget({
     client,
     sessionKey: query.sessionKey ?? resolved.sessionKey,
-    target: resolveSessionSharingTarget({
-      cfg: cfg ?? {},
-      sessionKey: resolved.sessionKey,
-      agentId: resolved.agentId,
-    }),
+    target,
   });
-  if (!error) {
+  const visibilityDenied = Boolean(
+    target &&
+    createSessionListEntryFilter({ client, cfg })?.(target.storeKey, target.entry) === false,
+  );
+  if (!error && !visibilityDenied) {
     return resolved;
   }
   throw new ArtifactSessionResolutionError(
-    query.sessionKey
+    query.sessionKey && error
       ? error
       : errorShape(ErrorCodes.INVALID_REQUEST, "no session found for artifact query", {
           details: { type: "artifact_scope_not_found" },

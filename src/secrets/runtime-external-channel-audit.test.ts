@@ -3,6 +3,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import type { PluginOrigin } from "../plugins/plugin-origin.types.js";
 import { getPath } from "./path-utils.js";
 import {
@@ -13,22 +14,21 @@ import { activateSecretsRuntimeSnapshot } from "./runtime.js";
 
 const {
   getBootstrapChannelSecretsMock,
-  loadBundledPluginPublicArtifactModuleSyncMock,
+  loadBundledPublicArtifactMock,
   loadPluginMetadataSnapshotMock,
 } = vi.hoisted(() => ({
   getBootstrapChannelSecretsMock: vi.fn(),
-  loadBundledPluginPublicArtifactModuleSyncMock: vi.fn(),
+  loadBundledPublicArtifactMock: vi.fn(),
   loadPluginMetadataSnapshotMock: vi.fn(),
 }));
 
-vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
-  loadPluginMetadataSnapshot: loadPluginMetadataSnapshotMock,
+vi.mock("../plugins/plugin-metadata-snapshot.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/plugin-metadata-snapshot.js")>()),
+  loadPluginMetadataSnapshot: (params: unknown) =>
+    createPluginMetadataSnapshotFixture(loadPluginMetadataSnapshotMock(params)),
   resolvePluginMetadataSnapshot: (params: unknown) => {
     const snapshot = loadPluginMetadataSnapshotMock(params) as { plugins: PluginManifestRecord[] };
-    return {
-      ...snapshot,
-      manifestRegistry: { plugins: snapshot.plugins, diagnostics: [] },
-    };
+    return createPluginMetadataSnapshotFixture({ plugins: snapshot.plugins });
   },
   listPluginOriginsFromMetadataSnapshot: (snapshot: {
     plugins: Array<{ id: string; origin: PluginOrigin }>;
@@ -36,7 +36,7 @@ vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
 }));
 
 vi.mock("../plugins/public-surface-loader.js", () => ({
-  loadBundledPluginPublicArtifactModuleSync: loadBundledPluginPublicArtifactModuleSyncMock,
+  loadBundledPluginPublicArtifactModuleFromCandidatesSync: loadBundledPublicArtifactMock,
 }));
 
 vi.mock("../channels/plugins/bootstrap-registry.js", () => ({
@@ -65,6 +65,23 @@ type ExternalizedChannelId = (typeof EXTERNALIZED_CHANNEL_IDS)[number];
 
 function ref(id: string) {
   return { source: "env", provider: "default", id };
+}
+
+function createQqBotConfig(accountId = "work") {
+  return {
+    channels: {
+      qqbot: {
+        appId: "qqbot-default-app",
+        clientSecret: ref("QQBOT_DEFAULT_SECRET"),
+        accounts: {
+          [accountId]: {
+            appId: "qqbot-named-app",
+            clientSecret: ref("QQBOT_NAMED_SECRET"),
+          },
+        },
+      },
+    },
+  };
 }
 
 function inactiveExecRef(id: string) {
@@ -100,14 +117,15 @@ function externalChannelOrigins(records: readonly PluginManifestRecord[]) {
 }
 
 function mockBundledPublicArtifactMiss() {
-  loadBundledPluginPublicArtifactModuleSyncMock.mockImplementation(
-    (params: { dirName: string; artifactBasename: string }) => {
-      if (params.dirName === "googlechat" && params.artifactBasename === "secret-contract-api.js") {
+  loadBundledPublicArtifactMock.mockImplementation(
+    (params: { dirName: string; artifactCandidates: string[] }) => {
+      if (
+        params.dirName === "googlechat" &&
+        params.artifactCandidates[0] === "secret-contract-api.js"
+      ) {
         return createGoogleChatSecretContractApi();
       }
-      throw new Error(
-        `Unable to resolve bundled plugin public surface ${params.dirName}/${params.artifactBasename}`,
-      );
+      return null;
     },
   );
 }
@@ -203,13 +221,13 @@ function expectMetadataBackedContractsWereUsed(
     expect(loadPluginMetadataSnapshotMock).toHaveBeenCalled();
   }
   for (const channelId of channelIds) {
-    expect(loadBundledPluginPublicArtifactModuleSyncMock).toHaveBeenCalledWith({
+    expect(loadBundledPublicArtifactMock).toHaveBeenCalledWith({
       dirName: channelId,
-      artifactBasename: "secret-contract-api.js",
+      artifactCandidates: ["secret-contract-api.js"],
     });
-    expect(loadBundledPluginPublicArtifactModuleSyncMock).not.toHaveBeenCalledWith({
+    expect(loadBundledPublicArtifactMock).not.toHaveBeenCalledWith({
       dirName: channelId,
-      artifactBasename: "contract-api.js",
+      artifactCandidates: ["contract-api.js"],
     });
   }
 }
@@ -224,7 +242,7 @@ describe("secrets runtime externalized channel SecretRef audit", () => {
   beforeEach(() => {
     getBootstrapChannelSecretsMock.mockReset();
     getBootstrapChannelSecretsMock.mockReturnValue(undefined);
-    loadBundledPluginPublicArtifactModuleSyncMock.mockReset();
+    loadBundledPublicArtifactMock.mockReset();
     mockBundledPublicArtifactMiss();
     loadPluginMetadataSnapshotMock.mockReset();
   });
@@ -630,73 +648,121 @@ describe("secrets runtime externalized channel SecretRef audit", () => {
     expectMetadataBackedContractsWereUsed(["feishu"]);
   });
 
-  it.each([
-    {
-      label: "default",
-      missingId: "QQBOT_MISSING_DEFAULT_SECRET",
-      missingPath: "channels.qqbot.clientSecret",
-      missingOwner: "qqbot:default",
-      healthyPath: "channels.qqbot.accounts.Operations-Team.clientSecret",
-      healthyOwner: "qqbot:operations-team",
-      healthyEnv: { QQBOT_NAMED_SECRET: "healthy-named-secret" },
-    },
-    {
-      label: "named",
-      missingId: "QQBOT_MISSING_NAMED_SECRET",
-      missingPath: "channels.qqbot.accounts.Operations-Team.clientSecret",
-      missingOwner: "qqbot:operations-team",
-      healthyPath: "channels.qqbot.clientSecret",
-      healthyOwner: "qqbot:default",
-      healthyEnv: { QQBOT_DEFAULT_SECRET: "healthy-default-secret" },
-    },
-  ])(
-    "isolates only a missing $label QQBot account while its sibling stays healthy",
-    async (testCase) => {
+  it.each(["default", "named"] as const)(
+    "isolates a missing QQBot %s ref without replacing it or blocking its sibling",
+    async (missingAccount) => {
       const records = configureExternalChannelRecords(["qqbot"]);
-      const missingRef = ref(testCase.missingId);
+      const namedId = missingAccount === "named" ? "Named.Team" : "work";
+      const config = createQqBotConfig(namedId);
+      const defaultPath = ["channels", "qqbot", "clientSecret"];
+      const namedPath = ["channels", "qqbot", "accounts", namedId, "clientSecret"];
+      const missingPath = missingAccount === "default" ? defaultPath : namedPath;
+      const healthyPath = missingAccount === "default" ? namedPath : defaultPath;
+      const missingRef = getPath(config, missingPath);
+      const missingOwner = `qqbot:${missingAccount === "default" ? "default" : "named-team"}`;
+      const healthyOwner = `qqbot:${missingAccount === "default" ? "work" : "default"}`;
       const snapshot = await prepareSecretsRuntimeSnapshot({
-        config: asConfig({
-          channels: {
-            qqbot: {
-              appId: "qqbot-default-app",
-              clientSecret: testCase.label === "default" ? missingRef : ref("QQBOT_DEFAULT_SECRET"),
-              accounts: {
-                "Operations-Team": {
-                  appId: "qqbot-operations-app",
-                  clientSecret: testCase.label === "named" ? missingRef : ref("QQBOT_NAMED_SECRET"),
-                },
-              },
-            },
-          },
-        }),
+        config: asConfig(config),
         env: {
-          ...testCase.healthyEnv,
-          QQBOT_CLIENT_SECRET: "must-never-replace-an-explicit-secret-ref",
+          [missingAccount === "default" ? "QQBOT_NAMED_SECRET" : "QQBOT_DEFAULT_SECRET"]:
+            "synthetic-healthy-secret",
+          QQBOT_CLIENT_SECRET: "synthetic-env-fallback-must-not-win",
         },
         includeAuthStoreRefs: false,
         allowUnavailableSecretOwners: true,
         loadablePluginOrigins: externalChannelOrigins(records),
       });
 
-      expect(getPath(snapshot.config, testCase.missingPath.split("."))).toEqual(missingRef);
-      expect(getPath(snapshot.config, testCase.healthyPath.split("."))).toBe(
-        Object.values(testCase.healthyEnv)[0],
-      );
+      expect(getPath(snapshot.config, missingPath)).toEqual(missingRef);
+      expect(getPath(snapshot.config, healthyPath)).toBe("synthetic-healthy-secret");
       expect(snapshot.degradedOwners).toEqual([
         expect.objectContaining({
           ownerKind: "account",
-          ownerId: testCase.missingOwner,
+          ownerId: missingOwner,
           state: "unavailable",
           degradationState: "cold",
-          paths: [testCase.missingPath],
+          paths: [
+            missingAccount === "default"
+              ? "channels.qqbot.clientSecret"
+              : 'channels.qqbot.accounts["Named.Team"].clientSecret',
+          ],
         }),
       ]);
       activateSecretsRuntimeSnapshot(snapshot);
-      expect(() => assertSecretOwnerAvailable("account", testCase.missingOwner)).toThrow(
+      expect(() => assertSecretOwnerAvailable("account", missingOwner)).toThrow(
         "configured but unavailable",
       );
-      expect(() => assertSecretOwnerAvailable("account", testCase.healthyOwner)).not.toThrow();
+      expect(() => assertSecretOwnerAvailable("account", healthyOwner)).not.toThrow();
       expectMetadataBackedContractsWereUsed(["qqbot"]);
+    },
+  );
+
+  it.each(["default", "named"] as const)(
+    "retains stale QQBot %s credentials only while their own account contract is unchanged",
+    async (missingAccount) => {
+      const records = configureExternalChannelRecords(["qqbot"]);
+      const config = createQqBotConfig();
+      const prepare = (candidate: typeof config, env: NodeJS.ProcessEnv) =>
+        prepareSecretsRuntimeSnapshot({
+          config: asConfig(candidate),
+          env,
+          includeAuthStoreRefs: false,
+          allowUnavailableSecretOwners: true,
+          loadablePluginOrigins: externalChannelOrigins(records),
+        });
+      activateSecretsRuntimeSnapshot(
+        await prepare(config, {
+          QQBOT_DEFAULT_SECRET: "synthetic-original-default",
+          QQBOT_NAMED_SECRET: "synthetic-original-named",
+        }),
+      );
+
+      const siblingChanged = structuredClone(config);
+      if (missingAccount === "default") {
+        siblingChanged.channels.qqbot.accounts.work!.appId = "changed-sibling-app";
+      } else {
+        siblingChanged.channels.qqbot.clientSecret = ref("QQBOT_CHANGED_DEFAULT_SECRET");
+      }
+      const healthyRefId =
+        missingAccount === "default" ? "QQBOT_NAMED_SECRET" : "QQBOT_CHANGED_DEFAULT_SECRET";
+      const defaultPath = ["channels", "qqbot", "clientSecret"];
+      const namedPath = ["channels", "qqbot", "accounts", "work", "clientSecret"];
+      const missingPath = missingAccount === "default" ? defaultPath : namedPath;
+      const healthyPath = missingAccount === "default" ? namedPath : defaultPath;
+      const missingOwner = `qqbot:${missingAccount === "default" ? "default" : "work"}`;
+      const stale = await prepare(siblingChanged, { [healthyRefId]: "synthetic-refreshed-secret" });
+
+      expect(stale.degradedOwners).toEqual([
+        expect.objectContaining({ ownerId: missingOwner, degradationState: "stale" }),
+      ]);
+      expect(getPath(stale.config, missingPath)).toBe(`synthetic-original-${missingAccount}`);
+      expect(getPath(stale.config, healthyPath)).toBe("synthetic-refreshed-secret");
+      activateSecretsRuntimeSnapshot(stale);
+      expect(() => assertSecretOwnerAvailable("account", missingOwner)).not.toThrow();
+
+      const ownerChanged = structuredClone(siblingChanged);
+      const owner =
+        missingAccount === "default"
+          ? ownerChanged.channels.qqbot
+          : ownerChanged.channels.qqbot.accounts.work!;
+      owner.appId = "changed-owner-app";
+      const cold = await prepare(ownerChanged, { [healthyRefId]: "synthetic-next-secret" });
+
+      expect(cold.degradedOwners).toEqual([
+        expect.objectContaining({ ownerId: missingOwner, degradationState: "cold" }),
+      ]);
+      expect(getPath(cold.config, missingPath)).toEqual(getPath(ownerChanged, missingPath));
+      expect(getPath(cold.config, healthyPath)).toBe("synthetic-next-secret");
+      activateSecretsRuntimeSnapshot(cold);
+      expect(() => assertSecretOwnerAvailable("account", missingOwner)).toThrow(
+        "configured but unavailable",
+      );
+      expect(() =>
+        assertSecretOwnerAvailable(
+          "account",
+          `qqbot:${missingAccount === "default" ? "work" : "default"}`,
+        ),
+      ).not.toThrow();
     },
   );
 
@@ -707,7 +773,7 @@ describe("secrets runtime externalized channel SecretRef audit", () => {
       secret: { source: "file", provider: "unconfigured", id: "/qqbot/clientSecret" },
       error: /provider/i,
     },
-  ])("keeps $label QQBot SecretRefs fail-closed", async ({ secret, error }) => {
+  ])("keeps $label QQBot SecretRefs strict", async ({ secret, error }) => {
     const records = configureExternalChannelRecords(["qqbot"]);
 
     await expect(
@@ -715,7 +781,7 @@ describe("secrets runtime externalized channel SecretRef audit", () => {
         config: asConfig({
           channels: { qqbot: { appId: "qqbot-default-app", clientSecret: secret } },
         }),
-        env: { QQBOT_CLIENT_SECRET: "must-never-replace-an-explicit-secret-ref" },
+        env: { QQBOT_CLIENT_SECRET: "synthetic-env-fallback-must-not-win" },
         includeAuthStoreRefs: false,
         allowUnavailableSecretOwners: true,
         loadablePluginOrigins: externalChannelOrigins(records),
