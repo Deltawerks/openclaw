@@ -409,10 +409,6 @@ describe("session capability warm roster", () => {
             h.emitChanged(current);
           }
         }
-        if (source === "event") {
-          // Replaying an old payload cannot recapture authority in this connection.
-          h.emitChanged(previous);
-        }
         const accepted = h.sessions.state.result?.sessions.find((row) => row.key === key);
         expect(accepted?.label).toBe(observeAfterReconnect ? current.label : previous.label);
         expect(h.write).not.toHaveBeenCalled();

@@ -4,6 +4,7 @@ import type {
   TaskSuggestionEvent,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import { chatInputOwnerForContext } from "../../app/chat-input-owner.ts";
+import { availableLinkReaders } from "../../app/link-reader-routing.ts";
 import { isDesktopPanelAvailable } from "../../app/panel-availability.ts";
 import {
   disposeQuestionPromptState,
@@ -13,6 +14,7 @@ import { readPresenceEntries } from "../../app/user-profile.ts";
 import { BROWSER_ANNOTATION_EVENT } from "../../components/browser/browser-annotation.ts";
 import {
   BROWSER_PANEL_TOGGLE_EVENT,
+  LINK_READER_PANEL_TOGGLE_EVENT,
   DESKTOP_PANEL_TOGGLE_EVENT,
   PORTAL_PANEL_TOGGLE_EVENT,
   TERMINAL_PANEL_DOCK_BOTTOM_EVENT,
@@ -22,17 +24,10 @@ import { matchesShortcutCombo } from "../../lib/keyboard-shortcut-contract.ts";
 import { sessionPullRequestsForGateway } from "../../lib/session-pull-requests.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { resolveSessionKey } from "../../lib/sessions/index.ts";
-import {
-  areUiSessionKeysEquivalent,
-  parseAgentSessionKey,
-} from "../../lib/sessions/session-key.ts";
+import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 import * as chatAvatars from "./chat-avatar.ts";
 import { CHAT_ROUTE_READY_EVENT } from "./chat-history-events.ts";
-import {
-  chatHistoryRequests,
-  retireInitialChatSnapshot,
-  type InitialChatSnapshotHydration,
-} from "./chat-history-state.ts";
+import { retireInitialChatSnapshot } from "./chat-history-state.ts";
 import { syncSelectedSessionMessageSubscription } from "./chat-history-subscription.ts";
 import {
   type ChatAttachmentGatewayOwner,
@@ -78,12 +73,7 @@ import { CHAT_COMPOSER_DRAFT_STORAGE_ERROR } from "./composer-persistence.ts";
 import { exportChatMarkdown } from "./export.ts";
 import { admitChatSubmission } from "./history-merge.ts";
 import { admitInitialTurnHandoff } from "./initial-turn-handoff.ts";
-import {
-  applyChatCacheSnapshot,
-  cacheChatSessionSnapshot,
-  readChatSessionSnapshot,
-  resolveChatSnapshotKey,
-} from "./session-message-cache.ts";
+import { applyChatCacheSnapshot, readChatSessionSnapshot } from "./session-message-cache.ts";
 import { closeSlot, isSidebarSlotVisible } from "./sidebar-layout.ts";
 
 export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
@@ -91,7 +81,12 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
     current: () => {
       const state = this.state;
       return state && this.active && this.presented
-        ? { renderRoot: this.renderRoot, state, updateComplete: this.updateComplete }
+        ? {
+            renderRoot: this.renderRoot,
+            state,
+            linkReaders: availableLinkReaders(this.context.gateway.snapshot),
+            updateComplete: this.updateComplete,
+          }
         : null;
     },
     pending: this.pendingPanelToggleRequests,
@@ -108,59 +103,6 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
     if (this.selected && this.presented) {
       this.composerPresentation?.claim();
     }
-  }
-
-  private hydrateStoredChatSnapshot(
-    state: NonNullable<ChatPaneLifecycle["state"]>,
-    sessionKey: string,
-  ): void {
-    const store = this.sessionSnapshotStore;
-    if (!store) {
-      return;
-    }
-    const cacheKey = resolveChatSnapshotKey(state, { sessionKey });
-    const requests = chatHistoryRequests(state);
-    let startedBeforeReady = this.context.gateway.snapshot.phase !== "connected";
-    let readyAt: number | undefined;
-    const reading = store.read(cacheKey, (prewarmReadyAt) => {
-      startedBeforeReady = true;
-      readyAt = prewarmReadyAt;
-    });
-    const hydration: InitialChatSnapshotHydration = {
-      sessionKey,
-      startedBeforeReady,
-      readyAt,
-      promise: reading
-        .then((snapshot) => {
-          if (
-            !snapshot ||
-            requests.initialSnapshotHydration !== hydration ||
-            this.state !== state ||
-            !areUiSessionKeysEquivalent(state.sessionKey, sessionKey) ||
-            readChatSessionSnapshot(state.chatMessagesBySession, state, { sessionKey })
-          ) {
-            return;
-          }
-          // The memory miss fences network replacement; the pane projection merges
-          // live and pending rows that arrived while IndexedDB was pending.
-          applyChatCacheSnapshot(state, snapshot);
-          const mergedSnapshot = { ...snapshot, messages: state.chatMessages };
-          cacheChatSessionSnapshot(
-            state.chatMessagesBySession,
-            state,
-            { sessionKey },
-            mergedSnapshot,
-          );
-          state.requestUpdate?.();
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          if (requests.initialSnapshotHydration === hydration && !hydration.wait) {
-            delete requests.initialSnapshotHydration;
-          }
-        }),
-    };
-    requests.initialSnapshotHydration = hydration;
   }
 
   public discardStagedAttachments(): void {
@@ -437,6 +379,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
     const panelToggleEvents = [
       [TERMINAL_PANEL_TOGGLE_EVENT, "terminal", "openclaw-terminal-panel"],
       [BROWSER_PANEL_TOGGLE_EVENT, "browser", "openclaw-browser-panel"],
+      [LINK_READER_PANEL_TOGGLE_EVENT, "link-reader", "openclaw-link-reader-panel"],
       [DESKTOP_PANEL_TOGGLE_EVENT, "desktop", "openclaw-desktop-panel"],
       [PORTAL_PANEL_TOGGLE_EVENT, "portal", "openclaw-portals-page"],
     ] as const;
@@ -666,6 +609,12 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
     const board = this.resolveBoardView();
     this.syncRetainedBoardSession(board);
     this.sessionPanelToggles.flush();
+    if (this.state) {
+      const layout = this.initializeBrowserSidebarLayout(this.state.sidebarLayout);
+      if (layout !== this.state.sidebarLayout) {
+        this.state.updateSidebarLayout(layout, { geometryOnly: true });
+      }
+    }
     this.setConversationVisible(
       Boolean(
         this.state &&

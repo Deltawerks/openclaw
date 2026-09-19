@@ -40,8 +40,6 @@ export {
   compareSessionRowsByUpdatedAt,
   filterSessionRows,
   filterVisibleSessionRows,
-  getVisibleSessionRows,
-  isSystemCreatedSessionRow,
   resolveSessionNavigation,
   sessionMatchesArchivedFilter,
   sessionMatchesVisibleSessionScope,
@@ -186,7 +184,7 @@ export function createSessionCapability(
   };
 
   const sessionEventSubscription = createSessionEventSubscriptionOwner({
-    isCurrent: (scope) => connection.isCurrent(scope),
+    isCurrent: connection.isCurrent,
     retryDelayMs: sessionRetryDelayMs,
     onError: (scope, error) => {
       if (!connection.isCurrent(scope)) {
@@ -301,7 +299,7 @@ export function createSessionCapability(
     publishedRow: (key) => roster.publishedRow((row) => row.key === key),
     archiveFields: roster,
     readRevision: () => roster.requestRevision,
-    redecorateLists: () => roster.redecorateLists(),
+    redecorateLists: roster.redecorateLists,
     notifyCreated,
     clearThink: thinkingClaims.clear,
     claimPermissionProjection: permissions.claim,
@@ -315,9 +313,9 @@ export function createSessionCapability(
     requestRevision: () => roster.requestRevision,
     readState: () => state,
     publish: publishMutation,
-    publishedRow: (matches) => roster.publishedRow(matches),
-    redecorateLists: () => roster.redecorateLists(),
-    invalidateLists: () => roster.scheduleEvent(),
+    publishedRow: roster.publishedRow,
+    redecorateLists: roster.redecorateLists,
+    invalidateLists: roster.scheduleEvent,
     reconcileMutation: roster.reconcileMutation,
     reconcilePreviousConnection: mutations.reconcileConfirmedPreviousConnection,
     retire: mutations.retireDeletedSession,
@@ -388,8 +386,8 @@ export function createSessionCapability(
   };
 
   const reconcileRunTerminal = (terminal: SessionRunTerminal): boolean => {
-    const event = roster.captureEvent(terminal);
-    if (event.scope && !connection.isCurrent(event.scope)) {
+    const captured = roster.captureReconciliation();
+    if (captured.scope && !connection.isCurrent(captured.scope)) {
       return false;
     }
     for (const key of terminal.sessionKeys) {
@@ -400,7 +398,7 @@ export function createSessionCapability(
       }
     }
     const previous = state.result;
-    const { result, changed, notify } = roster.stageRunTerminal(terminal, event);
+    const { result, changed, notify } = roster.stageRunTerminal(terminal, captured);
     if (result !== previous) {
       publishReconciledState({ ...state, result });
     }
@@ -532,11 +530,10 @@ export function createSessionCapability(
     const eventObservation = roster.captureEvent(event.payload);
     const swarmChanged = swarmActivity.observe(event.payload);
     const { eventInfo, reconciled, claimChanged, notifyManaged, notifyEvent } =
-      reconcileChangedEvent(
-        event.payload,
-        { resultAgentId: state.agentId, archivedFilter: roster.lastOptions().archivedFilter },
-        eventObservation,
-      );
+      reconcileChangedEvent(event.payload, eventObservation, {
+        resultAgentId: state.agentId,
+        archivedFilter: roster.lastOptions().archivedFilter,
+      });
     if (eventObservation.scope && !connection.isCurrent(eventObservation.scope)) {
       return;
     }
@@ -573,7 +570,7 @@ export function createSessionCapability(
       void background(groups.load, () => groups.load());
     }
     if (event.event === "session.message" && !runEnded) {
-      notifyEvent(event);
+      notifyEvent?.(event);
       return;
     }
     roster.scheduleEvent({
@@ -582,9 +579,9 @@ export function createSessionCapability(
         parseAgentSessionKey(eventInfo?.key)?.agentId ??
         (typeof payloadAgentId === "string" ? payloadAgentId : undefined),
       primarySnapshotApplied,
-      event: event.payload,
+      affectedLists: eventObservation.lists,
     });
-    notifyEvent(event);
+    notifyEvent?.(event);
   });
 
   return {
@@ -601,11 +598,11 @@ export function createSessionCapability(
     },
     githubPublication,
     whenCachedRosterSettled: () => cacheLifecycle.settled,
-    captureConnectionScope: () => connection.capture(),
-    isConnectionScopeCurrent: (scope) => connection.isCurrent(scope),
+    captureConnectionScope: connection.capture,
+    isConnectionScopeCurrent: connection.isCurrent,
     list: roster.list,
     observeList: roster.observeList,
-    listSnapshot: (scope) => roster.listSnapshot(scope),
+    listSnapshot: roster.listSnapshot,
     subscribeList(scope, listener) {
       if (!roster.isPrimaryList(scope)) {
         return roster.subscribeList(scope, listener);
@@ -614,7 +611,7 @@ export function createSessionCapability(
       listeners.add(notify);
       return () => listeners.delete(notify);
     },
-    refreshList: (options) => roster.refreshList(options),
+    refreshList: roster.refreshList,
     reconcile,
     captureReconcile,
     observeRow,

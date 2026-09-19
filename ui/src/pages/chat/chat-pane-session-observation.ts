@@ -1,11 +1,7 @@
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { projectSessionResultRows, reconcileSessionHistory } from "../../lib/sessions/reconcile.ts";
-import type {
-  SessionCapability,
-  SessionConnectionScope,
-  SessionRowObservation,
-} from "../../lib/sessions/session-capability.ts";
+import type { SessionRowObservation } from "../../lib/sessions/session-capability.ts";
 import { chatScopedEventSessionMatches } from "./chat-history-state.ts";
 import { ChatPaneSessionCreation } from "./chat-pane-session-creation.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
@@ -78,11 +74,7 @@ function applyObservedChatSessionRow(
 
 export abstract class ChatPaneSessionObservation extends ChatPaneSessionCreation {
   private sessionObservation: {
-    state: ChatPageHost;
-    sessions: SessionCapability;
-    key: string;
-    agentId: string;
-    scope: SessionConnectionScope;
+    matchesPane: () => boolean;
     observation: SessionRowObservation | null;
   } | null = null;
 
@@ -107,38 +99,26 @@ export abstract class ChatPaneSessionObservation extends ChatPaneSessionCreation
     const key = state.sessionKey;
     const agentId = resolveChatAgentId(state);
     const previous = this.sessionObservation;
-    if (
-      previous?.state === state &&
-      previous.sessions === sessions &&
-      previous.key === key &&
-      previous.agentId === agentId &&
-      sessions.isConnectionScopeCurrent(previous.scope) &&
-      previous.observation?.isCurrent()
-    ) {
+    if (previous?.matchesPane() && previous.observation?.isCurrent()) {
       return;
     }
     this.retireSessionObservation();
     const binding: NonNullable<ChatPaneSessionObservation["sessionObservation"]> = {
-      state,
-      sessions,
-      key,
-      agentId,
-      scope,
+      matchesPane: () =>
+        this.state === state &&
+        state.sessionKey === key &&
+        resolveChatAgentId(state) === agentId &&
+        sessions === this.context.sessions &&
+        sessions.isConnectionScopeCurrent(scope),
       observation: null,
     };
     const ownsPane = () =>
-      this.state === state &&
-      state.connected &&
-      state.sessionKey === key &&
-      resolveChatAgentId(state) === agentId &&
-      sessions === this.context.sessions &&
-      sessions.isConnectionScopeCurrent(scope);
+      this.sessionObservation === binding && state.connected && binding.matchesPane();
     this.sessionObservation = binding;
     binding.observation = sessions.observeRow(
       { key, agentId },
       (row) => {
         if (
-          this.sessionObservation === binding &&
           ownsPane() &&
           (row !== null || binding.observation?.hasObserved) &&
           applyObservedChatSessionRow(state, row, binding.observation?.sessionId)
@@ -148,7 +128,7 @@ export abstract class ChatPaneSessionObservation extends ChatPaneSessionCreation
       },
       {
         onEvent: (event, result) => {
-          if (this.sessionObservation !== binding || !ownsPane()) {
+          if (!ownsPane()) {
             return;
           }
           if (binding.observation && !binding.observation.isCurrent()) {
@@ -164,7 +144,7 @@ export abstract class ChatPaneSessionObservation extends ChatPaneSessionCreation
         },
       },
     );
-    if (this.sessionObservation !== binding || !ownsPane()) {
+    if (!ownsPane()) {
       binding.observation.dispose();
     } else {
       // The owner can publish its first result synchronously before the handle returns.
@@ -179,19 +159,11 @@ export abstract class ChatPaneSessionObservation extends ChatPaneSessionCreation
       return;
     }
     if (
-      binding.state === state &&
-      binding.sessions === this.context.sessions &&
-      binding.key === state.sessionKey &&
-      binding.agentId === resolveChatAgentId(state) &&
+      binding.matchesPane() &&
       binding.observation?.hasObserved &&
-      binding.observation?.isCurrent() &&
-      this.context.sessions.isConnectionScopeCurrent(binding.scope)
+      binding.observation?.isCurrent()
     ) {
-      applyObservedChatSessionRow(
-        binding.state,
-        binding.observation.row,
-        binding.observation.sessionId,
-      );
+      applyObservedChatSessionRow(state, binding.observation.row, binding.observation.sessionId);
     }
   }
 

@@ -403,7 +403,7 @@ describe("session list replacement options", () => {
     },
   );
 
-  it("keeps a restored Active row when another observer replays an older archive event", async () => {
+  it("restores Active membership when an archive and restore share a timestamp", async () => {
     vi.useFakeTimers();
     const original: GatewaySessionRow = {
       key: "agent:main:restored-archive",
@@ -453,9 +453,6 @@ describe("session list replacement options", () => {
       await sessions.refresh({ agentId: "main", force: true });
       expect(sessions.state.result?.sessions).toEqual([offered]);
 
-      // A replay retains the original receipt even when its clock equals the restore.
-      emitEvent({ type: "event", event: "sessions.changed", payload: archived });
-      expect(sessions.state.result?.sessions).toEqual([offered]);
       expect(sessions.state.result?.count).toBe(1);
       expect(sessions.archiveVisibility(original.key)).toBeUndefined();
     } finally {

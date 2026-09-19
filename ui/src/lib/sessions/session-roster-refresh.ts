@@ -16,7 +16,6 @@ import type {
   SessionRefreshOptions,
   SessionState,
 } from "./session-capability.ts";
-import { createSessionEventObservation } from "./session-event-observation.ts";
 import { normalizeAgentId } from "./session-key.ts";
 import {
   canApplySessionListSnapshot,
@@ -72,13 +71,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
   let pageActive = !observesPageLifecycle || document.visibilityState !== "hidden";
   const managedLists = new Map<string, ManagedSessionList>();
   const observations = createSessionRosterObservations(host, managedLists);
-  const events = createSessionEventObservation({
-    connection: host.connection,
-    lists: managedLists,
-    readRevision: () => requestRevision,
-    nextRevision: () => ++requestRevision,
-    captureDelivery: observations.captureEventDelivery,
-  });
   const retireForegroundRefresh = () => {
     observations.reset();
     foregroundPublicationGeneration += 1;
@@ -528,7 +520,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     hasLiveObservation: observations.hasLiveObservation,
     isCurrentRow: observations.isCurrentRow,
     inherit: observations.inherit,
-    observeReadRow: observations.observeReadRow,
     observeReadRows: observations.observeReadRows,
     bindOwner: observations.bindOwner,
     observeFields: observations.observeFields,
@@ -539,13 +530,34 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     projectFields: observations.projectFields,
     prepareProjection: observations.prepareProjection,
     projectRows: observations.projectRows,
-    captureEvent: events.captureEvent,
+    captureEvent(payload: unknown) {
+      const scope = host.connection.capture();
+      const revision = ++requestRevision;
+      const matches = sessionListEventMatcher(payload);
+      const lists = new Set<ManagedSessionList>();
+      for (const entry of managedLists.values()) {
+        if (
+          matches(entry) &&
+          (entry.pending !== null ||
+            entry.snapshot.error !== null ||
+            !canApplySessionListSnapshot(entry.snapshot.result, payload, entry.scope))
+        ) {
+          lists.add(entry);
+        }
+      }
+      return {
+        revision,
+        scope,
+        lists,
+        ...observations.captureEventDelivery(scope, revision),
+      };
+    },
     primaryList: () => primaryList,
     get requestRevision() {
       return requestRevision;
     },
     list: listReader.list,
-    listSnapshot(scope: SessionListScope): SessionListSnapshot {
+    listSnapshot(this: void, scope: SessionListScope): SessionListSnapshot {
       if (isPrimarySessionListQuery(scope)) {
         const { result, agentId, loading, error } = host.readState();
         return { result, agentId, loading, error };
@@ -568,7 +580,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
         refreshManagedList(entry, { append: false, invalidated: true }),
       );
     },
-    refreshList(options: SessionRefreshOptions = {}): Promise<void> {
+    refreshList(this: void, options: SessionRefreshOptions = {}): Promise<void> {
       if (isPrimarySessionListQuery(options)) {
         return refresh(options);
       }
@@ -618,7 +630,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     publishedRow: observations.publishedRow,
     /** Republishes every held list through `decorate` so a UI-owned overlay
      * reaches the archived/all snapshots too, not just the primary state. */
-    redecorateLists() {
+    redecorateLists(this: void) {
       const state = host.readState();
       const result = host.decorate(state.result, primaryList);
       const staged = observations.stageManagedResults(
@@ -646,18 +658,26 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
         ? primaryWindows.presentation(replacementOptions(agentId), connection.epoch)
         : null;
     },
-    canApplyPrimarySnapshot: (payload: unknown) =>
-      !inFlight &&
-      host.readState().error === null &&
-      !host.readState().resultCached &&
-      canApplySessionListSnapshot(host.readState().result, payload, lastListOptions),
+    canApplyPrimarySnapshot(payload: unknown) {
+      const state = !inFlight && host.readState();
+      return (
+        state &&
+        state.error === null &&
+        !state.resultCached &&
+        canApplySessionListSnapshot(state.result, payload, lastListOptions)
+      );
+    },
     invalidateManagedLists,
     scheduleEvent(
       this: void,
-      options: { agentId?: string | null; primarySnapshotApplied?: boolean; event?: unknown } = {},
+      options: {
+        agentId?: string | null;
+        primarySnapshotApplied?: boolean;
+        affectedLists?: ReadonlySet<ManagedSessionList>;
+      } = {},
     ) {
       const matchesAgent = sessionListAgentMatcher(options.agentId);
-      const affected = events.affectedLists(options.event);
+      const affected = options.affectedLists;
       // Server events can invalidate a read; accepted row observations are reconciled into it.
       primaryWindows.invalidate(
         (entry) => affected?.has(entry) ?? matchesAgent(entry.scope.agentId),

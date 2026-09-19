@@ -1,4 +1,3 @@
-import type { GatewayEventFrame } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { projectSessionResultRows } from "./reconcile.ts";
 import type {
@@ -8,7 +7,7 @@ import type {
   SessionRowEventListener,
 } from "./session-capability.ts";
 import {
-  captureSessionEventDelivery,
+  createSessionEventDelivery,
   type SessionEventDelivery,
 } from "./session-event-observation.ts";
 import {
@@ -79,8 +78,13 @@ export function createSessionRosterObservations(
     registrationIsAttached(entry) &&
     !entry.snapshot.retired &&
     (entry.snapshot.sessionId === null || entry.isValid(entry.snapshot.sessionId));
-  const captureEventDelivery = (scope: SessionConnectionScope | null): RowEventDelivery =>
-    captureSessionEventDelivery(registeredRows, scope, host.connection, registrationIsAttached);
+  const captureEventDelivery = createSessionEventDelivery(
+    registeredRows,
+    host.connection,
+    registrationIsAttached,
+    registrationIsCurrent,
+    provenance.hasNewerFacts,
+  );
   const matchesTarget = (row: GatewaySessionRow, target: SessionRowTarget) => {
     const parsedAgent = parseAgentSessionKey(row.key)?.agentId;
     return (
@@ -228,18 +232,13 @@ export function createSessionRosterObservations(
       for (const offered of observedRows.get(key) ?? []) {
         current = mergeRow(current, offered, agentId);
       }
-      return current;
+      // Field freshness cannot change the caller's tree key.
+      return current.key === row.key ? current : inheritRow({ ...current, key: row.key }, current);
     };
     return {
       projectFields,
       projectRows: (rows: readonly GatewaySessionRow[]): GatewaySessionRow[] =>
-        rows.map((row) => {
-          const projected = projectFields(row);
-          // Field freshness cannot change the caller's tree keys or membership.
-          return projected.key === row.key
-            ? projected
-            : inheritRow({ ...projected, key: row.key }, projected);
-        }),
+        rows.map((row) => projectFields(row)),
     };
   };
   const projectFields = (row: GatewaySessionRow, agentId?: string | null) =>
@@ -283,14 +282,13 @@ export function createSessionRosterObservations(
     projectRow?: RowProjection,
     admitRead = false,
     admittedRows: readonly SessionRowAdmission[] = [],
-    deliverEvent?: RowEventDelivery,
+    event?: RowEventDelivery,
   ): {
     changed: boolean;
     notify: (publishedRows?: readonly SessionRowAdmission[], reason?: string) => void;
-    notifyEvent: (event: GatewayEventFrame, revision: number) => void;
   } => {
     if (!scope || !host.connection.isCurrent(scope)) {
-      return { changed: false, notify: () => {}, notifyEvent: () => {} };
+      return { changed: false, notify: () => {} };
     }
     const registrations = [...registeredRows];
     const changes: Array<{
@@ -304,10 +302,6 @@ export function createSessionRosterObservations(
       previous: RegisteredSessionRow["snapshot"];
       snapshot: RegisteredSessionRow["snapshot"];
     }> = [];
-    const eventResults = new Map<
-      RegisteredSessionRow,
-      { snapshot: RegisteredSessionRow["snapshot"]; result: SessionChangedRowResult }
-    >();
     for (const [key, entry] of lists) {
       if (entry.connectionEpoch !== scope.epoch) {
         continue;
@@ -388,14 +382,14 @@ export function createSessionRosterObservations(
         (!projected.eventResult.admittedRow ||
           acceptsRowIdentity(entry, projected.eventResult.admittedRow))
       ) {
-        eventResults.set(entry, {
+        event?.results.set(entry, {
           snapshot: nextSnapshot,
           result: { ...projected.eventResult, row: visible ?? undefined },
         });
       }
     }
     if (!host.connection.isCurrent(scope)) {
-      return { changed: false, notify: () => {}, notifyEvent: () => {} };
+      return { changed: false, notify: () => {} };
     }
     // Every held window receives the fact before a listener can start another read.
     let changed = false;
@@ -458,19 +452,7 @@ export function createSessionRosterObservations(
         }
       }
     };
-    const notifyEvent = (event: GatewayEventFrame, revision: number) => {
-      deliverEvent?.(event, (entry) => {
-        const recorded = eventResults.get(entry);
-        return recorded &&
-          (registrationIsCurrent(entry) || Boolean(recorded.result.deletedKey)) &&
-          entry.snapshot === recorded.snapshot &&
-          (!recorded.result.admittedRow ||
-            !provenance.hasNewerFacts(recorded.result.admittedRow, revision))
-          ? recorded.result
-          : { applied: false };
-      });
-    };
-    return { changed, notify, notifyEvent };
+    return { changed, notify };
   };
   const stageObservedRows = (
     rows: readonly GatewaySessionRow[],
@@ -628,7 +610,6 @@ export function createSessionRosterObservations(
         provenance.bindOwner(row, agentId);
       }
     },
-    observeReadRow,
     observeReadRows,
     observeFields: provenance.observeFields,
     fieldObservation: provenance.fieldObservation,
@@ -644,6 +625,7 @@ export function createSessionRosterObservations(
     captureReconciliation(revision: number) {
       const scope = host.connection.capture();
       return {
+        scope,
         revision,
         observe: (row: GatewaySessionRow, agentId?: string | null) =>
           observeReadRow(row, revision, agentId),

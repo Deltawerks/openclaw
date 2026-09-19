@@ -790,18 +790,23 @@ describe("mounted pane session event ownership", () => {
       await vi.dynamicImportSettled();
     }
   });
-  it.each(["stale", "current", "rowless"] as const)(
+  it.each(["stale", "current", "rowless", "reentrant"] as const)(
     "keeps lifecycle reset delivery within its admitted incarnation (%s)",
     async (generation) => {
+      const reentrant = generation === "reentrant";
+      const preservesSuccessor = generation === "stale" || reentrant;
       const row: GatewaySessionRow = {
         key: "agent:main:incarnation-reset",
         agentId: "main",
         sessionId: "successor-session",
         kind: "direct",
-        updatedAt: 2,
+        updatedAt: reentrant ? 3 : 2,
         activeLeafEntryId: "successor-leaf",
         label: "Successor session",
       };
+      const initialRow = reentrant
+        ? { ...row, sessionId: "predecessor-session", updatedAt: 1 }
+        : row;
       const persisted = {
         role: "assistant",
         content: "Successor transcript",
@@ -810,7 +815,8 @@ describe("mounted pane session event ownership", () => {
       const initial: ChatHistoryResult = {
         messages: [persisted],
         sessionId: row.sessionId,
-        ...(generation === "rowless" ? {} : { sessionInfo: row }),
+        // The transcript can reveal its physical successor before its row metadata arrives.
+        ...(generation === "rowless" || reentrant ? {} : { sessionInfo: row }),
       };
       const laterHistory = createDeferred<ChatHistoryResult>();
       const postResetHistory = createDeferred<ChatHistoryResult>();
@@ -823,15 +829,42 @@ describe("mounted pane session event ownership", () => {
         return ++heldHistoryReads === 1 ? laterHistory.promise : postResetHistory.promise;
       });
       const { sessions, mount, emitGatewayEvent } = createMountedPanes(
-        generation === "rowless" ? [] : [row],
+        generation === "rowless" ? [] : [initialRow],
         "main",
         undefined,
-        { "chat.history": history, "chat.startup": history },
+        {
+          "chat.history": history,
+          "chat.startup": history,
+          ...(reentrant ? { "sessions.list": () => sessionsResult([], 1) } : {}),
+        },
       );
+      let admitSuccessor = false;
+      let successorAdmitted = false;
+      let successorAdmissionAttempts = 0;
       let refresh: Promise<void> | undefined;
       let pane: TestChatPane | undefined;
       try {
         await sessions.refresh({ agentId: "main", force: true });
+        if (reentrant) {
+          // A history-only row can be superseded by a scoped read; a canonical list
+          // incarnation deliberately requires another list to establish its successor.
+          expect(sessions.state.result?.sessions).toEqual([]);
+          expect(
+            sessions.captureReconcile()(initialRow, undefined, { resultAgentId: "main" }),
+          ).toBe(true);
+          const earlier = sessions.observeRow({ key: row.key, agentId: "main" }, () => {}, {
+            onEvent: () => {
+              if (admitSuccessor) {
+                admitSuccessor = false;
+                successorAdmissionAttempts += 1;
+                successorAdmitted =
+                  sessions.captureReconcile()(row, undefined, { resultAgentId: "main" }) === true;
+              }
+            },
+          });
+          onTestFinished(earlier.dispose);
+          expect(earlier.row).toMatchObject(initialRow);
+        }
         pane = mount(row.key);
         await refreshPane(pane);
         const state = pane.state;
@@ -839,7 +872,7 @@ describe("mounted pane session event ownership", () => {
         expect(state.currentSessionId).toBe(row.sessionId);
         expect(state.chatMessages).toEqual([persisted]);
         expect(selectedChatSessionRow(state)).toEqual(
-          generation === "rowless" ? undefined : expect.objectContaining(row),
+          generation === "rowless" ? undefined : expect.objectContaining(initialRow),
         );
         reduceChatSessionProjection(state, {
           type: "sendPending",
@@ -880,15 +913,22 @@ describe("mounted pane session event ownership", () => {
           inputRunIds: ["successor-pending"],
         });
 
+        admitSuccessor = reentrant;
         emitGatewayEvent("sessions.changed", {
           sessionKey: row.key,
           agentId: "main",
-          sessionId: generation === "stale" ? "predecessor-session" : row.sessionId,
+          ...(reentrant
+            ? { updatedAt: 2, ts: 2 }
+            : { sessionId: generation === "stale" ? "predecessor-session" : row.sessionId }),
           reason: "reset",
         });
+        if (reentrant) {
+          expect(successorAdmissionAttempts).toBe(1);
+          expect(successorAdmitted).toBe(true);
+        }
         const assertProjection = () => {
           expect(state.currentSessionId).toBe(row.sessionId);
-          if (generation === "stale") {
+          if (preservesSuccessor) {
             expect(selectedChatSessionRow(state)).toMatchObject(row);
             expect(state.chatMessages).toBe(messages);
             expect(readChatInputRunIds(state)).toContain("successor-pending");
@@ -908,13 +948,13 @@ describe("mounted pane session event ownership", () => {
           expect(delivered).not.toHaveBeenCalled();
         } else {
           expect(delivered).toHaveBeenCalledOnce();
-          if (generation === "rowless") {
+          if (generation === "rowless" || reentrant) {
             expect(delivered.mock.calls[0]?.[1]).toEqual({ applied: false });
           }
         }
         laterHistory.reject(new Error("Incarnation history temporarily unavailable"));
         await refresh;
-        if (generation === "stale") {
+        if (preservesSuccessor) {
           expect(getChatHistoryLoadState(state)).toMatchObject({
             phase: "failed",
             sessionKey: row.key,
