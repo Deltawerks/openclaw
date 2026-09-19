@@ -9,6 +9,7 @@ import {
   resolveSqliteFilesystemPath,
 } from "./node-sqlite.js";
 import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
+import { withSqliteInspectionOperation } from "./sqlite-error-diagnostics.js";
 import { resolvePrivateSqliteSnapshotStagingRoot } from "./sqlite-private-directory.js";
 import {
   adoptPreparedLocation,
@@ -415,7 +416,9 @@ export async function createOnlineReadOnlyBackup(
     if (process.platform !== "win32") {
       fs.chmodSync(tempDir, 0o700);
     }
-    const source = openNodeSqliteDatabase(pathname, { readOnly: true });
+    const source = withSqliteInspectionOperation("source", () =>
+      openNodeSqliteDatabase(pathname, { readOnly: true }),
+    );
     try {
       source.exec(
         `PRAGMA busy_timeout = ${SQLITE_SOURCE_READ_BUSY_TIMEOUT_MS}; PRAGMA trusted_schema = OFF; BEGIN;`,
@@ -627,7 +630,7 @@ export function inspectSqliteSchemaHeaderInProcess(
     if (mode !== "wal" || (sidecars.wal && sidecars.shm)) {
       let readError: unknown;
       try {
-        return withSqliteSourceReadDatabase(canonicalPath, (database) => {
+        return withSqliteSourceReadDatabase(canonicalPath, "source", (database) => {
           try {
             setSqliteBusyTimeout(database, SQLITE_SOURCE_READ_BUSY_TIMEOUT_MS);
             return readSqliteSchemaHeader(database, agentSchemaVersionForOwnership);
