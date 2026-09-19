@@ -4,7 +4,7 @@
 // matching stop event, which would otherwise leave an answered call silent.
 const FACETIME_INITIAL_GREETING =
   "Greet the caller briefly, introduce yourself using your configured identity, and ask how you can help.";
-const FACETIME_GREETING_MEDIA_SETTLE_MS = 750;
+const FACETIME_GREETING_MEDIA_SETTLE_MS = 100;
 
 export function createFaceTimeInitialGreeting(params: {
   delayMs?: number;

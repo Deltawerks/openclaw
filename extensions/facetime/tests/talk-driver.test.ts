@@ -95,7 +95,8 @@ vi.mock("openclaw/plugin-sdk/realtime-voice", () => ({
     ({ consultPolicy }: { consultPolicy?: string }) => `Consult behavior: ${consultPolicy}.`,
   ),
   buildRealtimeVoiceAgentCancelProviderResult: mocks.buildCancelResult,
-  buildRealtimeVoiceAgentConsultWorkingResponse: vi.fn(),
+  buildRealtimeVoiceAgentConsultWorkingResponse: vi.fn(() => ({ status: "working" })),
+  parseRealtimeVoiceAgentConsultArgs: vi.fn((args: unknown) => args),
   consultRealtimeVoiceAgent: mocks.consult,
   createRealtimeVoiceBridgeSession: mocks.createSession,
   getRealtimeVoiceProvider: vi.fn((providerId: string) => ({ id: providerId })),
@@ -636,7 +637,7 @@ describe("FaceTime talk driver lifecycle", () => {
         direction: "server",
         type: "input_audio_buffer.speech_started",
       });
-      await vi.advanceTimersByTimeAsync(750);
+      await vi.advanceTimersByTimeAsync(100);
 
       expect(mocks.bridge.triggerGreeting).toHaveBeenCalledWith(
         "Greet the caller briefly, introduce yourself using your configured identity, and ask how you can help.",
@@ -928,6 +929,53 @@ describe("FaceTime talk driver lifecycle", () => {
     );
   });
 
+  it("keeps one backend consult when the caller repeats the same request", async () => {
+    mocks.bridge.bridge.supportsToolResultContinuation = true;
+    let finishConsult = (_result: { text: string }) => {};
+    mocks.consult.mockImplementationOnce(
+      () =>
+        new Promise<{ text: string }>((resolve) => {
+          finishConsult = resolve;
+        }),
+    );
+    await startReadyFaceTimeTalkDriver();
+
+    void mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "What's on my calendar?" },
+    });
+    await vi.waitFor(() => expect(mocks.consult).toHaveBeenCalledOnce());
+    const consultParams = mocks.consult.mock.calls[0]?.[0] as { abortSignal: AbortSignal };
+    void mocks.sessionParams?.onToolCall({
+      itemId: "item-2",
+      callId: "call-2",
+      name: "openclaw_agent_consult",
+      args: { question: "  WHAT'S ON MY CALENDAR  " },
+    });
+
+    expect(mocks.consult).toHaveBeenCalledOnce();
+    expect(consultParams.abortSignal.aborted).toBe(false);
+    await vi.waitFor(() =>
+      expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith(
+        "call-1",
+        {
+          status: "cancelled",
+          message: "The repeated request is continuing under the latest voice turn.",
+        },
+        { suppressResponse: true },
+      ),
+    );
+
+    finishConsult({ text: "Calendar answer." });
+    await vi.waitFor(() =>
+      expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith("call-2", {
+        text: "Calendar answer.",
+      }),
+    );
+  });
+
   it("uses an unsuppressed terminal cancellation when the provider requires it", async () => {
     mocks.bridge.connect.mockResolvedValue();
     (
@@ -1055,7 +1103,7 @@ describe("FaceTime talk driver lifecycle", () => {
           senderIsOwner: true,
           messageProvider: "voice",
           lane: "facetime:call-1",
-          thinkLevel: "low",
+          thinkLevel: "off",
           extraSystemPrompt: expect.stringContaining(
             "configured owner/user described by this agent's workspace context",
           ),

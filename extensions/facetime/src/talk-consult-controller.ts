@@ -5,6 +5,7 @@ import {
   buildRealtimeVoiceAgentCancelProviderResult,
   buildRealtimeVoiceAgentConsultWorkingResponse,
   consultRealtimeVoiceAgent,
+  parseRealtimeVoiceAgentConsultArgs,
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   resolveRealtimeVoiceAgentConsultToolsAllow,
   type RealtimeVoiceBridgeSession,
@@ -23,12 +24,43 @@ type PendingAgentConsult = {
   callId: string;
   turnId: string;
   name: string;
+  requestKey?: string;
   cancelRequested: boolean;
   backendSettled: boolean;
   generation: number;
   abortController: AbortController;
   runRegistration?: { runId: string; controller: AbortController };
 };
+
+function normalizeConsultRequest(args: unknown): string | undefined {
+  let parsed: ReturnType<typeof parseRealtimeVoiceAgentConsultArgs>;
+  try {
+    parsed = parseRealtimeVoiceAgentConsultArgs(args);
+  } catch {
+    return undefined;
+  }
+  const normalizeText = (value: string | undefined) =>
+    value
+      ?.normalize("NFKC")
+      .toLowerCase()
+      .replaceAll(/[^\p{Letter}\p{Number}]+/gu, " ")
+      .trim() ?? "";
+  return JSON.stringify({
+    question: normalizeText(parsed.question),
+    context: normalizeText(parsed.context),
+    responseStyle: normalizeText(parsed.responseStyle),
+    confirmationId: parsed.confirmationId ?? "",
+  });
+}
+
+function buildFaceTimeConsultWorkingResponse(): Record<string, unknown> {
+  const result = buildRealtimeVoiceAgentConsultWorkingResponse("caller");
+  return {
+    ...result,
+    message:
+      "Tell the caller briefly that you are checking, then wait for the final OpenClaw result. If the caller repeats the same request while it is still working, say it is still in progress; do not call openclaw_agent_consult again.",
+  };
+}
 
 export function createFaceTimeConsultController(params: {
   config: FaceTimeConfig;
@@ -193,6 +225,56 @@ export function createFaceTimeConsultController(params: {
       submitToolError(event, `Tool "${event.name}" not available`);
       return;
     }
+    const requestKey = normalizeConsultRequest(event.args);
+    const repeated = requestKey
+      ? [...pending.values()].find(
+          (consult) => !consult.cancelRequested && consult.requestKey === requestKey,
+        )
+      : undefined;
+    if (repeated) {
+      const previousCallId = repeated.callId;
+      const previousTurnId = repeated.turnId;
+      const turnId = params.ensureTurn();
+      const result = buildRealtimeVoiceAgentCancelProviderResult(
+        "The repeated request is continuing under the latest voice turn.",
+      );
+      pending.delete(previousCallId);
+      repeated.callId = callId;
+      repeated.turnId = turnId;
+      pending.set(callId, repeated);
+      params.remember({
+        type: "tool.result",
+        turnId: previousTurnId,
+        callId: previousCallId,
+        payload: { name: repeated.name, result },
+        final: true,
+      });
+      params.remember({
+        type: "tool.call",
+        turnId,
+        itemId: event.itemId,
+        callId,
+        payload: { name: event.name, args: event.args },
+      });
+      params.remember({
+        type: "tool.progress",
+        turnId,
+        callId,
+        payload: { name: event.name, status: "working" },
+      });
+      const bridge = params.getBridge();
+      const cancellationOptions =
+        bridge?.bridge.supportsToolResultSuppression === false
+          ? undefined
+          : { suppressResponse: true };
+      void bridge?.submitToolResult(previousCallId, result, cancellationOptions);
+      if (bridge?.bridge.supportsToolResultContinuation) {
+        void bridge.submitToolResult(callId, buildFaceTimeConsultWorkingResponse(), {
+          willContinue: true,
+        });
+      }
+      return;
+    }
     // Caller speech can be a clarification or a request for progress. Keep the
     // current task alive until the realtime model actually requests a new
     // agent consult, which is the unambiguous replacement boundary.
@@ -202,6 +284,7 @@ export function createFaceTimeConsultController(params: {
       callId,
       turnId,
       name: event.name,
+      requestKey,
       cancelRequested: false,
       backendSettled: false,
       generation: params.getGeneration(),
@@ -223,13 +306,9 @@ export function createFaceTimeConsultController(params: {
     });
     const bridge = params.getBridge();
     if (bridge?.bridge.supportsToolResultContinuation) {
-      void bridge.submitToolResult(
-        callId,
-        buildRealtimeVoiceAgentConsultWorkingResponse("caller"),
-        {
-          willContinue: true,
-        },
-      );
+      void bridge.submitToolResult(callId, buildFaceTimeConsultWorkingResponse(), {
+        willContinue: true,
+      });
     }
     void consultRealtimeVoiceAgent({
       cfg: params.fullConfig,
@@ -252,12 +331,12 @@ export function createFaceTimeConsultController(params: {
       questionSourceLabel: "caller",
       toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow(params.config.realtime.toolPolicy),
       extraSystemPrompt: CONSULT_SYSTEM_PROMPT,
-      thinkLevel: "low",
+      thinkLevel: "off",
       abortSignal: consult.abortController.signal,
       onRunStarted: ({ runId }) => {
         const registration = { runId, controller: new AbortController() };
         consult.runRegistration = registration;
-        if (consult.cancelRequested || pending.get(callId) !== consult) {
+        if (consult.cancelRequested || pending.get(consult.callId) !== consult) {
           registration.controller.abort(new Error("FaceTime agent consult was already cancelled"));
         }
         return {
@@ -273,42 +352,42 @@ export function createFaceTimeConsultController(params: {
       .then((result) => {
         consult.backendSettled = true;
         if (
-          pending.get(callId) !== consult ||
+          pending.get(consult.callId) !== consult ||
           consult.cancelRequested ||
           consult.generation !== params.getGeneration()
         ) {
           return;
         }
-        pending.delete(callId);
+        pending.delete(consult.callId);
         params.remember({
           type: "tool.result",
-          turnId,
-          callId,
+          turnId: consult.turnId,
+          callId: consult.callId,
           payload: { name: event.name, result },
           final: true,
         });
-        void params.getBridge()?.submitToolResult(callId, result);
+        void params.getBridge()?.submitToolResult(consult.callId, result);
       })
       .catch((error: unknown) => {
         consult.backendSettled = true;
         if (
-          pending.get(callId) !== consult ||
+          pending.get(consult.callId) !== consult ||
           consult.cancelRequested ||
           consult.generation !== params.getGeneration()
         ) {
           return;
         }
-        pending.delete(callId);
+        pending.delete(consult.callId);
         const message = formatErrorMessage(error);
         params.logger.warn?.(`[facetime] agent consult failed: ${message}`);
         params.remember({
           type: "tool.error",
-          turnId,
-          callId,
+          turnId: consult.turnId,
+          callId: consult.callId,
           payload: { name: event.name, error: message },
           final: true,
         });
-        void params.getBridge()?.submitToolResult(callId, { error: message });
+        void params.getBridge()?.submitToolResult(consult.callId, { error: message });
       });
   };
   return { abortForClose, handleToolCall };
