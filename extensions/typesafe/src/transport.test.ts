@@ -14,7 +14,7 @@ it("disables redirects and bounds response bodies even without content-length", 
   await expect(boundedFetch(fetch)("https://api.typesafe.ai/v1/systemone")).rejects.toThrow(
     "exceeds",
   );
-  expect(fetch.mock.calls[0][1]?.redirect).toBe("error");
+  expect(fetch.mock.calls[0]![1]?.redirect).toBe("error");
 });
 
 // The injected stream deliberately ignores the request signal, unlike native fetch.

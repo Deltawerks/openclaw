@@ -17,9 +17,13 @@ export function createJudgmentProvider(getConfig: () => RuntimeConfig): Judgment
     async evaluate(batch: JudgmentBatch, context) {
       context.signal.throwIfAborted();
       const config = getConfig();
-      if (!config.apiKey) return { status: "unavailable", reason: "credentials-unavailable" };
+      if (!config.apiKey) {
+        return { status: "unavailable", reason: "credentials-unavailable" };
+      }
       const remaining = context.deadlineMonotonicMs - performance.now();
-      if (remaining <= 0) return { status: "unavailable", reason: "transport" };
+      if (remaining <= 0) {
+        return { status: "unavailable", reason: "transport" };
+      }
       if (
         Object.values(batch.questions).some((q) =>
           q.type === "choice"
@@ -52,13 +56,15 @@ export function createJudgmentProvider(getConfig: () => RuntimeConfig): Judgment
         context.signal.throwIfAborted();
         const answers: Record<string, JudgmentBatchResult["answers"][string]> = {};
         for (const [id, answer] of Object.entries(evaluation.answers)) {
-          if (answer.type === "noul")
+          if (answer.type === "noul") {
             answers[id] = { type: "boolean", probabilityTrue: answer.noul };
-          else if (answer.type === "choice") answers[id] = answer;
-          else {
+          } else if (answer.type === "choice") {
+            answers[id] = answer;
+          } else {
             const question = batch.questions[id];
-            if (!question || question.type !== "score")
+            if (!question || question.type !== "score") {
               return { status: "unavailable", reason: "invalid-response" };
+            }
             answers[id] = {
               type: "score",
               score: answer.score,
@@ -80,12 +86,15 @@ export function createJudgmentProvider(getConfig: () => RuntimeConfig): Judgment
         };
       } catch (error) {
         context.signal.throwIfAborted();
-        if (error instanceof EvaluationError)
+        if (error instanceof EvaluationError) {
           return {
             status: "unavailable",
             reason: error.reason,
             ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
           };
+        }
+        // Vendor causes may contain credentials or submitted evidence; intentionally discard them.
+        // eslint-disable-next-line preserve-caught-error
         throw new Error("TypeSafe judgment adapter contract failure.");
       }
     },

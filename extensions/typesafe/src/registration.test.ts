@@ -55,9 +55,9 @@ describe("plugin ownership and configuration", () => {
     } as unknown as OpenClawPluginApi;
     plugin.register(api);
     expect(registerTool).toHaveBeenCalledTimes(1);
-    const tool: AnyAgentTool = registerTool.mock.calls[0][0];
+    const tool: AnyAgentTool = registerTool.mock.calls[0]![0];
     expect(tool.name).toBe("typesafe_evaluate");
-    expect(registerTool.mock.calls[0][1]).toEqual({ optional: true });
+    expect(registerTool.mock.calls[0]![1]).toEqual({ optional: true });
     expect(manifest.contracts).toEqual({
       tools: ["typesafe_evaluate"],
       judgmentProviders: ["typesafe"],
@@ -83,7 +83,7 @@ describe("plugin ownership and configuration", () => {
       registerTool,
       registerJudgmentProvider: vi.fn(),
     } as unknown as OpenClawPluginApi);
-    const tool: AnyAgentTool = registerTool.mock.calls[0][0];
+    const tool: AnyAgentTool = registerTool.mock.calls[0]![0];
     vi.mocked(evaluate).mockClear();
     await expect(
       tool.execute("test", {
@@ -112,7 +112,7 @@ it("uses current credentials through rotation, unavailability and recovery", asy
     registerTool,
     registerJudgmentProvider: vi.fn(),
   } as unknown as OpenClawPluginApi);
-  const tool: AnyAgentTool = registerTool.mock.calls[0][0];
+  const tool: AnyAgentTool = registerTool.mock.calls[0]![0];
   vi.mocked(evaluate).mockReset();
   vi.mocked(evaluate).mockResolvedValue({
     evaluation: {
@@ -161,7 +161,7 @@ it("uses only prepared references for the registered tool without stale fallback
     registerTool,
     registerJudgmentProvider: vi.fn(),
   } as unknown as OpenClawPluginApi);
-  const tool: AnyAgentTool = registerTool.mock.calls[0][0];
+  const tool: AnyAgentTool = registerTool.mock.calls[0]![0];
   const request = { state: null, questions: { q: { type: "noul", instructions: "test" } } };
   vi.mocked(evaluate).mockReset();
   vi.mocked(evaluate).mockResolvedValue({
@@ -198,7 +198,7 @@ it("executes the registered provider with prepared credentials and preserves can
     registerTool: vi.fn(),
     registerJudgmentProvider,
   } as unknown as OpenClawPluginApi);
-  const provider = registerJudgmentProvider.mock.calls[0][0];
+  const provider = registerJudgmentProvider.mock.calls[0]![0];
   vi.mocked(getPreparedPluginSecretInput).mockReturnValue({ revision: 1, value: "synthetic-key" });
   vi.mocked(evaluate).mockReset();
   vi.mocked(evaluate).mockResolvedValue({

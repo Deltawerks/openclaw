@@ -41,9 +41,13 @@ describe("TypeSafe evaluation", () => {
     );
     const result = await evaluate(input, config, undefined, fetch);
     expect(result).toEqual({ evaluation: answer });
-    const [url, init] = fetch.mock.calls[0];
+    const [url, init] = fetch.mock.calls[0]!;
     expect(url).toBe("https://api.typesafe.ai/v1/systemone");
-    expect(JSON.parse(String(init?.body))).toEqual({ ...input, model: "jev-test" });
+    const body = init?.body;
+    if (typeof body !== "string") {
+      throw new Error("Expected serialized JSON request body");
+    }
+    expect(JSON.parse(body)).toEqual({ ...input, model: "jev-test" });
     expect(JSON.stringify(result)).not.toContain(config.apiKey);
   });
   it("does not inherit SDK endpoint/model/logging environment overrides", async () => {
@@ -132,9 +136,13 @@ describe("TypeSafe evaluation", () => {
     const fetch = vi.fn(
       (_url: string, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
-            once: true,
-          });
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Request aborted", "AbortError")),
+            {
+              once: true,
+            },
+          );
         }),
     );
     await expect(evaluate(input, config, undefined, fetch)).rejects.toThrow(

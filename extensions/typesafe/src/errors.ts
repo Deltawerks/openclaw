@@ -20,26 +20,31 @@ export class EvaluationError extends Error {
 
 /** Replace vendor diagnostics; never retain raw error bodies, credentials or evidence as cause. */
 export function evaluationError(error: unknown, aborted: boolean): Error {
-  if (aborted || error instanceof APIUserAbortError)
+  if (aborted || error instanceof APIUserAbortError) {
     return new EvaluationError("TypeSafe evaluation cancelled.", "transport");
-  if (error instanceof APITimeoutError)
+  }
+  if (error instanceof APITimeoutError) {
     return new EvaluationError("TypeSafe evaluation timed out.", "transport");
+  }
   if (error instanceof APIError) {
-    if (error.status === 401 || error.status === 403)
+    if (error.status === 401 || error.status === 403) {
       return new EvaluationError(
         "TypeSafe authentication failed; check the configured credential and account access.",
         "authentication",
       );
-    if (error.status === 429)
+    }
+    if (error.status === 429) {
       return new EvaluationError(
         "TypeSafe rate limit reached; retry later.",
         "rate-limited",
         error instanceof RateLimitError ? error.retryAfterMs : undefined,
       );
+    }
     return new EvaluationError("TypeSafe service rejected the evaluation request.", "transport");
   }
-  if (error instanceof APIConnectionError)
+  if (error instanceof APIConnectionError) {
     return new EvaluationError("TypeSafe transport unavailable.", "transport");
+  }
   return new EvaluationError(
     "TypeSafe evaluation failed or returned an invalid response.",
     "invalid-response",

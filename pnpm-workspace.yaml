@@ -10,6 +10,8 @@ minimumReleaseAgeStrict: true
 
 # Trusted Codex runtimes are outside the dependency cooldown.
 minimumReleaseAgeExclude:
+  # Approved TypeSafe adapter SDK; remove after 2026-09-22T18:17:19Z.
+  - "@typesafe-ai/sdk@0.6.0"
   # Reviewed ACPX runtime release; remove after 2026-09-23T13:34:53Z.
   - acpx@0.16.0
   # Published ACPX runtime dependency; remove after 2026-09-20T08:36Z.

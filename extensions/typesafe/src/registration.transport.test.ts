@@ -39,7 +39,7 @@ function registeredProvider(): JudgmentProviderV1 {
     registerTool: vi.fn(),
     registerJudgmentProvider,
   } as unknown as OpenClawPluginApi);
-  return registerJudgmentProvider.mock.calls[0][0];
+  return registerJudgmentProvider.mock.calls[0]![0];
 }
 
 beforeEach(() => {
@@ -71,8 +71,12 @@ it("runs the registered provider through the real SDK transport and back to host
     },
   });
   expect(fetch).toHaveBeenCalledOnce();
-  expect(fetch.mock.calls[0][0]).toBe("https://api.typesafe.ai/v1/systemone");
-  expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
+  expect(fetch.mock.calls[0]![0]).toBe("https://api.typesafe.ai/v1/systemone");
+  const body = fetch.mock.calls[0]![1]?.body;
+  if (typeof body !== "string") {
+    throw new Error("Expected serialized JSON request body");
+  }
+  expect(JSON.parse(body)).toEqual({
     ...batch,
     questions: { ...batch.questions, q: { ...batch.questions.q, type: "noul" } },
     model: "jev-latest",

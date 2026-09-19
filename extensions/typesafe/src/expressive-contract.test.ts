@@ -41,7 +41,11 @@ it("preserves structured instructions, all criteria types, legends, and model ov
     async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(answer)),
   );
   expect(await evaluate(input, config, undefined, fetch)).toEqual({ evaluation: answer });
-  expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual(input);
+  const body = fetch.mock.calls[0]![1]?.body;
+  if (typeof body !== "string") {
+    throw new Error("Expected serialized JSON request body");
+  }
+  expect(JSON.parse(body)).toEqual(input);
   const bad = structuredClone(answer);
   bad.answers.urgency.legend[0].examples = ["Different rubric"];
   expect(() => parseResult(bad, parseInput(input))).toThrow("invalid evaluation response");
@@ -133,12 +137,23 @@ it.each([
 
 it("publishes typed map values and every variant without patternProperties", () => {
   // Regression for the agent-visible empty-object declaration, not just runtime validation.
-  const schema = JSON.parse(JSON.stringify(EvaluateInput));
-  expect(JSON.stringify(schema)).not.toContain("patternProperties");
-  const variants = schema.properties.questions.additionalProperties.anyOf;
-  expect(variants.map((v: any) => v.properties.type.const)).toEqual(["noul", "choice", "score"]);
-  expect(
-    variants[1].properties.criteria.additionalProperties.anyOf.map((v: any) => v.type),
-  ).toEqual(["string", "object", "array", "null"]);
-  expect(variants[0].properties.criteria.anyOf[0].properties).toHaveProperty("true");
+  expect(JSON.stringify(EvaluateInput)).not.toContain("patternProperties");
+  expect(EvaluateInput).toHaveProperty("properties.questions.additionalProperties.anyOf", [
+    expect.objectContaining({
+      properties: expect.objectContaining({ type: { const: "noul", type: "string" } }),
+    }),
+    expect.objectContaining({
+      properties: expect.objectContaining({ type: { const: "choice", type: "string" } }),
+    }),
+    expect.objectContaining({
+      properties: expect.objectContaining({ type: { const: "score", type: "string" } }),
+    }),
+  ]);
+  expect(EvaluateInput).toHaveProperty(
+    "properties.questions.additionalProperties.anyOf.1.properties.criteria.additionalProperties.anyOf",
+    ["string", "object", "array", "null"].map((type) => expect.objectContaining({ type })),
+  );
+  expect(EvaluateInput).toHaveProperty(
+    "properties.questions.additionalProperties.anyOf.0.properties.criteria.anyOf.0.properties.true",
+  );
 });

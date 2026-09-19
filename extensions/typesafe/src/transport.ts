@@ -10,8 +10,9 @@ export function boundedFetch(fetch: Fetch = globalThis.fetch): Fetch {
     if (url !== "https://api.typesafe.ai/v1/systemone") {
       throw new Error("Unexpected TypeSafe destination.");
     }
-    if (typeof init?.body === "string" && Buffer.byteLength(init.body) > MAX_JSON_BYTES)
+    if (typeof init?.body === "string" && Buffer.byteLength(init.body) > MAX_JSON_BYTES) {
       throw new Error("TypeSafe request exceeds its limit.");
+    }
     const response = await fetch(url, { ...init, redirect: "error" });
     const reader = response.body?.getReader();
     if (!reader) {

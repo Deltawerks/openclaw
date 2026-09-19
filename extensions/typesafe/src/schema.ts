@@ -166,27 +166,27 @@ export type Evaluation = Static<typeof VendorResult>;
 /** Reject non-JSON values and excessive structure before schema walking or serialization. */
 export function assertBoundedJson(value: unknown): void {
   let nodes = 0;
-  const visit = (entry: unknown, depth: number): void => {
+  const visit = (node: unknown, depth: number): void => {
     if (++nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH) {
       throw new Error("TypeSafe JSON exceeds resource limits (262144 nodes or depth 64).");
     }
-    if (entry === null || typeof entry === "string" || typeof entry === "boolean") {
+    if (node === null || typeof node === "string" || typeof node === "boolean") {
       return;
     }
-    if (typeof entry === "number" && Number.isFinite(entry)) {
+    if (typeof node === "number" && Number.isFinite(node)) {
       return;
     }
-    if (typeof entry !== "object" || !entry) {
+    if (typeof node !== "object" || !node) {
       throw new Error("TypeSafe input must be JSON.");
     }
     if (
-      !Array.isArray(entry) &&
-      Object.getPrototypeOf(entry) !== Object.prototype &&
-      Object.getPrototypeOf(entry) !== null
+      !Array.isArray(node) &&
+      Object.getPrototypeOf(node) !== Object.prototype &&
+      Object.getPrototypeOf(node) !== null
     ) {
       throw new Error("TypeSafe input must be plain JSON.");
     }
-    for (const [key, item] of Object.entries(entry)) {
+    for (const [key, item] of Object.entries(node)) {
       if (["__proto__", "constructor", "prototype"].includes(key)) {
         throw new Error("TypeSafe input contains a reserved key.");
       }
@@ -250,7 +250,7 @@ export function parseResult(value: unknown, input: EvaluationInput): Evaluation 
     for (const id of names) {
       const expected = input.questions[id];
       const answer = value.answers[id];
-      if (!answer || answer.type !== expected.type) {
+      if (!expected || !answer || answer.type !== expected.type) {
         throw new Error();
       }
       if (answer.type === "noul") {
@@ -275,19 +275,25 @@ export function parseResult(value: unknown, input: EvaluationInput): Evaluation 
       if (answer.type === "choice") {
         // Preserve tied or rounded choices, but reject a contradictory selected label.
         const maximum = Math.max(...Object.values(answer.probabilities));
+        const selected = answer.probabilities[answer.choice];
         if (
           !labels.includes(answer.choice) ||
-          maximum - answer.probabilities[answer.choice] > 0.001
+          selected === undefined ||
+          maximum - selected > 0.001
         ) {
           throw new Error();
         }
       }
       if (answer.type === "score" && expected.type === "score") {
         // Allow one-thousandth of a rubric level for vendor rounding; preserve the reported value.
-        const expectedScore = labels.reduce(
-          (sum, label, index) => sum + index * answer.probabilities[label],
-          0,
-        );
+        let expectedScore = 0;
+        for (const [index, label] of labels.entries()) {
+          const labelProbability = answer.probabilities[label];
+          if (labelProbability === undefined) {
+            throw new Error();
+          }
+          expectedScore += index * labelProbability;
+        }
         if (
           Math.abs(answer.score - expectedScore) > 0.001 ||
           answer.score > labels.length - 1 ||
