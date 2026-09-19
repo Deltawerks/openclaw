@@ -8,7 +8,8 @@ import {
   PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH,
 } from "../../scripts/lib/package-lifecycle-marker.mjs";
 import { getFileLockProcessStartTime, isPidAlive } from "../shared/pid-alive.js";
-import { createFileLockManager } from "./file-lock-manager.js";
+import { asFsSafeFileLockRoot, createFileLockManager } from "./file-lock-manager.js";
+import { root } from "./fs-safe.js";
 
 const PACKAGE_LIFECYCLE_LOCK_RELATIVE_PATH = ".openclaw-lifecycle-lock";
 const DEFAULT_PACKAGE_LIFECYCLE_SCRIPT_TIMEOUT_MS = 20 * 60_000;
@@ -98,13 +99,54 @@ function resolveLifecyclePaths(packageRoot: string) {
   };
 }
 
-async function isPackageLifecyclePending(paths: ReturnType<typeof resolveLifecyclePaths>) {
-  return (await pathExists(paths.pending)) || (await pathExists(paths.legacyGuard));
+type LifecycleRoot = ReturnType<typeof asFsSafeFileLockRoot>;
+
+async function bindLifecycleRoot(packageRoot: string): Promise<LifecycleRoot | undefined> {
+  try {
+    return asFsSafeFileLockRoot(await root(packageRoot));
+  } catch (error) {
+    if (hasErrorCode(error, "not-found")) {
+      return undefined;
+    }
+    throw new PackageLifecycleOwnershipError(packageRoot, "package root cannot be bound", error);
+  }
 }
 
-async function ensurePendingMarker(markerPath: string): Promise<void> {
+async function assertLifecycleRoot(packageRoot: string, packageDirectory: LifecycleRoot) {
   try {
-    await fs.writeFile(markerPath, "pending\n", { flag: "wx", mode: 0o644 });
+    await packageDirectory.resolve(".");
+  } catch (error) {
+    throw new PackageLifecycleOwnershipError(packageRoot, "package root cannot be verified", error);
+  }
+}
+
+async function isPackageLifecyclePending(
+  paths: ReturnType<typeof resolveLifecyclePaths>,
+  packageDirectory: LifecycleRoot,
+) {
+  await assertLifecycleRoot(paths.packageRoot, packageDirectory);
+  const pending = (await pathExists(paths.pending)) || (await pathExists(paths.legacyGuard));
+  await assertLifecycleRoot(paths.packageRoot, packageDirectory);
+  return pending;
+}
+
+async function assertLifecycleAuthority(
+  paths: ReturnType<typeof resolveLifecyclePaths>,
+  packageDirectory: LifecycleRoot,
+  lock: Awaited<ReturnType<typeof acquireLifecycleLock>>,
+): Promise<void> {
+  await assertLifecycleRoot(paths.packageRoot, packageDirectory);
+  await assertLifecycleLockOwnership(paths.packageRoot, lock);
+}
+
+async function ensurePendingMarker(
+  paths: ReturnType<typeof resolveLifecyclePaths>,
+  packageDirectory: LifecycleRoot,
+  lock: Awaited<ReturnType<typeof acquireLifecycleLock>>,
+): Promise<void> {
+  await assertLifecycleAuthority(paths, packageDirectory, lock);
+  try {
+    await fs.writeFile(paths.pending, "pending\n", { flag: "wx", mode: 0o644 });
   } catch (error) {
     if (!hasErrorCode(error, "EEXIST")) {
       throw error;
@@ -115,6 +157,8 @@ async function ensurePendingMarker(markerPath: string): Promise<void> {
 async function acquireLifecycleLock(
   paths: ReturnType<typeof resolveLifecyclePaths>,
   scriptTimeoutMs: number,
+  waitForOwner = true,
+  lockRoot?: LifecycleRoot,
 ) {
   // Preserve the shipped admission envelope without timing or expiring healthy script work.
   const waitBudgetMs =
@@ -131,6 +175,7 @@ async function acquireLifecycleLock(
     try {
       return await lifecycleLocks.acquire(paths.lock, {
         lockPath: paths.lock,
+        ...(lockRoot ? { lockRoot } : {}),
         staleMs: 0,
         retry: { retries: 0 },
         staleRecovery: "fail-closed",
@@ -150,8 +195,12 @@ async function acquireLifecycleLock(
       });
     } catch (error) {
       if (!hasErrorCode(error, "file_lock_timeout")) {
+        if (lockRoot) {
+          await assertLifecycleRoot(paths.packageRoot, lockRoot);
+        }
         // The provider preserves operational errors. Retain an observed or unreadable
-        // lock, but keep ordinary creation failures removable when no lock exists.
+        // lock, but keep ordinary creation failures removable when no lock exists
+        // and the retained root, if any, is still valid.
         try {
           await fs.lstat(paths.lock);
         } catch (inspectionError) {
@@ -162,6 +211,13 @@ async function acquireLifecycleLock(
         throw new PackageLifecycleOwnershipError(
           paths.packageRoot,
           "lock cannot be inspected",
+          error,
+        );
+      }
+      if (!waitForOwner) {
+        throw new PackageLifecycleOwnershipError(
+          paths.packageRoot,
+          "lifecycle admission prevents stage disposal",
           error,
         );
       }
@@ -225,6 +281,102 @@ function runPackageLifecycleScript(
   }
 }
 
+async function assertLifecycleLockOwnership(
+  packageRoot: string,
+  lock: Awaited<ReturnType<typeof acquireLifecycleLock>>,
+): Promise<void> {
+  try {
+    if (await lock.verifyStillHeld()) {
+      return;
+    }
+  } catch (error) {
+    throw new PackageLifecycleOwnershipError(packageRoot, "ownership check failed", error);
+  }
+  throw new PackageLifecycleOwnershipError(packageRoot, "lock generation changed");
+}
+
+/** Retire discarded private candidates without dispatching their pending scripts. */
+export async function discardPendingPackageLifecycle(params: {
+  packageRoots: readonly string[];
+  discard: () => Promise<void>;
+}): Promise<void> {
+  const owned: Array<{
+    paths: ReturnType<typeof resolveLifecyclePaths>;
+    packageDirectory: LifecycleRoot;
+    lock: Awaited<ReturnType<typeof acquireLifecycleLock>>;
+    retiredWork: boolean;
+  }> = [];
+  let failure: { error: unknown } | undefined;
+  try {
+    // An isolated pnpm stage can contain several install directories, including
+    // an unlinked failed replacement. Admit every removed package before mutation.
+    for (const packageRoot of params.packageRoots) {
+      const paths = resolveLifecyclePaths(path.resolve(packageRoot));
+      const packageDirectory = await bindLifecycleRoot(paths.packageRoot);
+      if (!packageDirectory) {
+        continue;
+      }
+      const lock = await acquireLifecycleLock(
+        paths,
+        DEFAULT_PACKAGE_LIFECYCLE_SCRIPT_TIMEOUT_MS,
+        false,
+      );
+      owned.push({ paths, packageDirectory, lock, retiredWork: false });
+    }
+    // Recursive removal can unlink a lock before the scripts. Retire both markers
+    // while held, so even a waiting completer dispatches nothing during removal.
+    for (const entry of owned) {
+      for (const marker of [entry.paths.pending, entry.paths.legacyGuard]) {
+        await assertLifecycleAuthority(entry.paths, entry.packageDirectory, entry.lock);
+        if (await pathExists(marker)) {
+          await assertLifecycleAuthority(entry.paths, entry.packageDirectory, entry.lock);
+          await fs.rm(marker, { force: true });
+          entry.retiredWork = true;
+        }
+      }
+    }
+    for (const { paths, packageDirectory, lock } of owned) {
+      await assertLifecycleAuthority(paths, packageDirectory, lock);
+    }
+    await params.discard();
+  } catch (error) {
+    failure = { error };
+    for (const entry of owned) {
+      try {
+        // A removal error is ordinary only while the original authority remains.
+        await assertLifecycleAuthority(entry.paths, entry.packageDirectory, entry.lock);
+        if (entry.retiredWork) {
+          await ensurePendingMarker(entry.paths, entry.packageDirectory, entry.lock);
+        }
+      } catch (recoveryError) {
+        failure = {
+          error:
+            recoveryError instanceof PackageLifecycleOwnershipError
+              ? recoveryError
+              : new PackageLifecycleOwnershipError(
+                  entry.paths.packageRoot,
+                  "discarded work cannot be recovered",
+                  recoveryError,
+                ),
+        };
+      }
+    }
+  }
+  for (const { paths, lock } of owned.toReversed()) {
+    try {
+      // Successful disposal removed this path. Matching release tolerates that.
+      await lock.release();
+    } catch (error) {
+      failure = {
+        error: new PackageLifecycleOwnershipError(paths.packageRoot, "lock release failed", error),
+      };
+    }
+  }
+  if (failure) {
+    throw failure.error;
+  }
+}
+
 export async function completePendingPackageLifecycle(params: {
   packageRoot: string;
   runScript?: (script: PackageLifecycleScript) => void | Promise<void>;
@@ -233,32 +385,31 @@ export async function completePendingPackageLifecycle(params: {
   const packageRoot = path.resolve(params.packageRoot);
   const scriptTimeoutMs = params.timeoutMs ?? DEFAULT_PACKAGE_LIFECYCLE_SCRIPT_TIMEOUT_MS;
   const paths = resolveLifecyclePaths(packageRoot);
-  if (!(await isPackageLifecyclePending(paths))) {
+  // Bind before observing work, and retain that directory across every retry.
+  const packageDirectory = await bindLifecycleRoot(packageRoot);
+  if (!packageDirectory) {
+    return false;
+  }
+  if (!(await isPackageLifecyclePending(paths, packageDirectory))) {
     try {
       // Postinstall can clear its marker before its invocation settles. A lock
       // still requires admission before callers may verify or activate this package.
       await fs.lstat(paths.lock);
     } catch (error) {
       if (hasErrorCode(error, "ENOENT")) {
+        await assertLifecycleRoot(packageRoot, packageDirectory);
         return false;
       }
       throw new PackageLifecycleOwnershipError(packageRoot, "lock cannot be inspected", error);
     }
   }
 
-  const lock = await acquireLifecycleLock(paths, scriptTimeoutMs);
-  const assertOwnership = async () => {
-    try {
-      if (await lock.verifyStillHeld()) {
-        return;
-      }
-    } catch (error) {
-      throw new PackageLifecycleOwnershipError(packageRoot, "ownership check failed", error);
-    }
-    throw new PackageLifecycleOwnershipError(packageRoot, "lock generation changed");
-  };
+  const lock = await acquireLifecycleLock(paths, scriptTimeoutMs, true, packageDirectory);
+  const assertOwnership = () => assertLifecycleAuthority(paths, packageDirectory, lock);
+  let observedPendingWork = false;
   const completeWhileHeld = async () => {
-    if (!(await isPackageLifecyclePending(paths))) {
+    observedPendingWork = await isPackageLifecyclePending(paths, packageDirectory);
+    if (!observedPendingWork) {
       await assertOwnership();
       return false;
     }
@@ -268,7 +419,7 @@ export async function completePendingPackageLifecycle(params: {
     await assertOwnership();
     // Promote the shipped 2026.8.1 dist guard before preinstall removes it.
     // Modern postinstall clears the canonical marker after all lifecycle work succeeds.
-    await ensurePendingMarker(paths.pending);
+    await ensurePendingMarker(paths, packageDirectory, lock);
     const runScript =
       params.runScript ??
       ((script) => runPackageLifecycleScript(packageRoot, script, scriptTimeoutMs));
@@ -282,7 +433,7 @@ export async function completePendingPackageLifecycle(params: {
       // interrupted promotion, so successful retries can still finalize it.
       await fs.rm(paths.pending, { force: true });
     }
-    if (await isPackageLifecyclePending(paths)) {
+    if (await isPackageLifecyclePending(paths, packageDirectory)) {
       throw new Error("OpenClaw package postinstall did not complete its lifecycle marker");
     }
     return true;
@@ -299,13 +450,30 @@ export async function completePendingPackageLifecycle(params: {
   } catch (error) {
     outcome = { error };
   }
-  if ("error" in outcome) {
-    await ensurePendingMarker(paths.pending).catch(() => undefined);
+  // A no-work caller must not recreate markers retired before its admission.
+  if ("error" in outcome && observedPendingWork) {
+    try {
+      await ensurePendingMarker(paths, packageDirectory, lock);
+    } catch (error) {
+      if (error instanceof PackageLifecycleOwnershipError) {
+        outcome = { error };
+      } else {
+        // A marker write failure does not make settled work uncertain while
+        // this invocation still owns the same directory and lock generation.
+        try {
+          await assertOwnership();
+        } catch (ownershipError) {
+          outcome = { error: ownershipError };
+        }
+      }
+    }
   }
   try {
     await lock.release();
   } catch (error) {
-    await ensurePendingMarker(paths.pending).catch(() => undefined);
+    if (observedPendingWork) {
+      await ensurePendingMarker(paths, packageDirectory, lock).catch(() => undefined);
+    }
     // Uncertain release must preserve the stage even if the script itself failed.
     throw new PackageLifecycleOwnershipError(packageRoot, "lock release failed", error);
   }

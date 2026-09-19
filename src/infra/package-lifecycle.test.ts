@@ -50,9 +50,10 @@ describe("package lifecycle completion", () => {
           setTimeout(resolve, 250);
         });
         expect(calls).toEqual(["preinstall"]);
-        startCaller();
         releasePreinstall();
+        await expect(Promise.all(callers)).resolves.toEqual([true, false]);
 
+        startCaller();
         await expect(Promise.all(callers)).resolves.toEqual([true, false, false]);
         expect(calls).toEqual(["preinstall", "postinstall"]);
       } finally {
@@ -120,9 +121,9 @@ describe("package lifecycle completion", () => {
       };
       try {
         await preEntered.promise;
-        startContender();
         releasePre.resolve();
         await postEntered.promise;
+        // One observing waiter isolates marker settlement from concurrent SDK admissions.
         startContender();
         await new Promise((resolve) => {
           setTimeout(resolve, 250);
@@ -130,7 +131,7 @@ describe("package lifecycle completion", () => {
         expect(returned).not.toHaveBeenCalled();
         expect(contenderScript).not.toHaveBeenCalled();
         releasePost.resolve();
-        await expect(Promise.all(completions)).resolves.toEqual([true, false, false]);
+        await expect(Promise.all(completions)).resolves.toEqual([true, false]);
       } finally {
         releasePre.resolve();
         releasePost.resolve();
