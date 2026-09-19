@@ -31,8 +31,6 @@ import {
   removeQueuedMessageWithoutReleasing,
   readQueuedMessageById,
 } from "./chat-queue.ts";
-import { isTerminalFailureChatSendAck } from "./chat-send-ack.ts";
-import { sendChatMessageWithGeneratedRunId } from "./chat-send-actions.ts";
 import {
   captureChatCommandComposerRecovery,
   cancelChatDelivery,
@@ -45,10 +43,10 @@ import {
   snapshotChatAttachments,
   submittedCommandConnectionIsCurrent,
   submittedCommandScopeIsVisible,
-  type ChatCommandComposerRecovery,
 } from "./chat-send-composer.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
 import { chatOutboxDrainDependencies, deliverChatQueueItem } from "./chat-send-delivery.ts";
+import { sendDetachedCommandMessage } from "./chat-send-detached-command.ts";
 import {
   canSendVolatileQueueItem,
   createPendingSendMessage,
@@ -60,7 +58,6 @@ import {
 import { resolveDisplayedLeafEntryId } from "./chat-send-request.ts";
 import {
   chatSendHoldReason,
-  formatTerminalChatSendAckError,
   formatChatQueueAdmissionError,
   isChatResetCommand,
   OFFLINE_QUEUE_STORAGE_ERROR,
@@ -111,41 +108,6 @@ async function waitForSubmittedRoute(host: ChatHost, sessionKey: string): Promis
     return false;
   }
   return host.sessionKey === sessionKey;
-}
-
-async function sendDetachedCommandMessage(
-  host: ChatHost,
-  message: string,
-  opts: {
-    attachments?: ChatAttachment[];
-    recovery: ChatCommandComposerRecovery;
-    runId?: string;
-  },
-) {
-  const ack = await sendChatMessageWithGeneratedRunId(host, message, opts?.attachments, {
-    canApplyError: () => submittedCommandScopeIsVisible(host, opts.recovery),
-    runId: opts.runId,
-  });
-  const sendAck = ack && !("kind" in ack) ? ack : null;
-  const ok =
-    sendAck?.status === "ok" || sendAck?.status === "started" || sendAck?.status === "in_flight";
-  if (!ok && !restoreFailedCommandComposer(host, opts.recovery)) {
-    releaseCommandComposerAttachments(host, opts.recovery, opts.attachments);
-  }
-  if (
-    isTerminalFailureChatSendAck(sendAck) &&
-    submittedCommandScopeIsVisible(host, opts.recovery)
-  ) {
-    setChatError(host, formatTerminalChatSendAckError(sendAck, "detached"));
-  }
-  if (ok) {
-    if (submittedCommandConnectionIsCurrent(host, opts.recovery)) {
-      clearOwnedCommandComposerFallback(host, opts.recovery);
-    }
-    if (!commandComposerFallbackRetainsAttachments(host, opts.recovery)) {
-      releaseCommandComposerAttachments(host, opts.recovery, opts.attachments);
-    }
-  }
 }
 
 export async function handleSendChat(
