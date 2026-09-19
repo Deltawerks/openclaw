@@ -1055,12 +1055,14 @@ describe("FaceTime talk driver lifecycle", () => {
           senderIsOwner: true,
           messageProvider: "voice",
           lane: "facetime:call-1",
+          thinkLevel: "low",
           extraSystemPrompt: expect.stringContaining(
             "configured owner/user described by this agent's workspace context",
           ),
         }),
       ),
     );
+    expect(mocks.consult.mock.calls[0]?.[0].extraSystemPrompt).toContain("answer immediately");
   });
 
   it("normalizes FaceTime UUID casing for one consult session and lane", async () => {

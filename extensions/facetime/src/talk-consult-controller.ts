@@ -252,6 +252,7 @@ export function createFaceTimeConsultController(params: {
       questionSourceLabel: "caller",
       toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow(params.config.realtime.toolPolicy),
       extraSystemPrompt: CONSULT_SYSTEM_PROMPT,
+      thinkLevel: "low",
       abortSignal: consult.abortController.signal,
       onRunStarted: ({ runId }) => {
         const registration = { runId, controller: new AbortController() };
