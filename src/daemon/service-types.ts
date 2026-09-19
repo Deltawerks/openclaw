@@ -43,6 +43,8 @@ export type GatewayServiceManageArgs = {
 };
 
 export type GatewayServiceControlArgs = {
+  /** Update stop identity only; the native owner must revalidate the live handoff lease. */
+  updateHandoff?: { root: string; runId: string };
   /** Revalidate captured binding after native lock and config admission, before effects. */
   beforeMutation?: () => Promise<void>;
   stdout: NodeJS.WritableStream;
