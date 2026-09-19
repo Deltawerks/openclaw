@@ -12,6 +12,7 @@ import { createSessionGitHubPublication } from "./session-github-publication.ts"
 import { createSessionGroupCatalog } from "./session-group-catalog.ts";
 import { normalizeAgentId, parseAgentSessionKey } from "./session-key.ts";
 import { createSessionMutations } from "./session-mutations.ts";
+import { optimisticSessionRowFields } from "./session-pending-rows.ts";
 import { createSessionPermissionProjection } from "./session-permission-projection.ts";
 import { createSessionReconciliation } from "./session-reconciliation.ts";
 import { sessionRetryDelayMs } from "./session-retry.ts";
@@ -244,7 +245,7 @@ export function createSessionCapability(
         if (source) {
           mutations.observePendingFields(
             source.row,
-            source.select(row, ["pinned", "pinnedAt", "unread", "category"]),
+            source.select(row, optimisticSessionRowFields),
             agentId,
           );
         }
@@ -295,6 +296,7 @@ export function createSessionCapability(
     readState: () => state,
     publish: publishMutation,
     copyRow: roster.copyRow,
+    stageManagedResults: roster.stageManagedResults,
     reconcileMutation: roster.reconcileMutation,
     publishedRow: (key) => roster.publishedRow((row) => row.key === key),
     archiveFields: roster,

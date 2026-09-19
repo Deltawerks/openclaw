@@ -282,8 +282,12 @@ export type SessionCapability = {
   ) => Promise<SessionOwner | null>;
   retireModelOverride: (key: string) => void;
   think: (key: string, agentId?: string | null) => string | undefined;
-  /** Keep optimistic row changes in the published snapshot through later publishes. */
-  patchRowLocal: (key: string, patch: Partial<GatewaySessionRow>) => void;
+  /** Local previews update the primary snapshot; explicit targets also update held incarnations. */
+  patchRowLocal: (
+    key: string,
+    patch: Partial<GatewaySessionRow>,
+    target?: { agentId: string; sessionId: string },
+  ) => void;
   /** True while a just-created work session awaits its canonical placement row. */
   isPreparedWorkSession: (key: string) => boolean;
   pullRequestSummary: (key: string) => SessionCatalogPullRequestSummary | undefined;

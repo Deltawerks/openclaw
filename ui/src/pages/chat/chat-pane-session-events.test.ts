@@ -5,24 +5,18 @@ import { render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewaySessionRow } from "../../api/types.ts";
-import { createApplicationConfigCapability } from "../../app/config.ts";
-import { createApplicationPlacementStartup } from "../../app/session-placement-startup.ts";
-import { createRuntimeConfigCapability } from "../../lib/config/runtime-config-capability.ts";
 import { sessionsResult } from "../../lib/sessions/session-capability.test-support.ts";
 import type {
   SessionRowEventListener,
   SessionRowObservation,
 } from "../../lib/sessions/session-capability.ts";
-import { ControlUiPluginRuntime } from "../../plugins/control-ui-runtime.ts";
-import {
-  createTestGatewayClient,
-  type GatewayRequestHandler,
-} from "../../test-helpers/gateway-client.ts";
+import type { GatewayRequestHandler } from "../../test-helpers/gateway-client.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
 import { loadChatHistory } from "./chat-history.ts";
+import { createMountedPanes, refreshPane } from "./chat-pane-mounted.test-support.ts";
 import { renderChatPaneComposerControls } from "./chat-pane-session-controls.ts";
-import { createTestChatPane, type TestChatPane } from "./chat-pane.test-support.ts";
+import type { TestChatPane } from "./chat-pane.test-support.ts";
 import { readChatInputRunIds } from "./chat-pending-inputs.ts";
 import { refreshPageChat } from "./chat-state-refresh.ts";
 import { selectedChatSessionRow } from "./chat-state-route.ts";
@@ -36,105 +30,6 @@ import { adoptStartedChatRun } from "./run-lifecycle.ts";
 
 beforeEach(installTranscriptDomMocks);
 afterEach(resetTranscriptTestDom);
-
-function createMountedPanes(
-  rows: GatewaySessionRow[],
-  agentId = "main",
-  readBarrier?: Promise<void>,
-  responses?: Partial<
-    Record<
-      "chat.history" | "chat.startup" | "sessions.describe" | "sessions.list" | "sessions.patch",
-      GatewayRequestHandler
-    >
-  >,
-) {
-  const client = createTestGatewayClient(async (method, raw, requestOptions) => {
-    if (
-      method === "chat.history" ||
-      method === "chat.startup" ||
-      method === "sessions.describe" ||
-      method === "sessions.list" ||
-      method === "sessions.patch"
-    ) {
-      const response = responses?.[method];
-      if (response) {
-        return response(method, raw, requestOptions);
-      }
-    }
-    const params = asOptionalRecord(raw);
-    const row = rows.find(
-      (entry) =>
-        entry.key === (params?.sessionKey ?? params?.key) &&
-        (!params?.agentId || entry.agentId === params.agentId),
-    );
-    if (method === "models.list") {
-      return { models: [] };
-    }
-    if (method === "agents.list") {
-      return { defaultId: "main", mainKey: "main", agents: [{ id: "main" }, { id: "research" }] };
-    }
-    if (method === "agent.identity.get") {
-      return { agentId: params?.agentId, name: "Assistant" };
-    }
-    if (method === "sessions.list") {
-      await readBarrier;
-      return sessionsResult(
-        rows.filter((entry) => entry.agentId === "main"),
-        1,
-      );
-    }
-    if (method === "sessions.describe") {
-      await readBarrier;
-      return { session: row ?? null };
-    }
-    if (method === "chat.history" || method === "chat.startup") {
-      await readBarrier;
-      return { messages: [], sessionInfo: row, sessionId: row?.sessionId };
-    }
-    return {};
-  });
-  const fixture = createTestChatPane({ client });
-  const context = fixture.pane.context;
-  const runtimeConfig = createRuntimeConfigCapability(context.gateway);
-  const placementStartup = createApplicationPlacementStartup(context);
-  Object.assign(context, {
-    config: createApplicationConfigCapability({ resourceBasePath: "" }),
-    runtimeConfig,
-    placementStartup,
-    plugins: new ControlUiPluginRuntime(() => context),
-  });
-  const panes: TestChatPane[] = [];
-  const mount = (sessionKey: string) => {
-    const pane =
-      panes.length === 0
-        ? fixture.pane
-        : (document.createElement("openclaw-chat-pane") as unknown as TestChatPane);
-    Object.defineProperty(pane, "isConnected", { configurable: true, value: true });
-    pane.context = context;
-    pane.sessionKey = sessionKey;
-    Object.assign(pane, { agentId });
-    panes.push(pane);
-    pane.connectedCallback();
-    return pane;
-  };
-  onTestFinished(async () => {
-    for (const pane of panes) {
-      pane.disconnectedCallback();
-    }
-    runtimeConfig.dispose();
-    placementStartup.dispose();
-    await vi.dynamicImportSettled();
-  });
-  return { ...fixture, context, mount };
-}
-
-function refreshPane(pane: TestChatPane) {
-  return refreshPageChat(pane.state, {
-    historyLoad: loadChatHistory(pane.state, { deferBranches: true }),
-    awaitHistory: true,
-    scheduleScroll: false,
-  });
-}
 
 describe("mounted pane session event ownership", () => {
   it("publishes one shared event and applies its message to every mounted pane", async () => {
@@ -188,55 +83,65 @@ describe("mounted pane session event ownership", () => {
     }
   });
 
-  it("keeps an archived foreign-agent descriptor current without changing primary membership", async () => {
-    const primary: GatewaySessionRow = {
-      key: "global",
-      agentId: "main",
-      sessionId: "main-global",
-      kind: "global",
-      updatedAt: 1,
-    };
-    const selected: GatewaySessionRow = {
-      key: "global",
-      agentId: "research",
-      sessionId: "research-global",
-      kind: "global",
-      updatedAt: 1,
-      archived: true,
-      label: "Research before",
-    };
-    const { sessions, mount, emitGatewayEvent } = createMountedPanes(
-      [primary, selected],
-      "research",
-    );
-    await sessions.refresh({ agentId: "main", force: true });
-    const pane = mount("global");
-    await refreshPane(pane);
-    expect(selectedChatSessionRow(pane.state)).toMatchObject(selected);
-    emitGatewayEvent("sessions.changed", {
-      sessionKey: "global",
-      agentId: "research",
-      sessionId: selected.sessionId,
-      reason: "update",
-      session: { ...selected, updatedAt: 2, label: "Research after" },
-    });
-    expect(selectedChatSessionRow(pane.state)).toMatchObject({
-      sessionId: selected.sessionId,
-      label: "Research after",
-      archived: true,
-    });
-    expect(sessions.state.agentId).toBe("main");
-    expect(sessions.state.result?.sessions).toEqual([expect.objectContaining(primary)]);
+  it.each([
+    { key: "global", kind: "global", archived: true },
+    { key: "agent:research:qualified-refresh", kind: "direct", archived: false },
+    { key: "agent:research:qualified-refresh", kind: "direct", archived: true },
+  ] as const)(
+    "keeps a foreign $key descriptor after history refresh without changing primary membership (archived: $archived)",
+    async ({ key, kind, archived }) => {
+      const primary: GatewaySessionRow = {
+        key: "global",
+        agentId: "main",
+        sessionId: "main-global",
+        kind: "global",
+        updatedAt: 1,
+      };
+      const selected: GatewaySessionRow = {
+        key,
+        agentId: "research",
+        sessionId: "research-session",
+        kind,
+        updatedAt: 1,
+        archived,
+        label: "Research before",
+      };
+      const { sessions, mount, emitGatewayEvent } = createMountedPanes(
+        [primary, selected],
+        "research",
+      );
+      await sessions.refresh({ agentId: "main", force: true });
+      const pane = mount(key);
+      await refreshPane(pane);
+      expect(selectedChatSessionRow(pane.state)).toMatchObject(selected);
+      expect(pane.state.sessionsResultAgentId).toBe("research");
+      expect(sessions.state.agentId).toBe("main");
+      expect(sessions.state.result?.sessions).toEqual([expect.objectContaining(primary)]);
+      emitGatewayEvent("sessions.changed", {
+        sessionKey: key,
+        agentId: "research",
+        sessionId: selected.sessionId,
+        reason: "update",
+        session: { ...selected, updatedAt: 2, label: "Research after" },
+      });
+      expect(selectedChatSessionRow(pane.state)).toMatchObject({
+        sessionId: selected.sessionId,
+        label: "Research after",
+        archived,
+      });
+      expect(sessions.state.agentId).toBe("main");
+      expect(sessions.state.result?.sessions).toEqual([expect.objectContaining(primary)]);
 
-    emitGatewayEvent("sessions.changed", {
-      sessionKey: "global",
-      agentId: "research",
-      sessionId: selected.sessionId,
-      reason: "delete",
-    });
-    expect(selectedChatSessionRow(pane.state)).toBeUndefined();
-    expect(sessions.state.result?.sessions).toEqual([expect.objectContaining(primary)]);
-  });
+      emitGatewayEvent("sessions.changed", {
+        sessionKey: key,
+        agentId: "research",
+        sessionId: selected.sessionId,
+        reason: "delete",
+      });
+      expect(selectedChatSessionRow(pane.state)).toBeUndefined();
+      expect(sessions.state.result?.sessions).toEqual([expect.objectContaining(primary)]);
+    },
+  );
 
   it.each([false, true])(
     "keeps a same-key successor when its old descriptor retires (reentrant publication: %s)",

@@ -29,7 +29,7 @@ import {
   uiSessionEventMatches,
 } from "./session-key.ts";
 import type { createSessionMutations } from "./session-mutations.ts";
-import type { SessionPatchRowFact } from "./session-pending-rows.ts";
+import { optimisticSessionRowFields, type SessionPatchRowFact } from "./session-pending-rows.ts";
 import type { createSessionPermissionProjection } from "./session-permission-projection.ts";
 import type { createSessionRosterRefresh } from "./session-roster-refresh.ts";
 import { createSessionWriteObservation, type FieldObservation } from "./session-row-provenance.ts";
@@ -86,7 +86,7 @@ type Host = {
 };
 
 export function createSessionReconciliation(host: Host) {
-  const pendingFields = ["pinned", "pinnedAt", "unread", "category"] as const;
+  const pendingFields = optimisticSessionRowFields;
   const createReadRowProjection =
     (
       row: GatewaySessionRow,
