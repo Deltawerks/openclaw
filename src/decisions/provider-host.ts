@@ -50,7 +50,7 @@ type Health = {
   lastSuccessAt?: number;
 };
 
-/** Instance-owned admission and health. No callback escapes its native owner. */
+/** Provider-owned admission and health. */
 export class DecisionProviderHost {
   private retired = false;
   private reloadPause?: object;
@@ -278,9 +278,12 @@ export class DecisionProviderHost {
       // Await physical settlement. A callback that ignores abort keeps its native lease
       // and is fenced by normal failed-drain recovery, never detached as "disposed".
       let outcome;
+      let questions: DecisionBatch["questions"];
       try {
+        // Preserve the offered questions even when the provider mutates its input.
+        questions = structuredClone(submitted.questions);
         outcome = await instance.runInRegistry(registry, () =>
-          this.provider.evaluate(structuredClone(submitted), {
+          this.provider.evaluate(submitted, {
             model,
             ...(options.agentId ? { agentId: options.agentId } : {}),
             signal,
@@ -305,7 +308,7 @@ export class DecisionProviderHost {
         return stopped;
       }
       if (outcome?.status === "ok") {
-        if (!validateDecisionResult(submitted, outcome.result)) {
+        if (!validateDecisionResult({ questions }, outcome.result)) {
           this.fail(health, "invalid-response");
           return this.unavailable("invalid-response");
         }

@@ -139,6 +139,13 @@ function expandReloadPolicies(policies: ReloadPolicy[]): ReloadRule[] {
     .toSorted(compareReloadRules);
 }
 
+const AGENT_ROSTER_RELOAD_ACTIONS: readonly ReloadAction[] = [
+  "restartHeartbeat",
+  "reconcileSystemJobs",
+  "refreshHooksPolicy",
+  "reloadInternalHooks",
+];
+
 const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
   { prefixes: ["gateway.remote", "gateway.reload"], kind: "none" },
   {
@@ -200,13 +207,12 @@ const CORE_RELOAD_POLICIES: ReloadPolicy[] = [
   {
     prefixes: ["agents.entries"],
     kind: "hot",
-    actions: [
-      "restartHeartbeat",
-      "reconcileSystemJobs",
-      "refreshHooksPolicy",
-      "reloadInternalHooks",
-      "reloadPlugins",
-    ],
+    actions: AGENT_ROSTER_RELOAD_ACTIONS,
+  },
+  {
+    prefixes: ["agents.entries.*.decisionModel"],
+    kind: "hot",
+    actions: [...AGENT_ROSTER_RELOAD_ACTIONS, "reloadPlugins"],
   },
   {
     prefixes: ["agents.defaults.sessionStore", "agents.ownership"],

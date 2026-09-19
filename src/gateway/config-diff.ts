@@ -4,6 +4,39 @@ import * as talk from "../config/talk.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isPlainObject } from "../utils.js";
 
+function hasRefinementBelow(
+  prev: unknown,
+  next: unknown,
+  prefix: string,
+  refinement: string,
+): boolean {
+  if (!refinement.includes("*")) {
+    return !prefix || refinement.startsWith(`${prefix}.`);
+  }
+  // Absent wildcard targets keep their parent path so empty roster changes remain visible.
+  const path = prefix ? prefix.split(".") : [];
+  const pattern = refinement.split(".");
+  if (
+    pattern.length <= path.length ||
+    !path.every((segment, index) => pattern[index] === "*" || pattern[index] === segment)
+  ) {
+    return false;
+  }
+  const hasBoundary = (value: unknown, index: number): boolean => {
+    const segment = pattern[index];
+    if (segment === undefined) {
+      return value !== undefined;
+    }
+    if (!isPlainObject(value)) {
+      return false;
+    }
+    return segment === "*"
+      ? Object.values(value).some((child) => hasBoundary(child, index + 1))
+      : Object.hasOwn(value, segment) && hasBoundary(value[segment], index + 1);
+  };
+  return hasBoundary(prev, path.length) || hasBoundary(next, path.length);
+}
+
 function collectConfigDiffPaths(
   prev: unknown,
   next: unknown,
@@ -21,7 +54,7 @@ function collectConfigDiffPaths(
   if (
     (prevIsPlainObject && nextIsPlainObject) ||
     ((prevIsPlainObject || nextIsPlainObject) &&
-      refinementPrefixes.some((entry) => (prefix ? entry.startsWith(`${prefix}.`) : true)))
+      refinementPrefixes.some((entry) => hasRefinementBelow(prev, next, prefix, entry)))
   ) {
     const prevRecord = prevIsPlainObject ? prev : {};
     const nextRecord = nextIsPlainObject ? next : {};
