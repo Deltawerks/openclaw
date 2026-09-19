@@ -10397,6 +10397,64 @@ public struct PluginControlUiModule: Codable, Sendable {
     }
 }
 
+public struct PluginDecisionProviderStatus: Codable, Sendable {
+    public let providerid: String
+    public let pluginid: String
+    public let configured: Bool
+    public let credentialready: Bool
+    public let callable: Bool
+    public let runtimegeneration: String
+    public let recentsuccessat: Int?
+    public let activerequests: Int
+    public let successcount: Int
+    public let totallatencyms: Double
+    public let usage: [String: AnyCodable]
+    public let reasons: [String: AnyCodable]
+
+    public init(
+        providerid: String,
+        pluginid: String,
+        configured: Bool,
+        credentialready: Bool,
+        callable: Bool,
+        runtimegeneration: String,
+        recentsuccessat: Int? = nil,
+        activerequests: Int,
+        successcount: Int,
+        totallatencyms: Double,
+        usage: [String: AnyCodable],
+        reasons: [String: AnyCodable])
+    {
+        self.providerid = providerid
+        self.pluginid = pluginid
+        self.configured = configured
+        self.credentialready = credentialready
+        self.callable = callable
+        self.runtimegeneration = runtimegeneration
+        self.recentsuccessat = recentsuccessat
+        self.activerequests = activerequests
+        self.successcount = successcount
+        self.totallatencyms = totallatencyms
+        self.usage = usage
+        self.reasons = reasons
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case providerid = "providerId"
+        case pluginid = "pluginId"
+        case configured
+        case credentialready = "credentialReady"
+        case callable
+        case runtimegeneration = "runtimeGeneration"
+        case recentsuccessat = "recentSuccessAt"
+        case activerequests = "activeRequests"
+        case successcount = "successCount"
+        case totallatencyms = "totalLatencyMs"
+        case usage
+        case reasons
+    }
+}
+
 public struct PluginDeclaredSurface: Codable, Sendable {
     public let channels: [String]
     public let providers: [String]
@@ -11090,6 +11148,7 @@ public struct PluginsInspectResult: Codable, Sendable {
     public let ok: Bool
     public let overview: [String: AnyCodable]?
     public let credentials: [[String: AnyCodable]]?
+    public let decisions: [PluginDecisionProviderStatus]?
     public let plugin: [String: AnyCodable]
     public let source: PluginInspectSource?
     public let declared: PluginDeclaredSurface
@@ -11103,6 +11162,7 @@ public struct PluginsInspectResult: Codable, Sendable {
         ok: Bool,
         overview: [String: AnyCodable]? = nil,
         credentials: [[String: AnyCodable]]? = nil,
+        decisions: [PluginDecisionProviderStatus]? = nil,
         plugin: [String: AnyCodable],
         source: PluginInspectSource? = nil,
         declared: PluginDeclaredSurface,
@@ -11115,6 +11175,7 @@ public struct PluginsInspectResult: Codable, Sendable {
         self.ok = ok
         self.overview = overview
         self.credentials = credentials
+        self.decisions = decisions
         self.plugin = plugin
         self.source = source
         self.declared = declared
@@ -11129,6 +11190,7 @@ public struct PluginsInspectResult: Codable, Sendable {
         case ok
         case overview
         case credentials
+        case decisions
         case plugin
         case source
         case declared
