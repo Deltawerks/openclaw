@@ -64,6 +64,7 @@ import {
   DESKTOP_PANEL_ELEMENT,
   EXEC_APPROVAL_ELEMENT,
   LazyCustomElementRequestController,
+  LINK_READER_PANEL_ELEMENT,
   type OptionalCustomElement,
   TERMINAL_PANEL_ELEMENT,
 } from "./lazy-custom-element.ts";
@@ -115,6 +116,7 @@ class OpenClawShell
   readonly commandPaletteElement = COMMAND_PALETTE_ELEMENT;
   readonly terminalPanelElement = TERMINAL_PANEL_ELEMENT;
   readonly browserPanelElement = BROWSER_PANEL_ELEMENT;
+  readonly linkReaderPanelElement = LINK_READER_PANEL_ELEMENT;
   readonly desktopPanelElement = DESKTOP_PANEL_ELEMENT;
   readonly execApprovalElement = EXEC_APPROVAL_ELEMENT;
   readonly onboardingMemoryImportElement = {
@@ -233,7 +235,7 @@ class OpenClawShell
   private readonly shellChrome = new ShellChromeOwner(this);
   private readonly shellGateway = new ShellGatewayOwner(this);
 
-  get context(): ApplicationContext<RouteId> | undefined {
+  get context(): ApplicationContext | undefined {
     return this.runtime?.context;
   }
 
@@ -248,7 +250,7 @@ class OpenClawShell
     return routeId !== undefined && !isSettingsNavigationRoute(routeId) && !this.onboardingMode;
   }
 
-  storedOutboxScopeHost(context: ApplicationContext<RouteId>): StoredOutboxScopeHost {
+  storedOutboxScopeHost(context: ApplicationContext): StoredOutboxScopeHost {
     const gatewaySnapshot = context.gateway.snapshot;
     return {
       settings: { gatewayUrl: context.gateway.connection.gatewayUrl },
@@ -259,7 +261,7 @@ class OpenClawShell
   }
 
   private chatTitleContext(
-    context: ApplicationContext<RouteId>,
+    context: ApplicationContext,
     outboxScopeHost: StoredOutboxScopeHost,
   ): string {
     const sessionKey = this.activeSessionKey;
@@ -351,7 +353,10 @@ class OpenClawShell
       .watch(
         () => this.context?.gateway,
         (gateway, notify) => gateway.subscribe(notify),
-        (gateway) => this.shellGateway.synchronizeGateway(gateway.snapshot),
+        (gateway) => {
+          this.shellChrome.synchronizeCommandPaletteScope();
+          this.shellGateway.synchronizeGateway(gateway.snapshot);
+        },
       )
       .effect(
         () => this.context?.gateway,
@@ -623,6 +628,10 @@ class OpenClawShell
   }
   readonly togglePendingDebugOverlayMode = () => this.shellChrome.togglePendingDebugOverlayMode();
   readonly openPalette = this.shellChrome.openPalette;
+  readonly closePendingPalette = this.shellChrome.closePendingPalette;
+  get commandPaletteLoading() {
+    return this.shellChrome.commandPaletteLoading;
+  }
   readonly refreshControlUi = (): Promise<boolean> => {
     const context = this.context;
     if (!context) {
@@ -752,6 +761,7 @@ class OpenClawShell
   override render() {
     if (this.workspaceChromeVisible) {
       this.lazyCustomElements.preload(APP_SIDEBAR_ELEMENT);
+      this.lazyCustomElements.preload(this.commandPaletteElement);
     }
     return renderApplicationShell(this);
   }

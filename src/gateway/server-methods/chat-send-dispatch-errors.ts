@@ -5,7 +5,7 @@ import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
-import { chatAbortMarkerTimestampMs } from "../server-chat-state.js";
+import { chatAbortMarkerTimestampMs, type ChatAbortMarker } from "../server-chat-state.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
 import { formatForLog } from "../ws-log.js";
@@ -22,6 +22,17 @@ import type { PreparedChatSendSession } from "./chat-send-session.js";
 import { hasTrackedActiveSessionRun } from "./session-active-runs.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
+
+export function formatReturnedAgentErrors(messages: string[]): string | undefined {
+  const [primary, ...additional] = [...new Set(messages)];
+  if (!primary || additional.length === 0) {
+    return primary;
+  }
+  if (additional.length === 1) {
+    return `${primary}\n\nAdditional error: ${additional[0]}`;
+  }
+  return `${primary}\n\nAdditional errors:\n${additional.map((message) => `- ${message}`).join("\n")}`;
+}
 
 type PendingDispatchLifecycleError = {
   endedAt: number;
@@ -120,7 +131,7 @@ export async function handleChatSendSetupError(params: {
   }
 }
 
-/** Own dispatch rejection projection and post-cleanup lifecycle persistence. */
+/** Own dispatch settlement and post-cleanup lifecycle persistence. */
 export function createChatSendDispatchErrorLifecycle(params: {
   admission: ChatSendJobAdmission & Pick<AdmittedChatSend, "activeRunAbort">;
   context: GatewayRequestContext;
@@ -149,6 +160,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
     admission;
   const { agentId, backingSessionId, cfg, clientRunId, now, rawSessionKey, sessionKey } = session;
   const jobSessionBinding = admission.sessionBinding;
+  let abortedDispatchMarker: ChatAbortMarker | undefined;
   let pendingDispatchLifecycleError: PendingDispatchLifecycleError | undefined;
   let persistDispatchErrorUserTurn: (() => Promise<void>) | undefined;
   let publishDispatchError: (() => void) | undefined;
@@ -198,21 +210,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
       // chat.abort has already emitted the canonical terminal lifecycle and
       // retained its registration until that durable projection settles.
       // A competing restart-admission write can strand an acknowledged abort.
-      const endedAt = chatAbortMarkerTimestampMs(abortMarkerAtDispatchReject);
-      setGatewayDedupeEntry({
-        dedupe: context.dedupe,
-        key: `chat:${clientRunId}`,
-        session: captureAgentJobSession(jobSessionBinding),
-        entry: {
-          ts: endedAt,
-          ok: true,
-          payload: buildAbortedChatSendPayload({
-            runId: clientRunId,
-            stopReason: activeRunAbort.entry?.abortStopReason ?? "rpc",
-            endedAt,
-          }),
-        },
-      });
+      abortedDispatchMarker = abortMarkerAtDispatchReject;
       context.logGateway.warn(
         `chat.send post-dispatch threw after abort for runId=${clientRunId}: ${formatForLog(err)}`,
       );
@@ -328,6 +326,28 @@ export function createChatSendDispatchErrorLifecycle(params: {
       }
     };
     if (!dispatchError) {
+      const abortMarker =
+        abortedDispatchMarker ??
+        (activeRunAbort.controller.signal.aborted
+          ? context.chatRunState.runs.get(clientRunId)?.abortMarker
+          : undefined);
+      if (abortMarker) {
+        const endedAt = chatAbortMarkerTimestampMs(abortMarker);
+        setGatewayDedupeEntry({
+          dedupe: context.dedupe,
+          key: `chat:${clientRunId}`,
+          session: captureAgentJobSession(jobSessionBinding),
+          entry: {
+            ts: endedAt,
+            ok: true,
+            payload: buildAbortedChatSendPayload({
+              runId: clientRunId,
+              stopReason: activeRunAbort.entry?.abortStopReason ?? "rpc",
+              endedAt,
+            }),
+          },
+        });
+      }
       clearRun();
       cleanupAdmittedRun();
       // Reply-dispatch lifecycle events deliberately retain these until delivery settles.
