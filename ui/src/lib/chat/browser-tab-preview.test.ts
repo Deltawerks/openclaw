@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import { latestBrowserTabCards, loadBrowserTabThumbnail } from "./browser-tab-preview.ts";
+import {
+  latestBrowserTabCards,
+  loadBrowserPagePreview,
+  loadBrowserTabThumbnail,
+} from "./browser-tab-preview.ts";
 import { extractToolCardsCached } from "./tool-cards.ts";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -44,6 +49,20 @@ function screenshotClient() {
 }
 
 describe("browser tab previews", () => {
+  it("expires unavailable metadata so a remounted card can recover", async () => {
+    vi.useFakeTimers();
+    const { client, request } = screenshotClient();
+    request.mockResolvedValueOnce({}).mockResolvedValue({ title: "Recovered" });
+    expect(await loadBrowserPagePreview(client, "https://example.com")).toEqual({});
+    expect(await loadBrowserPagePreview(client, "https://example.com")).toEqual({});
+    expect(request).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(5 * 60_000 + 1);
+    expect(await loadBrowserPagePreview(client, "https://example.com")).toEqual({
+      title: "Recovered",
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps anonymous result revisions stable across reads but distinct across results", () => {
     const message = {
       role: "toolResult",
@@ -91,18 +110,34 @@ describe("browser tab previews", () => {
       ],
     };
     expect([...latestBrowserTabCards([null, older, latest, other], [failed, running])]).toEqual([
-      [tabKey(), { tab: { ...route, targetId: "tab-1", kind: "browser-tab" }, revision: "new" }],
-      [
-        tabKey("tab-2"),
-        { tab: { ...route, targetId: "tab-2", kind: "browser-tab" }, revision: "other" },
-      ],
+      [tabKey(), { tab: { ...route, targetId: "tab-1" }, revision: "new" }],
+      [tabKey("tab-2"), { tab: { ...route, targetId: "tab-2" }, revision: "other" }],
     ]);
     expect([...latestBrowserTabCards([older], [latest])]).toEqual([
-      [tabKey(), { tab: { ...route, targetId: "tab-1", kind: "browser-tab" }, revision: "new" }],
+      [tabKey(), { tab: { ...route, targetId: "tab-1" }, revision: "new" }],
     ]);
     expect([...latestBrowserTabCards([older, latest], [])]).toEqual([
-      [tabKey(), { tab: { ...route, targetId: "tab-1", kind: "browser-tab" }, revision: "new" }],
+      [tabKey(), { tab: { ...route, targetId: "tab-1" }, revision: "new" }],
     ]);
+  });
+
+  it.each([undefined, "about:blank"])("follows a newer tab without a web preview (%s)", (url) => {
+    const older = browserResult("web", "web-tab");
+    const web = {
+      ...older,
+      details: { browserTab: { ...older.details.browserTab, url: "https://example.com" } },
+    };
+    const next = browserResult("focus", "focused-tab");
+    const focused = {
+      ...next,
+      details: { browserTab: { ...next.details.browserTab, ...(url ? { url } : {}) } },
+    };
+    expect(extractToolCardsCached(web)[0]?.preview?.kind).toBe("browser-tab");
+    expect(extractToolCardsCached(focused)[0]?.preview).toBeUndefined();
+    expect([...latestBrowserTabCards([web], [focused]).values()].at(-1)).toEqual({
+      tab: { ...route, targetId: "focused-tab" },
+      revision: "focus",
+    });
   });
 
   it("shares captures, serializes new revisions, and reads bytes only over HTTP", async () => {

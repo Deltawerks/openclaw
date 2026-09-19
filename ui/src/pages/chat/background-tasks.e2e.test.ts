@@ -1,9 +1,15 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { openChatSidePanelType } from "../../e2e/chat-side-panel.test-support.ts";
+import { projectAgentToolActivity } from "../../../../src/infra/agent-activity-events.js";
+import {
+  focusChatSidePanel,
+  openChatSidePanelType,
+  restoreChatAsMain,
+} from "../../e2e/chat-side-panel.test-support.ts";
 import { createControlUiE2eSuite } from "../../e2e/control-ui-e2e-suite.test-support.ts";
 import { createControlUiE2eArtifactDir } from "../../test-helpers/control-ui-e2e-artifacts.ts";
+import { takeControlUiViewportScreenshot } from "../../test-helpers/control-ui-e2e-screenshot.ts";
 import { installMockGateway, type MockGatewayRequest } from "../../test-helpers/control-ui-e2e.ts";
 
 const suite = createControlUiE2eSuite({
@@ -30,17 +36,17 @@ function withoutElapsedLabels(text: string | null): string {
   return (text ?? "").replaceAll(/\d+(?:\.\d+)?\s*(?:ms|[smhd])\b/g, "<elapsed>");
 }
 
-function requestSessionKey(request: MockGatewayRequest): string | undefined {
+function requestTaskId(request: MockGatewayRequest): string | undefined {
   const { params } = request;
   if (
     typeof params !== "object" ||
     params === null ||
-    !("sessionKey" in params) ||
-    typeof params.sessionKey !== "string"
+    !("taskId" in params) ||
+    typeof params.taskId !== "string"
   ) {
     return undefined;
   }
-  return params.sessionKey;
+  return params.taskId;
 }
 
 const runningSubagent = {
@@ -97,13 +103,12 @@ const runningExec = {
   kind: "exec",
   runtime: "cli",
   status: "running",
-  title: "CLI command",
+  title: "pnpm run build",
   agentId: "main",
   ownerKey: chatSessionKey,
   createdAt: baseTime - 2_000,
   updatedAt: baseTime,
   startedAt: baseTime - 2_000,
-  progressSummary: "Command running",
 };
 
 suite.define(() => {
@@ -267,6 +272,7 @@ suite.define(() => {
       await page.waitForTimeout(500);
 
       await refresh.click();
+      await expect.poll(() => refresh.isEnabled()).toBe(true);
       await expect.poll(() => alert.count()).toBe(0);
       expect(await runningOrder()).toEqual(expectedRunning);
       expect(await finishedOrder()).toEqual(expectedFinished);
@@ -282,8 +288,10 @@ suite.define(() => {
   });
 
   it("opens the rail, applies pushed completion, and sends cancel", async () => {
-    await rm(artifactDir, { force: true, recursive: true });
-    const railFlowDir = path.join(artifactDir, "rail-flow");
+    const railFlowDir = path.join(
+      createControlUiE2eArtifactDir("chat-background-tasks", artifactDir),
+      "rail-flow",
+    );
     await mkdir(railFlowDir, { recursive: true });
     await suite.withPage(
       {
@@ -297,6 +305,11 @@ suite.define(() => {
         // round-trip below; live relative ages ("11s") tick across second
         // boundaries on slow runners. Fix Date while keeping timers running.
         await page.clock.setFixedTime(baseTime);
+        const nativeSubagent = {
+          ...runningSubagent,
+          childSessionKey: undefined,
+          hasTranscript: true,
+        };
         const gateway = await installMockGateway(page, {
           historyMessages: [
             {
@@ -306,25 +319,74 @@ suite.define(() => {
             },
           ],
           methodResponses: {
-            "chat.history": {
+            "tasks.history": {
               cases: [
                 {
-                  match: { sessionKey: runningSubagent.childSessionKey },
+                  match: { taskId: nativeSubagent.id, cursor: "task-earlier" },
+                  response: {
+                    activity: ["task-check", "task-check-result"].map((messageId) => ({
+                      messageId,
+                      items: [
+                        projectAgentToolActivity({
+                          toolCallId: "routing-check",
+                          name: "exec",
+                          phase: "result",
+                          status: "completed",
+                          // The native task owns the outcome, not executed host arguments.
+                        }),
+                      ],
+                    })),
+                    messages: [
+                      {
+                        role: "user",
+                        messageId: "task-prompt",
+                        content: "Inspect the model routing boundary.",
+                        timestamp: baseTime - 3_000,
+                      },
+                      {
+                        role: "assistant",
+                        messageId: "task-check",
+                        content: [
+                          {
+                            type: "toolCall",
+                            id: "routing-check",
+                            name: "exec",
+                            arguments: {
+                              command: "pnpm test routing\npnpm tsgo:ui",
+                              title: "Check model routing",
+                            },
+                          },
+                        ],
+                        timestamp: baseTime - 2_000,
+                      },
+                      {
+                        role: "toolResult",
+                        messageId: "task-check-result",
+                        toolCallId: "routing-check",
+                        toolName: "exec",
+                        content: [{ type: "text", text: "Routing boundary checks passed." }],
+                        timestamp: baseTime - 1_000,
+                      },
+                    ],
+                  },
+                },
+                {
+                  match: { taskId: runningSubagent.id },
                   response: {
                     messages: [
                       {
                         content: [{ type: "text", text: taskReviewMarkdown }],
                         role: "assistant",
+                        messageId: "task-review",
                         timestamp: Date.now(),
                       },
                     ],
-                    sessionId: "subagent-transcript",
-                    thinkingLevel: null,
+                    nextCursor: "task-earlier",
                   },
                 },
               ],
             },
-            "tasks.list": { tasks: [runningSubagent, queuedCron, finishedCli] },
+            "tasks.list": { tasks: [nativeSubagent, queuedCron, finishedCli] },
             "tasks.cancel": {
               found: true,
               cancelled: true,
@@ -376,7 +438,10 @@ suite.define(() => {
             agentId: "main",
           });
         }
-        await page.screenshot({ path: path.join(railFlowDir, "01-rail-open.png"), fullPage: true });
+        await writeFile(
+          path.join(railFlowDir, "01-rail-open.png"),
+          await takeControlUiViewportScreenshot(page, page.locator(".shell"), [rail]),
+        );
 
         const chatUrl = page.url();
         const mainTranscript = page.locator(".chat-main .chat-thread");
@@ -387,7 +452,12 @@ suite.define(() => {
         await detailPanel.waitFor({ state: "visible" });
         await detailPanel.getByRole("heading", { name: "Task Review layout proof" }).waitFor();
         expect(await detailPanel.textContent()).toContain("Map model routing code");
-        expect(await detailPanel.textContent()).toContain("Subagent");
+        expect(await detailPanel.locator(".chat-task-detail__meta").textContent()).toContain(
+          "12 tool calls",
+        );
+        expect(await detailPanel.locator(".chat-task-feed__now").textContent()).toContain(
+          "Reading provider catalogs",
+        );
         expect(await openRow.getAttribute("aria-current")).toBe("true");
         expect(
           await openRow.evaluate((element) =>
@@ -396,23 +466,23 @@ suite.define(() => {
         ).toBe(true);
         await expect
           .poll(async () =>
-            (await gateway.getRequests("chat.history")).some(
-              (request) => requestSessionKey(request) === runningSubagent.childSessionKey,
+            (await gateway.getRequests("tasks.history")).some(
+              (request) => requestTaskId(request) === runningSubagent.id,
             ),
           )
           .toBe(true);
-        const transcriptRequest = (await gateway.getRequests("chat.history")).find(
-          (request) => requestSessionKey(request) === runningSubagent.childSessionKey,
+        const transcriptRequest = (await gateway.getRequests("tasks.history")).find(
+          (request) => requestTaskId(request) === runningSubagent.id,
         );
         expect(transcriptRequest?.params).toEqual({
-          sessionKey: runningSubagent.childSessionKey,
-          limit: 800,
+          taskId: runningSubagent.id,
+          limit: 100,
         });
         expect(page.url()).toBe(chatUrl);
         expect(withoutElapsedLabels(await mainTranscript.textContent())).toBe(mainTranscriptBefore);
-        await page.getByRole("button", { name: "Expand side panel" }).click();
+        await focusChatSidePanel(page);
         await expect
-          .poll(() => page.locator(".side-panel__expand").getAttribute("aria-pressed"))
+          .poll(() => page.locator(".chat-panel-focus").getAttribute("aria-pressed"))
           .toBe("true");
         const expandedWidths = await detailPanel.evaluate((taskPanel) => {
           const panel = taskPanel.closest<HTMLElement>(".side-panel__panel");
@@ -425,25 +495,62 @@ suite.define(() => {
           };
         });
         expect(expandedWidths.task).toBeCloseTo(expandedWidths.panel, 0);
-        await page.screenshot({
-          path: path.join(railFlowDir, "02-task-detail-expanded.png"),
-          fullPage: true,
+        await writeFile(
+          path.join(railFlowDir, "02-task-detail-expanded.png"),
+          await takeControlUiViewportScreenshot(page, page.locator(".shell"), [detailPanel]),
+        );
+        await detailPanel.getByRole("button", { name: "Show earlier", exact: true }).click();
+        await detailPanel
+          .getByText("Inspect the model routing boundary.", { exact: true })
+          .waitFor();
+        const toolRow = detailPanel.locator(".chat-task-feed__tool-group", {
+          hasText: "pnpm test routing",
         });
-        await page.getByRole("button", { name: "Collapse", exact: true }).click();
+        await toolRow.waitFor();
+        const toolSummary = toolRow.locator("summary");
+        expect((await toolSummary.textContent())?.trim()).toBe("Exec");
+        const toolBody = toolRow.locator(".chat-task-feed__calls");
+        expect(await toolBody.isVisible()).toBe(false);
+        await toolSummary.click();
+        await toolBody.waitFor();
+        expect(await toolBody.locator("code").textContent()).toBe(
+          "pnpm test routing\npnpm tsgo:ui",
+        );
+        expect(await detailPanel.textContent()).not.toContain("Routing boundary checks passed.");
+        expect(
+          await detailPanel.getByRole("button", { name: "Show earlier", exact: true }).count(),
+        ).toBe(0);
+        expect((await gateway.getRequests("tasks.history")).at(-1)?.params).toEqual({
+          taskId: nativeSubagent.id,
+          limit: 100,
+          cursor: "task-earlier",
+        });
+        await writeFile(
+          path.join(railFlowDir, "02-native-transcript-with-expanded-command.png"),
+          await takeControlUiViewportScreenshot(page, page.locator(".shell"), [
+            detailPanel,
+            toolBody,
+          ]),
+        );
+        await page.getByRole("button", { name: "Restore split", exact: true }).click();
         await expect
-          .poll(() => page.locator(".side-panel__expand").getAttribute("aria-pressed"))
+          .poll(() => page.locator(".chat-panel-focus").getAttribute("aria-pressed"))
           .toBe("false");
+        await restoreChatAsMain(page);
 
         await gateway.emitGatewayEvent("task", {
           action: "upserted",
           task: {
-            ...runningSubagent,
+            ...nativeSubagent,
             status: "completed",
             updatedAt: baseTime + 1_000,
             terminalSummary: "Routing map complete",
           },
         });
-        await detailPanel.getByText("Completed").waitFor({ state: "visible" });
+        await detailPanel
+          .locator(".chat-tasks-rail__task-status")
+          .filter({ hasText: "Completed" })
+          .waitFor({ state: "visible" });
         await page
           .locator(".side-panel__header .tabstrip wa-tab")
           .filter({ hasText: "Tasks" })
@@ -458,10 +565,10 @@ suite.define(() => {
             .locator('[data-tasks-section="running"] [data-task-id="task-subagent"]')
             .count(),
         ).toBe(0);
-        await page.screenshot({
-          path: path.join(railFlowDir, "03-pushed-completion.png"),
-          fullPage: true,
-        });
+        await writeFile(
+          path.join(railFlowDir, "03-pushed-completion.png"),
+          await takeControlUiViewportScreenshot(page, page.locator(".shell"), [completedRow]),
+        );
 
         await rail
           .locator('[data-task-id="task-cron"]')
@@ -477,10 +584,10 @@ suite.define(() => {
         await detailPanel.waitFor({ state: "visible" });
         await page.getByText("Background tasks rail proof.").waitFor({ state: "visible" });
         expect(await mainTranscript.textContent()).not.toContain("Task Review layout proof");
-        await page.screenshot({
-          path: path.join(railFlowDir, "04-list-remains-with-detail-open.png"),
-          fullPage: true,
-        });
+        await writeFile(
+          path.join(railFlowDir, "04-list-remains-with-detail-open.png"),
+          await takeControlUiViewportScreenshot(page, page.locator(".shell"), [detailPanel]),
+        );
 
         // Region close leaves sidebarContent set; the rail highlight must
         // follow panel visibility, not retained content.
@@ -496,8 +603,11 @@ suite.define(() => {
     );
   });
 
-  it("streams two subagent activity rows and retains final diff chips", async () => {
-    const activityDir = path.join(artifactDir, "subagent-activity");
+  it("retires terminal subagent text and retains final diff counts in Review", async () => {
+    const activityDir = path.join(
+      createControlUiE2eArtifactDir("chat-background-tasks", artifactDir),
+      "subagent-activity",
+    );
     await mkdir(activityDir, { recursive: true });
     await suite.withPage(
       {
@@ -516,10 +626,10 @@ suite.define(() => {
             },
           ],
           methodResponses: {
-            "chat.history": {
+            "tasks.history": {
               cases: [
                 {
-                  match: { sessionKey: "agent:main:subagent:parallel-one" },
+                  match: { taskId: "task-parallel-one" },
                   response: {
                     messages: [
                       {
@@ -530,8 +640,6 @@ suite.define(() => {
                         timestamp: Date.now(),
                       },
                     ],
-                    sessionId: "parallel-one-child",
-                    thinkingLevel: null,
                   },
                 },
               ],
@@ -571,12 +679,14 @@ suite.define(() => {
         const secondRow = activity.locator('[data-subagent-task-id="task-parallel-two"]');
         expect(await firstRow.textContent()).toContain("Reviewing session ownership");
         expect(await secondRow.textContent()).toContain("Checking tool card rendering");
-        expect(await firstRow.locator(".chat-diffstat__add").textContent()).toBe("+14");
-        expect(await firstRow.locator(".chat-diffstat__del").textContent()).toBe("-3");
-        await page.screenshot({
-          path: path.join(activityDir, "01-two-subagents-streaming.png"),
-          fullPage: true,
-        });
+        expect(await activity.locator(".chat-diffstat").count()).toBe(0);
+        await writeFile(
+          path.join(activityDir, "01-two-subagents-streaming.png"),
+          await takeControlUiViewportScreenshot(page, page.locator(".shell"), [
+            firstRow,
+            secondRow,
+          ]),
+        );
 
         await firstRow.click();
         const detailPanel = page.locator("[data-task-detail-panel]");
@@ -584,19 +694,21 @@ suite.define(() => {
         await detailPanel.getByText("Inspecting session ownership boundaries.").waitFor();
         expect(await detailPanel.textContent()).toContain("Review session ownership");
         expect(await detailPanel.textContent()).toContain("Running");
+        expect(await detailPanel.locator(".chat-diffstat__add").textContent()).toBe("+14");
+        expect(await detailPanel.locator(".chat-diffstat__del").textContent()).toBe("-3");
         await expect
           .poll(async () =>
-            (await gateway.getRequests("chat.history")).some(
-              (request) => requestSessionKey(request) === first.childSessionKey,
+            (await gateway.getRequests("tasks.history")).some(
+              (request) => requestTaskId(request) === first.id,
             ),
           )
           .toBe(true);
-        const childHistoryRequest = (await gateway.getRequests("chat.history")).find(
-          (request) => requestSessionKey(request) === first.childSessionKey,
+        const childHistoryRequest = (await gateway.getRequests("tasks.history")).find(
+          (request) => requestTaskId(request) === first.id,
         );
         expect(childHistoryRequest?.params).toEqual({
-          sessionKey: first.childSessionKey,
-          limit: 800,
+          taskId: first.id,
+          limit: 100,
         });
 
         await gateway.emitGatewayEvent("task", {
@@ -616,7 +728,7 @@ suite.define(() => {
             taskId: first.taskId,
             kind: first.kind,
             runtime: first.runtime,
-            status: "completed",
+            status: "cancelled",
             title: first.title,
             agentId: first.agentId,
             sessionKey: first.sessionKey,
@@ -626,28 +738,120 @@ suite.define(() => {
             startedAt: first.startedAt,
             updatedAt: baseTime + 2_000,
             endedAt: baseTime + 2_000,
-            terminalSummary: "Ownership review complete",
           },
         });
 
-        await firstRow.getByText("Subagent finished").waitFor();
-        await detailPanel.getByText("Completed").waitFor();
-        expect(await firstRow.textContent()).toContain("Ownership review complete");
-        expect(await firstRow.locator(".chat-diffstat__add").textContent()).toBe("+14");
-        expect(await firstRow.locator(".chat-diffstat__del").textContent()).toBe("-3");
-        expect(await secondRow.textContent()).toContain("Subagent working");
+        await expect.poll(() => firstRow.getAttribute("aria-label")).toContain("Cancelled");
+        await detailPanel.getByText("Cancelled").waitFor();
+        expect(await firstRow.textContent()).not.toContain("Cross-checking requester ownership");
+        expect(await activity.locator(".chat-diffstat").count()).toBe(0);
+        expect(await detailPanel.locator(".chat-diffstat__add").textContent()).toBe("+14");
+        expect(await detailPanel.locator(".chat-diffstat__del").textContent()).toBe("-3");
+        expect(await secondRow.locator(".chat-subagent-activity__label").textContent()).toBe(
+          second.title,
+        );
         expect(await secondRow.textContent()).toContain("Checking tool card rendering");
-        await page.screenshot({
-          path: path.join(activityDir, "02-one-subagent-finished.png"),
-          fullPage: true,
-        });
+        await writeFile(
+          path.join(activityDir, "02-one-subagent-cancelled.png"),
+          await takeControlUiViewportScreenshot(page, page.locator(".shell"), [
+            firstRow,
+            secondRow,
+          ]),
+        );
         await page.getByRole("button", { name: "Close Review" }).click();
         await detailPanel.waitFor({ state: "detached" });
+
+        const states = [
+          ["queued", "Queued"],
+          ["running", "Running"],
+          ["completed", "Completed"],
+          ["failed", "Failed"],
+          ["cancelled", "Cancelled"],
+          ["timed_out", "Timed out"],
+        ] as const;
+        const claw = firstRow.locator(".chat-subagent-activity__claw > svg");
+        const jaw = claw.locator(".claw-icon__jaw");
+        const indicator = firstRow.locator(".chat-subagent-activity__indicator");
+        const tooltip = firstRow.locator("..").locator("wa-tooltip[open] .tooltip-content");
+        const tooltipPopup = firstRow
+          .locator("..")
+          .locator('wa-tooltip[open] wa-popup [part="popup"]');
+        const isMoving = () =>
+          jaw.evaluate((element) =>
+            element.getAnimations().some((animation) => animation.playState === "running"),
+          );
+        let idleColor = "";
+        for (const [status, description] of states) {
+          const active = status === "queued" || status === "running";
+          const preview = active ? first.lastActivity : "Reviewed session ownership";
+          await gateway.emitGatewayEvent("task", {
+            action: "upserted",
+            task: {
+              ...first,
+              status,
+              updatedAt: Date.now(),
+              endedAt: active ? undefined : Date.now(),
+              terminalSummary: active ? undefined : preview,
+            },
+          });
+          await expect.poll(() => firstRow.getAttribute("aria-label")).toContain(description);
+          expect((await firstRow.textContent())?.replace(/\s+/g, " ").trim()).toBe(
+            `${first.title} ${preview}`,
+          );
+          await expect.poll(isMoving).toBe(status === "running");
+          expect(await claw.count()).toBe(1);
+          expect(await firstRow.locator(".chat-subagent-activity__badge").count()).toBe(
+            status === "failed" || status === "timed_out" ? 1 : 0,
+          );
+          if (status === "queued") {
+            idleColor = await indicator.evaluate((element) => getComputedStyle(element).color);
+          }
+          if (status === "completed") {
+            expect(await indicator.evaluate((element) => getComputedStyle(element).color)).not.toBe(
+              idleColor,
+            );
+          }
+          await firstRow.hover();
+          await tooltip.waitFor({ state: "visible" });
+          expect(await tooltip.textContent()).toContain(description);
+          await writeFile(
+            path.join(activityDir, `status-${status}.png`),
+            await takeControlUiViewportScreenshot(page, tooltipPopup, [firstRow, tooltip]),
+          );
+          await page.keyboard.press("Escape");
+          await tooltip.waitFor({ state: "detached" });
+          await firstRow
+            .locator("..")
+            .locator("wa-tooltip .tooltip-content")
+            .waitFor({ state: "hidden" });
+          await page.mouse.move(1, 1);
+          if (status === "running") {
+            await page.emulateMedia({ reducedMotion: "reduce" });
+            await expect.poll(isMoving).toBe(false);
+            await page.emulateMedia({ reducedMotion: "no-preference" });
+            await expect.poll(isMoving).toBe(true);
+          }
+          if (status === "completed") {
+            await page.emulateMedia({ reducedMotion: "reduce" });
+            await expect
+              .poll(() => indicator.evaluate((element) => getComputedStyle(element).color), {
+                timeout: 5_000,
+              })
+              .toBe(idleColor);
+            await page.emulateMedia({ reducedMotion: "no-preference" });
+          }
+        }
+        await page.keyboard.press("Tab");
+        await firstRow.focus();
+        await tooltip.waitFor({ state: "visible" });
+        expect(await tooltip.textContent()).toContain("Timed out");
+        await page.keyboard.press("Escape");
       },
     );
   });
 
   it("shows one detached exec after the agent turn ends", async () => {
+    const proofDir = createControlUiE2eArtifactDir("chat-detached-exec");
     await suite.withPage(
       {
         locale: "en-US",
@@ -706,17 +910,20 @@ suite.define(() => {
         expect(Math.abs(previewCenter - linkCenter)).toBeLessThanOrEqual(2);
         expect(previewBox.y + previewBox.height).toBeLessThanOrEqual(linkBox.y);
         await page.screenshot({
-          path: path.join(artifactDir, "08-running-task-popover-centered.png"),
+          path: path.join(proofDir, "08-running-task-popover-centered.png"),
           fullPage: true,
         });
 
         await openChatSidePanelType(page, "Tasks");
         const row = page.locator('[data-task-id="task-exec"]');
         await row.waitFor({ state: "visible" });
-        expect(await row.textContent()).toContain("CLI command");
-        expect(await row.textContent()).toContain("Command running");
+        expect(await row.locator(".chat-tasks-rail__task-title").textContent()).toBe(
+          "pnpm run build",
+        );
+        expect(await row.locator(".chat-tasks-rail__task-status").textContent()).toBe("Running");
+        expect(await row.locator(".chat-tasks-rail__task-detail").count()).toBe(0);
         await page.screenshot({
-          path: path.join(artifactDir, "09-one-background-exec.png"),
+          path: path.join(proofDir, "09-one-background-exec.png"),
           fullPage: true,
         });
       },

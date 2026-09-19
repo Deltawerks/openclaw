@@ -11,6 +11,7 @@ import type {
 } from "./chat-types.ts";
 import { isChatGoalDraftMode } from "./goal-draft.ts";
 import { readHumanMentions } from "./human-mentions.ts";
+import { readChatSelectionAnnotation } from "./selection-annotation.ts";
 import { normalizeSenderIdentity } from "./sender-label.ts";
 
 export const MAX_STORED_SESSIONS = 20;
@@ -62,6 +63,13 @@ function normalizeChatAttachment(value: unknown): ChatAttachment | null {
     return null;
   }
   const restored: ChatAttachment = { id, mimeType };
+  if (entry.origin === "paste" || entry.origin === "file") {
+    restored.origin = entry.origin;
+  }
+  const selectionAnnotation = readChatSelectionAnnotation(entry.selectionAnnotation);
+  if (selectionAnnotation) {
+    restored.selectionAnnotation = selectionAnnotation;
+  }
   const fileName = normalizeOptionalString(entry.fileName);
   if (fileName) {
     restored.fileName = fileName;
@@ -152,13 +160,13 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
       return null;
     }
     item.intent = { kind: intent.kind, version: intent.version, issuedAtMs: intent.issuedAtMs };
-    const sessionId = normalizeOptionalString(entry.sessionId);
-    if (sessionId) {
-      item.sessionId = sessionId;
-    }
     if (entry.expectedLeafEntryId === null || typeof entry.expectedLeafEntryId === "string") {
       item.expectedLeafEntryId = entry.expectedLeafEntryId;
     }
+  }
+  const sessionId = normalizeOptionalString(entry.sessionId);
+  if (sessionId) {
+    item.sessionId = sessionId;
   }
   if (typeof entry.orderKey === "number" && Number.isFinite(entry.orderKey)) {
     item.orderKey = entry.orderKey;
@@ -190,6 +198,8 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
   }
   if (entry.sendState === "steering" || entry.sendState === "executing-command") {
     item.sendState = "unconfirmed";
+  } else if (entry.sendState === "submitting") {
+    item.sendState = "waiting-idle";
   } else if (entry.sendState === "sending") {
     item.sendState = "waiting-reconnect";
   } else if (

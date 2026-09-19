@@ -5,7 +5,6 @@ import {
   downloadClawHubGitHubSkillArchive,
   downloadClawHubSkillArchive,
   downloadClawHubSkillArchiveUrl,
-  normalizeClawHubSha256Integrity,
   type ClawHubDownloadResult,
 } from "../../infra/clawhub-artifacts.js";
 import { isDefaultClawHubBaseUrl, resolveClawHubBaseUrl } from "../../infra/clawhub-client.js";
@@ -13,6 +12,7 @@ import {
   checkClawHubPackageTrust,
   type ClawHubTrustErrorCode,
 } from "../../infra/clawhub-install-trust.js";
+import { normalizeClawHubSha256Integrity } from "../../infra/clawhub-integrity.js";
 import {
   CLAWHUB_SKILLS_SH_TRUST_LABEL,
   CLAWHUB_SKILLS_SH_TRUST_STATE,
@@ -34,7 +34,6 @@ import { markClawPackageIndependentlyOwned } from "../../state/claw-package-adop
 import {
   CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
   installExtractedSkillRoot,
-  resolveWorkspaceSkillInstallDir,
 } from "./archive-install.js";
 import { formatClawHubSkillRequestError } from "./clawhub-request-error.js";
 import {
@@ -48,6 +47,7 @@ import {
   type ClawHubSkillFileLock,
   type ClawHubSkillVerificationLock,
 } from "./clawhub-store.js";
+import { resolveWorkspaceSkillInstallDir } from "./install-paths.js";
 import { digestClawHubSkillTree } from "./skill-tree-digest.js";
 
 export type Logger = {
@@ -473,6 +473,9 @@ export async function performClawHubSkillInstall(
         error: `Skill already exists at ${targetDir}. Re-run with force/update.`,
       };
     }
+    // Reject damaged tracking before installing files; reread at the write boundary
+    // so skills tracked during the download keep their metadata.
+    await readClawHubSkillsLockfile(params.workspaceDir);
 
     let version: string;
     let detail: ClawHubSkillDetail | undefined;

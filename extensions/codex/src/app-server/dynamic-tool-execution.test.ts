@@ -1,5 +1,8 @@
 // Codex tests cover dynamic tool execution plugin behavior.
-import type { EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  embeddedAgentLog,
+  type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   handleDynamicToolCallWithTimeout,
@@ -11,6 +14,7 @@ import {
   toCodexDynamicToolProgressResponse,
   toCodexDynamicToolProtocolResponse,
 } from "./dynamic-tool-execution.js";
+import type { CodexDynamicToolRuntimeResponse } from "./dynamic-tool-response-state.js";
 import type { CodexDynamicToolCallParams, CodexDynamicToolCallResponse } from "./protocol.js";
 
 const dynamicCallContext = { threadId: "thread-1", turnId: "turn-1", namespace: null };
@@ -378,7 +382,7 @@ describe("dynamic tool execution helpers", () => {
 
     await vi.advanceTimersByTimeAsync(1);
 
-    await expect(response).resolves.toEqual({
+    expect(toCodexDynamicToolProtocolResponse(await response)).toEqual({
       success: false,
       contentItems: [
         {
@@ -634,7 +638,7 @@ describe("dynamic tool execution helpers", () => {
       onAgentToolResult,
     });
 
-    expect(result).toEqual({
+    expect(toCodexDynamicToolProtocolResponse(result)).toEqual({
       success: false,
       contentItems: [
         { type: "inputText", text: "OpenClaw dynamic tool call aborted before execution." },
@@ -759,6 +763,52 @@ describe("dynamic tool execution helpers", () => {
     });
   });
 
+  it("preserves a successful bridge result when its observer throws an unreadable error", async () => {
+    const observerError = Object.defineProperty(new Error(), "message", {
+      get() {
+        throw new Error("observer message getter escaped");
+      },
+    });
+    const onAgentToolResult = vi.fn(() => {
+      throw observerError;
+    });
+    const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => {});
+    warn.mockClear();
+    const successful = {
+      success: true,
+      contentItems: [{ type: "inputText" as const, text: "committed effect" }],
+      executionStarted: true,
+      sideEffectEvidence: true,
+    };
+    const completedAction = vi.fn(async () => successful);
+    const result = await handleDynamicToolCallWithTimeout({
+      call: { ...dynamicCallContext, callId: "observer-success", tool: "exec", arguments: {} },
+      toolBridge: {
+        handleToolCall: async (_call, options) => {
+          const response = await completedAction();
+          options?.onAgentToolResult?.({
+            toolName: "exec",
+            result: { content: [{ type: "text", text: "committed effect" }], details: {} },
+            isError: false,
+          });
+          return response;
+        },
+      },
+      signal: new AbortController().signal,
+      timeoutMs: 1000,
+      onAgentToolResult,
+    });
+    expect(completedAction).toHaveBeenCalledOnce();
+    expect(onAgentToolResult).toHaveBeenCalledOnce();
+    expect(result).toBe(successful);
+    expect(result.success).toBe(true);
+    expect(result.sideEffectEvidence).toBe(true);
+    expect(result.diagnosticTerminalReason).toBeUndefined();
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "onAgentToolResult handler failed: tool=exec error=Error",
+    );
+  });
+
   it("contains hostile rejected values while notifying the private observer", async () => {
     const hostileError = Object.defineProperty(new Error(), "message", {
       get() {
@@ -784,12 +834,26 @@ describe("dynamic tool execution helpers", () => {
       onAgentToolResult,
     });
 
-    expect(result).toMatchObject({
+    const protocolResponse = {
       success: false,
-      diagnosticTerminalReason: "failed",
-      contentItems: [{ type: "inputText", text: "OpenClaw dynamic tool call failed." }],
+      contentItems: [{ type: "inputText", text: "Error" }],
+    };
+    expect(result.diagnosticTerminalReason).toBe("failed");
+    expect(result).toMatchObject({
+      ...protocolResponse,
+      diagnosticTerminalType: "error",
+      executionStarted: true,
+      sideEffectEvidence: true,
     });
-    expect(onAgentToolResult).toHaveBeenCalledOnce();
+    expect(toCodexDynamicToolProtocolResponse(result)).toEqual(protocolResponse);
+    expect(onAgentToolResult).toHaveBeenCalledExactlyOnceWith({
+      toolName: "memory_search",
+      result: {
+        content: [{ type: "text", text: "Error" }],
+        details: { status: "failed", error: "Error" },
+      },
+      isError: true,
+    });
   });
 
   it("contains hostile abort reasons while notifying the private observer", async () => {
@@ -823,27 +887,19 @@ describe("dynamic tool execution helpers", () => {
   });
 
   it("keeps async-start metadata on internal dynamic tool progress only", () => {
-    const response: CodexDynamicToolCallResponse = {
+    const mcpAppPreview = { resourceUri: "ui://fixture/preview", title: "Preview" };
+    const response: CodexDynamicToolRuntimeResponse = {
       contentItems: [{ type: "inputText", text: "Background task started." }],
       success: true,
+      asyncStarted: true,
+      executedArguments: { action: "send", to: "channel:123" },
+      executionStarted: true,
+      replaySafe: false,
+      sideEffectEvidence: true,
+      terminate: true,
+      diagnosticTerminalType: "completed",
+      transcriptDetails: { mcpAppPreview, privateModelPayload: "host only" },
     };
-    Object.defineProperty(response, "asyncStarted", {
-      configurable: true,
-      enumerable: false,
-      value: true,
-    });
-    Object.defineProperties(response, {
-      executedArguments: {
-        configurable: true,
-        enumerable: false,
-        value: { action: "send", to: "channel:123" },
-      },
-      executionStarted: {
-        configurable: true,
-        enumerable: false,
-        value: true,
-      },
-    });
 
     const protocolResponse = toCodexDynamicToolProtocolResponse(response);
     const progressResponse = toCodexDynamicToolProgressResponse(response, protocolResponse);
@@ -852,12 +908,9 @@ describe("dynamic tool execution helpers", () => {
       contentItems: [{ type: "inputText", text: "Background task started." }],
       success: true,
     });
-    expect(Object.keys(protocolResponse)).not.toContain("asyncStarted");
-    expect("executionStarted" in protocolResponse).toBe(false);
-    expect("executedArguments" in protocolResponse).toBe(false);
     expect(progressResponse).toEqual({
       contentItems: [{ type: "inputText", text: "Background task started." }],
-      details: { async: true, status: "started" },
+      details: { mcpAppPreview, async: true, status: "started" },
       success: true,
     });
   });
@@ -943,12 +996,8 @@ describe("dynamic tool execution helpers", () => {
     const asyncStartedResponse = {
       contentItems: [{ type: "inputText" as const, text: "Background task started." }],
       success: true,
+      asyncStarted: true,
     };
-    Object.defineProperty(asyncStartedResponse, "asyncStarted", {
-      configurable: true,
-      enumerable: false,
-      value: true,
-    });
 
     expect(shouldBlockTerminalReleaseForNonTerminalDynamicToolResult(asyncStartedResponse)).toBe(
       false,

@@ -26,6 +26,15 @@ reply. Later turns in the same worker environment can inspect or stop it with
 See [Worker background processes](/gateway/background-process#worker-environments)
 for process lifetime and capacity details.
 
+An agent can also use a temporary Crabbox attached to its existing conversation
+without moving the session's primary workspace. It passes the attachment's
+`environmentId` to the `portal` tool and uses `screen` with `portal_show` and the
+returned `portalId` to open that exact preview in the chat side panel. Commands
+for the app run through the Crabbox tool on that environment. Its managed
+background processes survive completed turns; stopping the attachment closes
+its apps and portals. The portal retains the same separate-origin network and
+access contract described below.
+
 ## Declare development servers
 
 Optionally commit `.openclaw/portals.json` to the workspace repository so the agent can discover the available development servers:
@@ -61,7 +70,7 @@ The Gateway never executes these commands automatically. The agent reads the fil
 
 The application must honor `PORT`. Use `PUBLIC_URL` when it needs to generate absolute URLs.
 
-The server can listen on IPv4 or IPv6 loopback (`127.0.0.1` or `::1`), both on the Gateway host and on a worker. Worker streams also preserve the node's configured Gateway context path when connecting through a reverse proxy.
+The server can listen on IPv4 or IPv6 loopback (`127.0.0.1` or `::1`), both on the Gateway host and on a worker, even when the machine's `localhost` records list only one address family. Worker streams also preserve the node's configured Gateway context path when connecting through a reverse proxy.
 
 The proxy rewrites `Host` to the local target, so typical development servers such as Vite and Next.js need no additional configuration. WebSockets and hot module replacement are proxied through the same portal.
 

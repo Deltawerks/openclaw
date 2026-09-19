@@ -3,12 +3,12 @@ import path from "node:path";
 import type { EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness";
 import { AUTH_PROFILE_RUNTIME_CONTRACT } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { seedRunSessionOwnerForTest } from "./run-attempt-session-owners.test-support.js";
 import {
   createAppServerHarness,
   createCodexRuntimePlanFixture,
   createParams as createSharedParams,
   runCodexAppServerAttempt as runSharedCodexAppServerAttempt,
-  seedRunSessionOwnerForTest,
   setupRunAttemptTestHooks,
   tempDir,
   threadStartResult,
@@ -141,6 +141,12 @@ function createCodexAuthProfileHarness(params: {
   const seenClientOptions: CodexAppServerClientOptions[] = [];
   const harness = createAppServerHarness(
     async (method) => {
+      if (method === "config/read") {
+        return { config: {}, origins: {}, layers: [] };
+      }
+      if (method === "configRequirements/read") {
+        return { requirements: null };
+      }
       if (method === params.startMethod) {
         return threadStartResult("thread-auth-contract", { cwd: "" });
       }
@@ -166,13 +172,9 @@ function createCodexAuthProfileHarness(params: {
     seenAgentDirs,
     seenClientOptions,
     async completeTurn() {
-      await harness.notify({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-auth-contract",
-          turnId: "turn-auth-contract",
-          turn: { id: "turn-auth-contract", status: "completed" },
-        },
+      await harness.completeTurn({
+        threadId: "thread-auth-contract",
+        turnId: "turn-auth-contract",
       });
     },
   };

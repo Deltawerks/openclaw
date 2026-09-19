@@ -7,6 +7,11 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import {
+  createTestRegistry,
+  resetPluginRuntimeStateForTest,
+  setActivePluginRegistry,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { finalizeInboundContext, resetInboundDedupe } from "openclaw/plugin-sdk/reply-runtime";
 import type { GetReplyOptions, MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, beforeEach, vi, type Mock } from "vitest";
@@ -15,6 +20,7 @@ import { runTelegramChannelInboundEventWithHarness } from "./bot.test-helpers.js
 import { setTelegramRuntime } from "./runtime.js";
 import { resetTelegramTopicNameCacheForTest } from "./runtime.test-support.js";
 import type { TelegramRuntime } from "./runtime.types.js";
+import { resolveTelegramSessionConversation } from "./session-conversation.js";
 
 type TelegramBotRuntimeForTest = typeof import("./bot.runtime.js");
 type DispatchReplyWithBufferedBlockDispatcherFn =
@@ -248,7 +254,7 @@ export const telegramBotDepsForTest: TelegramBotDeps = {
     code: "PAIRCODE",
     created: true,
   })) as TelegramBotDeps["upsertChannelPairingRequest"],
-  enqueueSystemEvent: vi.fn() as TelegramBotDeps["enqueueSystemEvent"],
+  enqueueRoutedSystemEvent: vi.fn() as TelegramBotDeps["enqueueRoutedSystemEvent"],
   dispatchReplyWithBufferedBlockDispatcher: mediaHarnessDispatchReplyWithBufferedBlockDispatcher,
   buildModelsProviderData: vi.fn(async () => ({
     byProvider: new Map<string, Set<string>>(),
@@ -262,6 +268,21 @@ export const telegramBotDepsForTest: TelegramBotDeps = {
 };
 
 beforeEach(() => {
+  // Gateway starts the bot after registering this hook; direct harness construction must
+  // preserve that boundary so topic routing does not bootstrap bundled plugins mid-turn.
+  setActivePluginRegistry(
+    createTestRegistry([
+      {
+        pluginId: "telegram",
+        source: "test",
+        plugin: {
+          id: "telegram",
+          meta: { aliases: [] },
+          messaging: { resolveSessionConversation: resolveTelegramSessionConversation },
+        },
+      },
+    ]),
+  );
   resetPluginStateStoreForTests();
   cleanupMediaHarnessStoreRoot();
   process.env.OPENCLAW_STATE_DIR = ensureMediaHarnessStoreRoot();
@@ -275,6 +296,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetPluginRuntimeStateForTest();
   resetPluginStateStoreForTests();
   if (originalStateDir === undefined) {
     delete process.env.OPENCLAW_STATE_DIR;
@@ -288,7 +310,7 @@ vi.doMock("./bot.runtime.js", () => ({
   ...telegramBotRuntimeForTest,
 }));
 
-vi.mock("undici", async (importOriginal) => {
+vi.mock("undici/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("undici")>();
   return {
     ...actual,

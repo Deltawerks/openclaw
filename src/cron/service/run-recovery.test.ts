@@ -5,17 +5,16 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import { setupCronServiceSuite, writeCronStoreSnapshot } from "../service.test-harness.js";
-import { loadCronStore } from "../store.js";
+import { loadCronStore, saveCronJobsStore } from "../store.js";
 import {
   claimCronRunReceiptInDatabase,
   finishCronRunReceipt,
   finishCronRunReceiptInDatabase,
-  inspectActiveCronRunReceipt,
   prepareCronRunReceiptClaim,
   releaseLocalCronRunReceiptOwnership,
   type CronRunReceiptHandle,
 } from "../store/run-receipt-store.js";
-import { saveCronJobsStoreWithTransactionHooks } from "../store/transaction-hooks.js";
+import { inspectActiveCronRunReceipt } from "../store/run-receipt-store.test-support.js";
 import type { CronJob } from "../types.js";
 import { start, stop } from "./ops-lifecycle.js";
 import {
@@ -97,18 +96,19 @@ async function commitCompletedJob(params: {
   receipt: CronRunReceiptHandle;
   finishedAtMs: number;
 }) {
-  await saveCronJobsStoreWithTransactionHooks(
+  await saveCronJobsStore(
     params.storePath,
     { version: 1, jobs: params.jobs },
-    undefined,
     {
-      afterWrite: (database) => {
-        finishCronRunReceiptInDatabase({
-          database,
-          handle: params.receipt,
-          status: "ok",
-          finishedAtMs: params.finishedAtMs,
-        });
+      transactionHooks: {
+        afterWrite: (database) => {
+          finishCronRunReceiptInDatabase({
+            database,
+            handle: params.receipt,
+            status: "ok",
+            finishedAtMs: params.finishedAtMs,
+          });
+        },
       },
     },
   );

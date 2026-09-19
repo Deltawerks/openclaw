@@ -1,17 +1,13 @@
 // Gateway chat display sanitizer.
 // Removes OpenClaw-only envelopes before messages are shown in UI/RPC results.
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import {
-  stripInternalMetadataForDisplay,
-  stripUserEnvelopeForDisplay,
-} from "../auto-reply/reply/display-text-sanitize.js";
+import { stripInternalMetadataForDisplay } from "../auto-reply/reply/display-text-sanitize.js";
 import { extractInboundSenderLabel } from "../auto-reply/reply/strip-inbound-meta.js";
-import { stripEnvelope } from "../shared/chat-envelope.js";
-
+import { stripUserEnvelopeForDisplay } from "../auto-reply/reply/user-envelope-display.js";
 // Gateway chat history display strips internal/user envelopes while preserving
 // sender labels for UI rows. The helpers return original object identities when
 // nothing changes so callers can avoid unnecessary snapshot churn.
-export { stripEnvelope };
+export { stripEnvelope } from "../shared/chat-envelope.js";
 
 function extractMessageSenderLabel(entry: Record<string, unknown>): string | null {
   // Sender labels can be explicit fields or embedded in text/envelope content.

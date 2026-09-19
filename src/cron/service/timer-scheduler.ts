@@ -1,11 +1,12 @@
 import pMap, { pMapSkip } from "p-map";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { formatTimestamp } from "../../logging/timestamps.js";
 import {
   beginGatewayRootWorkAdmissionWhenOpen,
   GatewayDrainingError,
-  runOutsideGatewayRootWorkAdmission,
 } from "../../process/gateway-work-admission.js";
 import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { runInDetachedAsyncContext } from "../../shared/async-work-scope.js";
 import { sweepCronRunSessions } from "../session-reaper.js";
 import {
   finishCronRunReceiptInDatabase,
@@ -29,6 +30,8 @@ import {
   setCronRunCapacityListener,
   tryAcquireCronRunSlots,
 } from "./run-admission.js";
+import { skipCronJobsWithoutOwners } from "./run-owner.js";
+import { emitInterruptedCronRun } from "./run-recovery-events.js";
 import {
   recomputeUnownedCronSchedules,
   recoverNonTerminalCronRunReceipts,
@@ -96,7 +99,12 @@ export function armTimer(state: CronServiceState) {
   // tests that simulate long-running jobs. Runtime behavior is unchanged.
   setCronTimer(state, clampedDelay);
   state.deps.log.debug(
-    { nextAt, delayMs: clampedDelay, clamped: delay > MAX_CRON_TIMER_DELAY_MS },
+    {
+      nextAt,
+      nextAtIso: formatTimestamp(new Date(nextAt), { style: "long" }),
+      delayMs: clampedDelay,
+      clamped: delay > MAX_CRON_TIMER_DELAY_MS,
+    },
     "cron: timer armed",
   );
 }
@@ -113,8 +121,8 @@ function armRunningRecheckTimer(state: CronServiceState) {
 
 function setCronTimer(state: CronServiceState, delayMs: number): void {
   state.timer = setTimeout(() => {
-    // The timer outlives the tick that armed it, so it must own a new Gateway root.
-    runOutsideGatewayRootWorkAdmission(() => {
+    // A timer owns its whole tick; no request-local lifetime may cross this boundary.
+    runInDetachedAsyncContext(() => {
       void onTimer(state).catch((err: unknown) => {
         state.deps.log.error({ err: String(err) }, "cron: timer tick failed");
       });
@@ -139,7 +147,7 @@ function requestImmediateCronRecheck(state: CronServiceState): Promise<void> | u
 function requestIndependentImmediateCronRecheck(
   state: CronServiceState,
 ): Promise<void> | undefined {
-  return runOutsideGatewayRootWorkAdmission(() => requestImmediateCronRecheck(state));
+  return runInDetachedAsyncContext(() => requestImmediateCronRecheck(state));
 }
 
 /** Handles one cron timer tick under the process-wide root work admission. */
@@ -159,7 +167,10 @@ export async function onTimer(state: CronServiceState) {
   try {
     // Reopening admission cannot transfer a retired tick to a restarted scheduler.
     if (state.lifecycleGeneration === lifecycleGeneration) {
-      await admission.run(async () => await onAdmittedTimer(state));
+      const run = () => onAdmittedTimer(state);
+      await admission.run(() =>
+        state.deps.runSchedulerOwned ? state.deps.runSchedulerOwned(run) : run(),
+      );
     }
   } finally {
     admission.release();
@@ -197,8 +208,15 @@ async function onAdmittedTimer(state: CronServiceState) {
       if (leaseRecovery.repaired) {
         await ensureLoaded(state, { forceReload: true, skipRecompute: true });
       }
+      for (const interrupted of leaseRecovery.interruptedRuns) {
+        emitInterruptedCronRun(state, interrupted);
+      }
       const dueCheckNow = state.deps.nowMs();
-      const due = collectRunnableJobs(state, dueCheckNow);
+      const due = skipCronJobsWithoutOwners(
+        state,
+        collectRunnableJobs(state, dueCheckNow),
+        dueCheckNow,
+      );
 
       if (due.length === 0) {
         if (!state.store?.jobs.some((job) => needsCronTimerMaintenance(job, dueCheckNow))) {
@@ -253,6 +271,15 @@ async function onAdmittedTimer(state: CronServiceState) {
           }),
           releaseAdmission: admissionReleases[index]!,
         }));
+        if (reservedDue.length === 0 && allowEmptyCapacityRecheck) {
+          // Releasing an unused slot is not progress. Retry immediately only
+          // when the refreshed store removed a candidate from the due set;
+          // otherwise child ticks retain their parents and starve the event loop.
+          const stillDue = new Set(
+            collectRunnableJobs(state, state.deps.nowMs()).map((job) => job.id),
+          );
+          allowEmptyCapacityRecheck = admittedDue.some((job) => !stillDue.has(job.id));
+        }
         for (const releaseAdmission of admissionReleases.slice(reservedDue.length)) {
           releaseAdmission();
         }
@@ -536,14 +563,6 @@ async function onAdmittedTimer(state: CronServiceState) {
         if (reaperAgentIds.size > 0) {
           const nowMs = state.deps.nowMs();
           for (const agentId of reaperAgentIds) {
-            if (state.deps.isAgentAvailable?.(agentId) === false) {
-              if (!state.reportedUnavailableReaperAgentIds.has(agentId)) {
-                state.reportedUnavailableReaperAgentIds.add(agentId);
-                state.deps.log.debug({ agentId }, "cron-reaper: skipped unavailable agent");
-              }
-              continue;
-            }
-            state.reportedUnavailableReaperAgentIds.delete(agentId);
             const storePath = state.deps.resolveSessionStorePath
               ? state.deps.resolveSessionStorePath(agentId)
               : state.deps.sessionStorePath;
@@ -555,6 +574,7 @@ async function onAdmittedTimer(state: CronServiceState) {
                 agentId,
                 cronConfig: state.deps.cronConfig,
                 sessionStorePath: storePath,
+                isAgentAvailable: state.deps.isAgentAvailable,
                 nowMs,
                 log: state.deps.log,
               });

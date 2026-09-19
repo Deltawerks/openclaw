@@ -2,14 +2,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
+import { createTranscriptsAutoStartService } from "../../transcripts/auto-start.js";
+import { activeSessions } from "../../transcripts/capture.js";
+import { clearTranscriptCapturesForTest } from "../../transcripts/capture.test-support.js";
 import type {
   TranscriptSourceProvider,
   TranscriptStartRequest,
 } from "../../transcripts/provider-types.js";
 import { TranscriptsStore, transcriptSessionSelector } from "../../transcripts/store.js";
-import { activeSessions } from "./transcripts-tool-runtime.js";
-import { createTranscriptsAutoStartService, createTranscriptsTool } from "./transcripts-tool.js";
+import { createTranscriptsTool } from "./transcripts-tool.js";
 
 const { getProvider } = vi.hoisted(() => ({ getProvider: vi.fn() }));
 vi.mock("../../transcripts/provider-registry.js", () => ({
@@ -17,10 +22,11 @@ vi.mock("../../transcripts/provider-registry.js", () => ({
   listTranscriptSourceProviders: () => [],
 }));
 const tempDirs = createTempDirTracker();
-afterEach(() => {
-  activeSessions.clear();
+afterEach(async () => {
+  await clearTranscriptCapturesForTest();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   tempDirs.cleanup();
 });

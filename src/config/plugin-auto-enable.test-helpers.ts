@@ -1,10 +1,12 @@
-// Provides fixtures for plugin auto-enable config tests.
 import path from "node:path";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
+// Provides fixtures for plugin auto-enable config tests.
+import { buildPluginMetadataProviderFacts } from "../plugins/plugin-metadata-provider-facts.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import type { PluginOrigin } from "../plugins/plugin-origin.types.js";
+import { buildDeclaredProviderOwnerIndex } from "../plugins/provider-owner-index.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "../plugins/test-helpers/fs-fixtures.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
@@ -106,6 +108,7 @@ export function createPluginMetadataSnapshot(params: {
     diagnostics: params.manifestRegistry.diagnostics,
     byPluginId: new Map(params.manifestRegistry.plugins.map((plugin) => [plugin.id, plugin])),
     normalizePluginId: (pluginId) => pluginId,
+    declaredProviderOwners: buildDeclaredProviderOwnerIndex(params.manifestRegistry.plugins),
     owners: {
       channels: new Map(),
       channelConfigs: new Map(),
@@ -115,6 +118,8 @@ export function createPluginMetadataSnapshot(params: {
       setupProviders: new Map(),
       commandAliases: new Map(),
       contracts: new Map(),
+      providerAuthContributions: buildPluginMetadataProviderFacts(params.manifestRegistry.plugins)
+        .providerAuthContributions,
       modelIdNormalizationPolicies: new Map(),
     },
     metrics: {

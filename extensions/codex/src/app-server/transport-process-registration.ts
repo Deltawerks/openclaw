@@ -5,6 +5,7 @@ import type { OpenClawPluginService } from "openclaw/plugin-sdk/plugin-entry";
 import { z } from "zod";
 import { terminateCodexAppServerOrphan } from "./transport-process-containment.js";
 import {
+  isDeadProcessState,
   ProcessInspectionError,
   readCodexAppServerProcessCommand,
   readCodexAppServerProcessSnapshot,
@@ -59,24 +60,27 @@ async function reapRegisteredCodexAppServerOrphans(): Promise<void> {
       registration.child.pid,
     ]);
     const parent = snapshot.find((row) => row.pid === registration.parent.pid);
-    if (parent?.startedAt === registration.parent.startedAt && !parent.state.startsWith("Z")) {
+    if (parent?.startedAt === registration.parent.startedAt && !isDeadProcessState(parent.state)) {
       continue;
     }
     const child = snapshot.find((row) => row.pid === registration.child.pid);
     if (
       registration.child.commandFingerprint !== undefined &&
       child?.startedAt === registration.child.startedAt &&
-      !child.state.startsWith("Z")
+      !isDeadProcessState(child.state)
     ) {
       let command: string | undefined;
       try {
         command = await readCodexAppServerProcessCommand(child, deadline);
       } catch (error) {
-        // Only a successful inspection may revoke the fingerprint obligation.
+        // A matching live process still needs its command verified before containment.
         const current = (
           await readCodexAppServerProcessSnapshot(deadline, [registration.child.pid])
         ).find((row) => row.pid === registration.child.pid);
-        if (current?.startedAt === registration.child.startedAt) {
+        if (
+          current?.startedAt === registration.child.startedAt &&
+          !isDeadProcessState(current.state)
+        ) {
           throw error;
         }
       }

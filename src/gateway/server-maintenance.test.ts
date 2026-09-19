@@ -2,6 +2,7 @@
 // stale chat buffers, expired runs, health summaries, and timer disposal.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { managedWorktrees } from "../agents/worktrees/service.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   isGatewayWorkAdmissionClosed,
   onGatewaySuspendAdmissionChange,
@@ -99,7 +100,7 @@ function seedStaleRunBuffers(deps: MaintenanceTimerDeps, runId: string): void {
     rawBuffer: "raw buffer",
     bufferUpdatedAt: staleRunTimestamp(),
     deltaSentAt: staleRunTimestamp(),
-    assistantScope: { itemId: "assistant-1", prefix: "" },
+    assistantScope: { itemId: "assistant-1", prefix: "", boundaryNewlines: 0, separatorLength: 0 },
     deltaLastBroadcastText: "buffer",
   });
 }
@@ -110,7 +111,7 @@ function expectStaleRunBuffersPresent(deps: MaintenanceTimerDeps, runId: string)
     rawBuffer: "raw buffer",
     bufferUpdatedAt: expect.any(Number),
     deltaSentAt: expect.any(Number),
-    assistantScope: { itemId: "assistant-1", prefix: "" },
+    assistantScope: { itemId: "assistant-1", prefix: "", boundaryNewlines: 0, separatorLength: 0 },
     deltaLastBroadcastText: "buffer",
   });
 }
@@ -161,6 +162,7 @@ async function stopMaintenanceTimers(timers: {
   dedupeCleanup: NodeJS.Timeout;
   startMediaCleanup: () => void;
   stopMediaCleanup: () => Promise<"drained" | "timed-out">;
+  stopSessionColdStorageMaintenance: () => Promise<void>;
   worktreeCleanup: NodeJS.Timeout;
 }) {
   clearInterval(timers.tickInterval);
@@ -168,6 +170,7 @@ async function stopMaintenanceTimers(timers: {
   clearInterval(timers.dedupeCleanup);
   clearInterval(timers.worktreeCleanup);
   await timers.stopMediaCleanup();
+  await timers.stopSessionColdStorageMaintenance();
 }
 
 describe("startGatewayMaintenanceTimers", () => {
@@ -187,8 +190,9 @@ describe("startGatewayMaintenanceTimers", () => {
     });
   });
 
-  it("defers a thaw restart behind active work and retries a failed idle pass", async () => {
+  it("leaves admission untouched on busy thaw ticks and retries a failed idle pass", async () => {
     vi.useFakeTimers();
+    vi.spyOn(process, "cpuUsage").mockReturnValue({ user: 0, system: 0 });
     vi.setSystemTime(new Date("2026-03-22T00:00:00Z"));
     resetGatewayWorkAdmission();
     let activeChatRuns = 1;
@@ -217,6 +221,8 @@ describe("startGatewayMaintenanceTimers", () => {
       await vi.advanceTimersByTimeAsync(TICK_INTERVAL_MS);
       expect(restartRunningChannels).not.toHaveBeenCalled();
       expect(isGatewayWorkAdmissionClosed()).toBe(false);
+      await vi.advanceTimersByTimeAsync(TICK_INTERVAL_MS);
+      expect(phases).toEqual([]);
 
       activeChatRuns = 0;
       await vi.advanceTimersByTimeAsync(TICK_INTERVAL_MS);
@@ -234,8 +240,6 @@ describe("startGatewayMaintenanceTimers", () => {
 
       expect(phases).toEqual([
         "preparing",
-        "accepting",
-        "preparing",
         "prepared",
         "accepting",
         "preparing",
@@ -249,8 +253,9 @@ describe("startGatewayMaintenanceTimers", () => {
     }
   });
 
-  it("reopens admission when thaw active-work inspection fails", async () => {
+  it("leaves admission open when thaw active-work inspection fails", async () => {
     vi.useFakeTimers();
+    vi.spyOn(process, "cpuUsage").mockReturnValue({ user: 0, system: 0 });
     vi.setSystemTime(new Date("2026-03-22T00:00:00Z"));
     const restartRunningChannels = vi.fn(async () => true);
     const logHealth = { info: vi.fn(), error: vi.fn() };
@@ -292,7 +297,7 @@ describe("startGatewayMaintenanceTimers", () => {
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
     const timers = startGatewayMaintenanceTimers({
       ...createMaintenanceTimerDeps(),
-      mediaCleanupTtlMs: MEDIA_CLEANUP_TTL_MS,
+      getRuntimeConfig: () => ({ attachments: { ttlHours: 24 } }),
     });
 
     await vi.advanceTimersByTimeAsync(60 * 60_000);
@@ -444,13 +449,14 @@ describe("startGatewayMaintenanceTimers", () => {
     await stopMaintenanceTimers(timers);
   });
 
-  it("adds configured attachment cleanup to playback maintenance", async () => {
+  it("updates attachment cleanup policy between sweeps without restarting maintenance", async () => {
     vi.useFakeTimers();
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
+    let config: OpenClawConfig = { attachments: { ttlHours: 24 } };
 
     const timers = startGatewayMaintenanceTimers({
       ...createMaintenanceTimerDeps(),
-      mediaCleanupTtlMs: MEDIA_CLEANUP_TTL_MS,
+      getRuntimeConfig: () => config,
     });
     timers.startMediaCleanup();
 
@@ -465,14 +471,21 @@ describe("startGatewayMaintenanceTimers", () => {
     await vi.waitFor(() => {
       expect(cleanupManagedOutgoingMediaRecordsMock).toHaveBeenCalled();
     });
+    config = { attachments: { ttlHours: 2 } };
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(2);
     expect(pruneOutboundMediaMock).not.toHaveBeenCalled();
     expect(cleanOldMediaMock).toHaveBeenCalledTimes(2);
-    expect(cleanOldMediaMock).toHaveBeenLastCalledWith(MEDIA_CLEANUP_TTL_MS, {
+    expect(cleanOldMediaMock).toHaveBeenLastCalledWith(2 * 60 * 60_000, {
       recursive: true,
       pruneEmptyDirs: true,
     });
+
+    config = {};
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(cleanOldMediaMock).toHaveBeenCalledTimes(2);
+    expect(pruneOutboundMediaMock).toHaveBeenCalledOnce();
+    expect(prunePlaybackTranscodeCacheMock).toHaveBeenCalledTimes(3);
 
     await stopMaintenanceTimers(timers);
   });
@@ -488,7 +501,7 @@ describe("startGatewayMaintenanceTimers", () => {
 
     const timers = startGatewayMaintenanceTimers({
       ...deps,
-      mediaCleanupTtlMs: MEDIA_CLEANUP_TTL_MS,
+      getRuntimeConfig: () => ({ attachments: { ttlHours: 24 } }),
     });
     timers.startMediaCleanup();
 
@@ -514,7 +527,7 @@ describe("startGatewayMaintenanceTimers", () => {
 
     const timers = startGatewayMaintenanceTimers({
       ...deps,
-      mediaCleanupTtlMs: MEDIA_CLEANUP_TTL_MS,
+      getRuntimeConfig: () => ({ attachments: { ttlHours: 24 } }),
     });
     timers.startMediaCleanup();
 
@@ -584,7 +597,7 @@ describe("startGatewayMaintenanceTimers", () => {
 
     const timers = startGatewayMaintenanceTimers({
       ...createMaintenanceTimerDeps(),
-      mediaCleanupTtlMs: MEDIA_CLEANUP_TTL_MS,
+      getRuntimeConfig: () => ({ attachments: { ttlHours: 24 } }),
     });
     timers.startMediaCleanup();
 
@@ -729,7 +742,7 @@ describe("startGatewayMaintenanceTimers", () => {
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
     const timers = startGatewayMaintenanceTimers({
       ...createMaintenanceTimerDeps(),
-      mediaCleanupTtlMs: MEDIA_CLEANUP_TTL_MS,
+      getRuntimeConfig: () => ({ attachments: { ttlHours: 24 } }),
     });
     timers.startMediaCleanup();
     await vi.waitFor(() => {

@@ -9,8 +9,8 @@ import type { UiSettings } from "../../../app/settings.ts";
 import { icons } from "../../../components/icons.ts";
 import type { SessionMenuData } from "../../../components/session-menu-actions.ts";
 import type { SessionOwnerOption } from "../../../components/session-owner-chip.ts";
-import type { SessionCapability } from "../../../lib/sessions/index.ts";
 import { createApplicationContextProvider } from "../../../test-helpers/application-context.ts";
+import { gatewayHelloForMethods } from "../../../test-helpers/gateway-methods.ts";
 import {
   clearNativeGatewayTestState,
   setNativeGatewayTestState,
@@ -27,7 +27,6 @@ import type {
   HeaderMenuAction,
   HeaderMenuActionKind,
   HeaderMenuQuickAction,
-  HeaderMenuStatusAction,
 } from "./chat-header-session-menu.ts";
 import "./chat-header-session-menu.ts";
 import type { ChatSessionSharingProps } from "./chat-session-sharing.ts";
@@ -76,7 +75,6 @@ async function mountMenu(
     settings?: UiSettings;
     panelActions?: HeaderMenuQuickAction[];
     layoutActions?: HeaderMenuQuickAction[];
-    statusActions?: HeaderMenuStatusAction[];
     sharing?: ChatSessionSharingProps | null;
     context?: ApplicationContext<RouteId>;
     currentOwner?: SessionOwnerOption | null;
@@ -120,7 +118,6 @@ async function mountMenu(
       .settings=${options.settings ?? settings()}
       .panelActions=${options.panelActions ?? []}
       .layoutActions=${options.layoutActions ?? []}
-      .statusActions=${options.statusActions ?? []}
       .sharing=${options.sharing ?? null}
       .groups=${["Projects"]}
       .currentOwner=${options.currentOwner ?? null}
@@ -170,6 +167,29 @@ function select(menu: ParentNode, value: string) {
 }
 
 describe("chat header session menu", () => {
+  it.each([false, true])(
+    "gates personal visibility for hidden=%s on multiple identities",
+    async (hidden) => {
+      const owner = createSessionOwnerMenuHarness();
+      const onAction = vi.fn();
+      const menu = await mountMenu({
+        context: owner.context,
+        session: { hiddenFromInvolvingMe: hidden },
+        onAction,
+      });
+      for (const multiple of [false, true, false]) {
+        owner.publish({
+          hello: {
+            ...gatewayHelloForMethods(["sessions.setInvolvement"]),
+            policy: { hasMultipleSessionSharingIdentities: multiple },
+          },
+        });
+        await menu.updateComplete;
+        expect(menu.querySelector('[value="toggle-involving-me"]') !== null).toBe(multiple);
+      }
+    },
+  );
+
   it.each([
     { name: "plain browser", nativeGateway: null, offered: false },
     { name: "native local gateway", nativeGateway: "local", offered: true },
@@ -193,7 +213,10 @@ describe("chat header session menu", () => {
       const client = {
         gatewayUrl: "gatewayUrl" in testCase ? testCase.gatewayUrl : "ws://localhost:18789",
       } as GatewayBrowserClient;
-      const { pane, state } = createTestChatPane({ client, sessions: {} as SessionCapability });
+      const { pane, state } = createTestChatPane({
+        client,
+        sessions: createSessionCapabilityFixture(),
+      });
       const session = {
         key: state.sessionKey,
         kind: "direct" as const,
@@ -325,6 +348,7 @@ describe("chat header session menu", () => {
     menu.querySelector<HTMLButtonElement>(".session-menu__icon-remove")?.click();
     for (const value of [
       "copy-session-link",
+      "copy-session-preview-link",
       "copy-markdown",
       "copy-session-id",
       "open-new-tab",
@@ -343,6 +367,7 @@ describe("chat header session menu", () => {
       [{ kind: "set-color", color: "purple" }],
       [{ kind: "reset-appearance" }],
       [{ kind: "copy-session-link" }],
+      [{ kind: "copy-session-preview-link" }],
       [{ kind: "copy-markdown" }],
       [{ kind: "copy-session-id" }],
       [{ kind: "open-new-tab" }],
@@ -494,7 +519,6 @@ describe("chat header session menu", () => {
 
   it("drills into compact menu groups without rendering side flyouts", async () => {
     const showTasks = vi.fn();
-    const showAccess = vi.fn();
     const onOpenCommandPalette = vi.fn();
     const onSettingsChange = vi.fn<(patch: Partial<UiSettings>) => void>();
     const onAction = vi.fn<(action: HeaderMenuAction) => void>();
@@ -519,15 +543,6 @@ describe("chat header session menu", () => {
           onActivate: vi.fn(),
         },
       ],
-      statusActions: [
-        {
-          id: "access",
-          label: "Limited access",
-          icon: icons.shieldQuestion,
-          tone: "warn",
-          onActivate: showAccess,
-        },
-      ],
       context,
       currentOwner: { type: "agent", id: "research:one" },
       onOpenCommandPalette,
@@ -540,7 +555,6 @@ describe("chat header session menu", () => {
     ).map(itemLabel);
     expect(rootLabels).toEqual([
       "Open command palette",
-      "Limited access",
       "Panels",
       "Layout",
       "View",
@@ -557,25 +571,13 @@ describe("chat header session menu", () => {
       "Delete…",
     ]);
     expect(menu.querySelector("[slot='submenu']")).toBeNull();
-    expect(
-      menu.querySelector('.chat-header-session-menu__status-dot[data-tone="warn"]'),
-    ).not.toBeNull();
-
     select(menu, "open-command-palette");
     expect(onOpenCommandPalette).toHaveBeenCalledOnce();
-    const dropdown = menu.querySelector<HTMLElement & { open: boolean }>("wa-dropdown");
-    if (dropdown) {
-      dropdown.open = true;
-    }
-    select(menu, "status:access");
-    expect(showAccess).toHaveBeenCalledOnce();
-    expect(dropdown?.open).toBe(false);
-
     select(menu, "compact:open-copy");
     await menu.updateComplete;
     expect(
       Array.from(menu.querySelectorAll(":scope > wa-dropdown > wa-dropdown-item")).map(itemLabel),
-    ).toEqual(["Back", "Session link", "Conversation as Markdown", "Session ID"]);
+    ).toEqual(["Back", "Session link", "Preview link", "Conversation as Markdown", "Session ID"]);
     select(menu, "compact:back");
     await menu.updateComplete;
     select(menu, "compact:open-open-in");
@@ -715,6 +717,7 @@ describe("chat header session menu", () => {
     expect(item(menu, "Conversation as Markdown").disabled).toBe(true);
     for (const kind of [
       "copy-session-link",
+      "copy-session-preview-link",
       "copy-markdown",
       "open-new-tab",
       "open-new-window",

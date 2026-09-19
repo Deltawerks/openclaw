@@ -1,5 +1,9 @@
+import {
+  resolveAgentIdFromSessionKey,
+  resolveSessionStorePathCore,
+} from "../../../config/sessions.js";
+import { loadSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
-/** Owns steer replacement and restart-recovery receipt transitions. */
 import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
@@ -9,10 +13,12 @@ import {
   bindGatewayContextResolver,
   getGatewayContextResolver,
 } from "../../../plugins/runtime/gateway-request-scope.js";
-import { setCanonicalTaskBackingDetail } from "../../../tasks/task-backing-authority-write.js";
+import { runWithGatewayDetachedWorkContinuation } from "../../../process/gateway-work-admission.js";
+import { prepareCanonicalTaskActivation } from "../../../tasks/task-backing-authority-write.js";
 import { createSubagentTaskBackingDetail } from "../../../tasks/task-backing-authority.js";
 import { removeInternalSessionEffectsSession } from "../../internal-session-effects.js";
 import type { AgentRunSessionTarget } from "../../run-session-target.js";
+import { replaceRequesterCronAuthorityEntry } from "../requester-cron-authority.js";
 import {
   clearDeliveryState,
   ensureCompletionState,
@@ -20,13 +26,17 @@ import {
 } from "./subagent-delivery-state.js";
 import { safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
+import { commitSubagentTaskReplacement } from "./subagent-registry-replacement-store.js";
 import { SubagentWaitManager } from "./subagent-registry-run-wait.js";
 import type {
   RequesterSettleWakeState,
   SubagentRestartRecoveryReceipt,
   SubagentRunRecord,
 } from "./subagent-registry.types.js";
-import { nextSubagentRunGeneration } from "./subagent-run-generation.js";
+import {
+  compareSubagentRunGeneration,
+  nextSubagentRunGeneration,
+} from "./subagent-run-generation.js";
 import {
   getSubagentSessionRuntimeMs,
   getSubagentSessionStartedAt,
@@ -34,7 +44,19 @@ import {
 
 const log = createSubsystemLogger("agents/subagent-registry");
 
+type SubagentRestartRecoveryLaunchIdentity = {
+  runId: string;
+  expected: SubagentRunRecord;
+  sessionMarker: string;
+  idempotencyKey: string;
+};
+
 export class SubagentRecoveryManager extends SubagentWaitManager {
+  private readonly unpersistedAcceptances = new WeakMap<
+    SubagentRunRecord,
+    SubagentRestartRecoveryReceipt
+  >();
+
   readonly replaceSubagentRunAfterSteer = (replaceParams: {
     previousRunId: string;
     nextRunId: string;
@@ -86,6 +108,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     if (!source) {
       return false;
     }
+    const sourceSnapshot = structuredClone(source);
 
     const now = Date.now();
     const generation = nextSubagentRunGeneration(
@@ -93,6 +116,17 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       source.childSessionKey,
     );
     const cfg = this.options.getRuntimeConfig();
+    const acceptedReceipt = this.unpersistedAcceptances.get(source);
+    const acceptanceSessionTarget =
+      acceptedReceipt && this.currentRunOwnsSession(source)
+        ? {
+            storePath: resolveSessionStorePathCore(cfg.session?.store, {
+              agentId: resolveAgentIdFromSessionKey(source.childSessionKey),
+            }),
+            sessionKey: source.childSessionKey,
+            clone: false,
+          }
+        : undefined;
     const spawnMode = source.spawnMode === "session" ? "session" : "run";
     const runTimeoutSeconds = replaceParams.runTimeoutSeconds ?? source.runTimeoutSeconds ?? 0;
     const waitTimeoutMs = this.options.resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
@@ -123,26 +157,24 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     const sourceRequesterSettleWake = replaceParams.preserveRequesterSettleWake
       ? source.requesterSettleWake
       : undefined;
-    const inheritedRequesterSettleWake: RequesterSettleWakeState | undefined =
-      sourceRequesterSettleWake
+    const remapRequesterSettleWake = (
+      wake: RequesterSettleWakeState,
+    ): RequesterSettleWakeState => ({
+      ...wake,
+      ...(wake.batchRunIds
         ? {
-            ...sourceRequesterSettleWake,
-            ...(sourceRequesterSettleWake.batchRunIds
-              ? {
-                  batchRunIds: sourceRequesterSettleWake.batchRunIds
-                    .map((runId) => (runId === previousRunId ? nextRunId : runId))
-                    .toSorted(),
-                }
-              : {}),
+            batchRunIds: wake.batchRunIds
+              .map((runId) => (runId === previousRunId ? nextRunId : runId))
+              .toSorted(),
           }
-        : undefined;
+        : {}),
+    });
     const next: SubagentRunRecord = normalizeSubagentRunState({
       ...source,
       runId: nextRunId,
-      // New rows carry an exact owner. Legacy replacement rows must retain an
-      // unknown owner so their bounded session fallback can still find the
-      // original detached task across another restart.
-      taskRunId: source.taskRunId,
+      // Materialize the legacy run-id fallback so later replacements keep the
+      // same canonical task owner after this source row is retired.
+      taskRunId: source.taskRunId ?? source.runId,
       task: nextTask,
       generation,
       createdAt: now,
@@ -154,7 +186,9 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       browserCleanupDispatchedAt: undefined,
       deleteCleanupDispatchedAt: undefined,
       wakeOnDescendantSettle: undefined,
-      requesterSettleWake: inheritedRequesterSettleWake,
+      requesterSettleWake: sourceRequesterSettleWake
+        ? remapRequesterSettleWake(sourceRequesterSettleWake)
+        : undefined,
       execution: {
         status: "running",
         startedAt: now,
@@ -191,70 +225,135 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     );
     clearDeliveryState(next);
 
+    const taskActivation =
+      source.expectsCompletionMessage === false
+        ? undefined
+        : prepareCanonicalTaskActivation({
+            runtime: "subagent",
+            childSessionKey: next.childSessionKey,
+            runId: source.taskRunId ?? source.runId,
+            detail: createSubagentTaskBackingDetail(generation),
+            startedAt: now,
+            // An admitted kill owns the provisional task projection until its
+            // reconciliation settles. An unclaimed marker yields to the admitted
+            // successor and must not leave its task cancelled.
+            preserveProvisionalCancellation:
+              source.killReconciliation?.taskCancellationAccepted === true,
+          });
+
     if (previousRunId !== nextRunId) {
       this.options.runs.delete(previousRunId);
     }
     this.options.runs.set(nextRunId, next);
     const killReconciliationSnapshots = this.markOlderKillReconciliationsSuperseded(next);
+    const wakeSnapshots = new Map<SubagentRunRecord, RequesterSettleWakeState>();
+    // Every member carries the frozen cohort. Remap them atomically with the
+    // successor so a settled sibling cannot drop a still-running replacement.
+    for (const memberRunId of sourceRequesterSettleWake?.batchRunIds ?? []) {
+      const member = this.options.runs.get(memberRunId);
+      const wake = member?.requesterSettleWake;
+      if (
+        !member ||
+        member === next ||
+        member.requesterSessionKey !== source.requesterSessionKey ||
+        member.requesterAgentId !== source.requesterAgentId ||
+        !wake?.batchRunIds?.includes(previousRunId) ||
+        wake.rearmGeneration !== sourceRequesterSettleWake?.rearmGeneration
+      ) {
+        continue;
+      }
+      wakeSnapshots.set(member, wake);
+      member.requesterSettleWake = remapRequesterSettleWake(wake);
+    }
     const changedRunIds = [
       previousRunId,
       nextRunId,
       ...[...killReconciliationSnapshots.keys()].map((entry) => entry.runId),
+      ...[...wakeSnapshots.keys()].map((entry) => entry.runId),
     ];
-    // Revoke the prior task projection before the successor becomes durable.
-    // A crash between stores then fails closed instead of preserving stale authority.
-    const taskBindingResult =
-      source.expectsCompletionMessage === false
-        ? "missing"
-        : setCanonicalTaskBackingDetail({
-            runtime: "subagent",
-            childSessionKey: next.childSessionKey,
-            runId: next.taskRunId ?? next.runId,
-            detail: createSubagentTaskBackingDetail(generation),
-          });
-    if (taskBindingResult === "persist_failed") {
-      this.restoreKillReconciliationSnapshots(killReconciliationSnapshots);
-      this.options.runs.delete(nextRunId);
-      this.options.runs.set(previousRunId, source);
-      log.warn("failed to bind replacement subagent task generation; restored source lease", {
-        runId: next.runId,
-      });
-      if (replaceParams.persistenceFailure === "throw") {
-        throw new Error(`failed to bind replacement subagent task generation for ${next.runId}`);
-      }
-      return false;
-    }
-    try {
-      this.options.persistOrThrow(...changedRunIds);
-    } catch (error) {
+    const canReconcileAcceptedReceipt = () => {
+      // Staging replaces the map entry before commit. Only this exact
+      // live acceptance may bridge its failed write, never a restored copy.
       if (
-        replaceParams.persistenceFailure !== undefined ||
-        replaceParams.lifecycleGeneration !== undefined
+        !acceptedReceipt ||
+        !acceptanceSessionTarget ||
+        this.unpersistedAcceptances.get(source) !== acceptedReceipt ||
+        source.execution.restartRecovery !== acceptedReceipt ||
+        replaceParams.restartRecovery !== acceptedReceipt ||
+        acceptedReceipt.idempotencyKey !== nextRunId ||
+        !acceptedReceipt.lifecycleGeneration ||
+        !isAgentEventLifecycleGenerationCurrent(acceptedReceipt.lifecycleGeneration) ||
+        this.options.runs.get(nextRunId) !== next ||
+        source.generation !== sourceSnapshot.generation ||
+        source.createdAt !== sourceSnapshot.createdAt ||
+        typeof source.execution.endedAt === "number" ||
+        source.killIntent ||
+        source.killReconciliation ||
+        source.pauseReason === "sessions_yield" ||
+        source.suppressAnnounceReason === "steer-restart" ||
+        Array.from(this.options.getRunsForChildSession(source.childSessionKey)).some(
+          (candidate) =>
+            candidate !== next && compareSubagentRunGeneration(candidate, sourceSnapshot) > 0,
+        )
       ) {
-        this.restoreKillReconciliationSnapshots(killReconciliationSnapshots);
-        this.options.runs.delete(nextRunId);
-        this.options.runs.set(previousRunId, source);
-        log.warn("failed to persist replacement subagent recovery run; restored source lease", {
-          error,
-          previousRunId,
-          nextRunId,
-        });
-        if (replaceParams.persistenceFailure === "throw") {
-          throw error;
-        }
         return false;
       }
-      // The gateway has already started nextRunId. Keep its in-memory owner
-      // authoritative and retry best-effort persistence; rolling back here
-      // would orphan a live run that can still mutate the shared session.
-      log.warn("failed to persist replacement subagent run; retaining live successor", {
+      const session = loadSessionEntryReadOnly(acceptanceSessionTarget);
+      return (
+        session?.sessionId === acceptedReceipt.sessionId &&
+        (acceptedReceipt.sessionLifecycleRevision === undefined ||
+          session.lifecycleRevision === acceptedReceipt.sessionLifecycleRevision) &&
+        (acceptedReceipt.sessionLifecycleRunId === undefined ||
+          session.lifecycleRunId === acceptedReceipt.sessionLifecycleRunId)
+      );
+    };
+    try {
+      if (taskActivation) {
+        commitSubagentTaskReplacement({
+          runs: this.options.runs,
+          changedRunIds,
+          source: sourceSnapshot,
+          successor: next,
+          task: taskActivation,
+          canReconcileAcceptedReceipt,
+        });
+      } else {
+        this.options.persistOrThrow(...changedRunIds);
+      }
+    } catch (error) {
+      this.restoreKillReconciliationSnapshots(killReconciliationSnapshots);
+      for (const [member, wake] of wakeSnapshots) {
+        member.requesterSettleWake = wake;
+      }
+      this.options.runs.delete(nextRunId);
+      this.options.runs.set(previousRunId, source);
+      log.warn("failed to persist replacement subagent recovery run; restored source lease", {
         error,
         previousRunId,
         nextRunId,
       });
-      this.options.persist(...changedRunIds);
+      if (
+        replaceParams.persistenceFailure === "return-false" ||
+        replaceParams.lifecycleGeneration !== undefined
+      ) {
+        return false;
+      }
+      throw error;
     }
-    subagentRuns.commitOwnership(next);
+    this.unpersistedAcceptances.delete(source);
+    // Atomic publication can synchronously trigger another replacement. Do not
+    // start stale cleanup or completion work after that newer owner takes over.
+    if (this.options.runs.get(nextRunId) !== next) {
+      return true;
+    }
+    replaceRequesterCronAuthorityEntry({
+      previous: source,
+      next,
+      preserve: replaceParams.preserveRequesterSettleWake === true,
+    });
+    if (!taskActivation) {
+      subagentRuns.commitOwnership(next);
+    }
     if (previousRunId !== nextRunId) {
       this.options.clearPendingLifecycleError(previousRunId);
       this.options.resumedRuns.delete(previousRunId);
@@ -265,7 +364,19 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
         source.execution.transcriptTarget &&
         source.execution.transcriptTarget !== replaceParams.transcriptTarget
       ) {
-        void removeInternalSessionEffectsSession(source.execution.transcriptTarget);
+        const retiredTarget = source.execution.transcriptTarget;
+        // The committed replacement owns cleanup beyond its caller's lifetime,
+        // including when restart closes admission before this tail settles.
+        void runWithGatewayDetachedWorkContinuation(
+          () => removeInternalSessionEffectsSession(retiredTarget),
+          "subagents:replacement-cleanup",
+        ).catch((error: unknown) => {
+          log.warn("failed to remove replaced subagent internal session effects", {
+            previousRunId,
+            nextRunId,
+            error,
+          });
+        });
       }
     }
     this.options.ensureListener();
@@ -283,6 +394,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     sessionId: string;
     sessionMarker: string;
     sessionLifecycleRevision?: string;
+    sessionLifecycleRunId?: string;
     idempotencyKey: string;
   }): string | undefined => {
     const runId = reserveParams.runId.trim();
@@ -305,7 +417,10 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     }
     const existing = entry.execution.restartRecovery;
     if (existing?.sessionMarker === sessionMarker && existing.idempotencyKey.trim().length > 0) {
-      return existing.idempotencyKey;
+      return existing.sessionLifecycleRunId === undefined ||
+        existing.sessionLifecycleRunId === reserveParams.sessionLifecycleRunId
+        ? existing.idempotencyKey
+        : undefined;
     }
     const previousLease = existing;
     const previousCollectorLaunch = {
@@ -316,6 +431,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       sessionId,
       sessionMarker,
       sessionLifecycleRevision: reserveParams.sessionLifecycleRevision,
+      sessionLifecycleRunId: reserveParams.sessionLifecycleRunId,
       idempotencyKey,
       phase: "reserved",
     };
@@ -336,13 +452,9 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     return idempotencyKey;
   };
 
-  readonly markSubagentRestartRecoveryLaunchAttempted = (markParams: {
-    runId: string;
-    expected: SubagentRunRecord;
-    sessionMarker: string;
-    idempotencyKey: string;
-    lifecycleGeneration: string;
-  }): SubagentRestartRecoveryReceipt | undefined => {
+  readonly markSubagentRestartRecoveryLaunchAttempted = (
+    markParams: SubagentRestartRecoveryLaunchIdentity & { lifecycleGeneration: string },
+  ): SubagentRestartRecoveryReceipt | undefined => {
     const runId = markParams.runId.trim();
     const entry = this.options.runs.get(runId);
     const receipt = entry?.execution.restartRecovery;
@@ -379,12 +491,9 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     return attempted;
   };
 
-  readonly abandonSubagentRestartRecoveryLaunch = (abandonParams: {
-    runId: string;
-    expected: SubagentRunRecord;
-    sessionMarker: string;
-    idempotencyKey: string;
-  }): boolean => {
+  readonly abandonSubagentRestartRecoveryLaunch = (
+    abandonParams: SubagentRestartRecoveryLaunchIdentity,
+  ): boolean => {
     const runId = abandonParams.runId.trim();
     const entry = this.options.runs.get(runId);
     const receipt = entry?.execution.restartRecovery;
@@ -408,20 +517,15 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     return true;
   };
 
-  readonly markSubagentRestartRecoveryLaunchConsumed = (markParams: {
-    runId: string;
-    expected: SubagentRunRecord;
-    sessionMarker: string;
-    idempotencyKey: string;
-  }): SubagentRestartRecoveryReceipt | undefined => {
-    const runId = markParams.runId.trim();
+  private resolveActiveRestartRecoveryLaunch(params: SubagentRestartRecoveryLaunchIdentity) {
+    const runId = params.runId.trim();
     const entry = this.options.runs.get(runId);
     const receipt = entry?.execution.restartRecovery;
     if (
       !runId ||
-      entry !== markParams.expected ||
-      receipt?.sessionMarker !== markParams.sessionMarker ||
-      receipt.idempotencyKey !== markParams.idempotencyKey ||
+      entry !== params.expected ||
+      receipt?.sessionMarker !== params.sessionMarker ||
+      receipt.idempotencyKey !== params.idempotencyKey ||
       typeof entry.execution.endedAt === "number" ||
       entry.killReconciliation !== undefined ||
       entry.killIntent !== undefined ||
@@ -429,6 +533,17 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     ) {
       return undefined;
     }
+    return { runId, entry, receipt };
+  }
+
+  readonly markSubagentRestartRecoveryLaunchConsumed = (
+    markParams: SubagentRestartRecoveryLaunchIdentity,
+  ): SubagentRestartRecoveryReceipt | undefined => {
+    const active = this.resolveActiveRestartRecoveryLaunch(markParams);
+    if (!active) {
+      return undefined;
+    }
+    const { runId, entry, receipt } = active;
     if (receipt.phase !== "attempted") {
       return receipt;
     }
@@ -440,37 +555,25 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     return consumed;
   };
 
-  readonly markSubagentRestartRecoveryLaunchAccepted = (markParams: {
-    runId: string;
-    expected: SubagentRunRecord;
-    sessionMarker: string;
-    idempotencyKey: string;
-  }): SubagentRestartRecoveryReceipt | undefined => {
-    const runId = markParams.runId.trim();
-    const entry = this.options.runs.get(runId);
-    const receipt = entry?.execution.restartRecovery;
-    if (
-      !runId ||
-      entry !== markParams.expected ||
-      receipt?.sessionMarker !== markParams.sessionMarker ||
-      receipt.idempotencyKey !== markParams.idempotencyKey ||
-      typeof entry.execution.endedAt === "number" ||
-      entry.killReconciliation !== undefined ||
-      entry.killIntent !== undefined ||
-      entry.suppressAnnounceReason === "steer-restart"
-    ) {
+  readonly markSubagentRestartRecoveryLaunchAccepted = (
+    markParams: SubagentRestartRecoveryLaunchIdentity,
+  ): SubagentRestartRecoveryReceipt | undefined => {
+    const active = this.resolveActiveRestartRecoveryLaunch(markParams);
+    if (!active) {
       return undefined;
     }
+    const { runId, entry, receipt } = active;
     if (receipt.phase !== "consumed") {
       return receipt;
     }
-    const accepted = { ...receipt, phase: "accepted" as const };
+    const accepted = Object.freeze({ ...receipt, phase: "accepted" as const });
     entry.execution.restartRecovery = accepted;
     try {
       this.options.persistOrThrow(runId);
     } catch (error) {
       // Gateway acceptance is irreversible. Keep the in-memory fact and let the
       // caller immediately attempt the strict successor remap.
+      this.unpersistedAcceptances.set(entry, accepted);
       log.warn("failed to persist accepted subagent restart recovery receipt", {
         error,
         runId,
@@ -484,6 +587,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     expected: SubagentRunRecord;
     sessionId: string;
     idempotencyKey: string;
+    pendingNoticeIdempotencyKey?: string;
   }): boolean => {
     const runId = clearParams.runId.trim();
     const entry = this.options.runs.get(runId);
@@ -497,11 +601,43 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     ) {
       return false;
     }
+    const previousNotice = entry.resumptionNotice;
     entry.execution.restartRecovery = undefined;
+    if (clearParams.pendingNoticeIdempotencyKey) {
+      entry.resumptionNotice = {
+        idempotencyKey: clearParams.pendingNoticeIdempotencyKey,
+      };
+    }
     try {
       this.options.persistOrThrow(runId);
     } catch (error) {
       entry.execution.restartRecovery = receipt;
+      entry.resumptionNotice = previousNotice;
+      throw error;
+    }
+    return true;
+  };
+
+  readonly clearPendingSubagentRecoveryNotice = (noticeParams: {
+    runId: string;
+    expected: SubagentRunRecord;
+    idempotencyKey: string;
+  }): boolean => {
+    const runId = noticeParams.runId.trim();
+    const entry = this.options.runs.get(runId);
+    if (
+      !runId ||
+      entry !== noticeParams.expected ||
+      entry.resumptionNotice?.idempotencyKey !== noticeParams.idempotencyKey
+    ) {
+      return false;
+    }
+    const previous = entry.resumptionNotice;
+    entry.resumptionNotice = undefined;
+    try {
+      this.options.persistOrThrow(runId);
+    } catch (error) {
+      entry.resumptionNotice = previous;
       throw error;
     }
     return true;
@@ -513,26 +649,21 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
   }): boolean => {
     const runId = resumeParams.runId.trim();
     const entry = this.options.runs.get(runId);
-    if (
-      !runId ||
-      entry !== resumeParams.expected ||
-      entry.execution.restartRecovery !== undefined
-    ) {
+    const receipt = entry?.execution.restartRecovery;
+    if (!runId || entry !== resumeParams.expected || receipt !== undefined) {
       return false;
     }
     if (entry.killIntent || entry.killReconciliation) {
       return true;
     }
+    this.options.resumedRuns.delete(runId);
     this.options.resumeSubagentRun(runId);
     return true;
   };
 
-  readonly resetSubagentRestartRecoveryLaunchAttempt = (resetParams: {
-    runId: string;
-    expected: SubagentRunRecord;
-    sessionMarker: string;
-    idempotencyKey: string;
-  }): boolean => {
+  readonly resetSubagentRestartRecoveryLaunchAttempt = (
+    resetParams: SubagentRestartRecoveryLaunchIdentity,
+  ): boolean => {
     const runId = resetParams.runId.trim();
     const entry = this.options.runs.get(runId);
     const receipt = entry?.execution.restartRecovery;
@@ -549,6 +680,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
       sessionId: receipt.sessionId,
       sessionMarker: receipt.sessionMarker,
       sessionLifecycleRevision: receipt.sessionLifecycleRevision,
+      sessionLifecycleRunId: receipt.sessionLifecycleRunId,
       idempotencyKey: receipt.idempotencyKey,
       phase: "reserved" as const,
     };

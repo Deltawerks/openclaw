@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createOperationalRunInstanceRef } from "../../admitted-run-context.js";
+import { makeEmbeddedRunnerAttempt } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import {
   getCoreTtsAttemptResultMediaUrls,
   markCoreTtsAttemptResult,
@@ -14,11 +16,58 @@ vi.mock("../../harness/selection.js", () => ({
   runAgentHarnessSettledTurnFinalization: vi.fn(),
 }));
 
-vi.mock("../../subagents/registry/subagent-registry.js", () => ({
-  settleRequesterAfterSessionSpawns: vi.fn(),
-}));
-
 describe("embedded attempt backend", () => {
+  beforeEach(() => {
+    harnessMocks.runAttempt.mockReset();
+  });
+
+  it("carries child receipts across model candidates only for the same admitted instance", async () => {
+    const instance = createOperationalRunInstanceRef("parent");
+    const accepted = {
+      runId: "child",
+      childSessionKey: "agent:main:subagent:child",
+      expectsCompletionMessage: true,
+    };
+    harnessMocks.runAttempt
+      .mockResolvedValueOnce(makeEmbeddedRunnerAttempt({ acceptedSessionSpawns: [accepted] }))
+      .mockResolvedValueOnce(makeEmbeddedRunnerAttempt({}))
+      .mockResolvedValueOnce(makeEmbeddedRunnerAttempt({}));
+    await runEmbeddedAttemptWithBackend({
+      modelId: "first-model",
+      admittedRunContext: { operationalRunInstance: instance },
+    } as never);
+    const fallback = await runEmbeddedAttemptWithBackend({
+      modelId: "second-model",
+      admittedRunContext: { operationalRunInstance: instance },
+    } as never);
+    const replacement = await runEmbeddedAttemptWithBackend({
+      admittedRunContext: { operationalRunInstance: createOperationalRunInstanceRef("parent") },
+    } as never);
+    expect(fallback.acceptedSessionSpawns).toEqual([accepted]);
+    expect(replacement.acceptedSessionSpawns ?? []).toEqual([]);
+  });
+
+  it.each(["openclaw", "codex"])(
+    "does not trust attempt-supplied settlement from %s",
+    async (agentHarnessId) => {
+      harnessMocks.runAttempt.mockResolvedValueOnce(
+        makeEmbeddedRunnerAttempt({
+          agentHarnessId,
+          yieldDetected: true,
+          requesterContinuationSettled: true,
+          acceptedSessionSpawns: [{ runId: "child", childSessionKey: "agent:main:subagent:child" }],
+        }),
+      );
+      const result = await runEmbeddedAttemptWithBackend({
+        admittedRunContext: { operationalRunInstance: createOperationalRunInstanceRef("test") },
+      } as never);
+      expect(result.requesterContinuationSettled).toBeUndefined();
+      expect(result.acceptedSessionSpawns).toEqual([
+        { runId: "child", childSessionKey: "agent:main:subagent:child" },
+      ]);
+    },
+  );
+
   it.each([true, false])(
     "keeps runtime model selection only for prepared ownership (%s)",
     async (runtimeOwned) => {
@@ -40,7 +89,9 @@ describe("embedded attempt backend", () => {
         assertCurrent: async () => {},
       };
       const result = await runEmbeddedAttemptWithBackend(
-        {} as never,
+        {
+          admittedRunContext: { operationalRunInstance: createOperationalRunInstanceRef("test") },
+        } as never,
         runtimeOwned ? nativeRuntime : undefined,
       );
       if (runtimeOwned) {
@@ -63,7 +114,9 @@ describe("embedded attempt backend", () => {
     );
     harnessMocks.runAttempt.mockResolvedValueOnce(attempt);
 
-    const result = await runEmbeddedAttemptWithBackend({} as never);
+    const result = await runEmbeddedAttemptWithBackend({
+      admittedRunContext: { operationalRunInstance: createOperationalRunInstanceRef("test") },
+    } as never);
 
     expect(
       getCoreTtsAttemptResultMediaUrls(result, result.toolMediaUrls, operationalRunInstance),
@@ -104,6 +157,7 @@ describe("embedded attempt backend", () => {
     });
 
     const result = await runEmbeddedAttemptWithBackend({
+      admittedRunContext: { operationalRunInstance: createOperationalRunInstanceRef("test") },
       runtimePlan: {
         resolvedRef: { provider: "groq", modelId: "openai/gpt-oss-120b" },
         auth: credentialSource ? { credentialSource } : {},

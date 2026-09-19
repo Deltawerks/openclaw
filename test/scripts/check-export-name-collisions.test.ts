@@ -70,6 +70,28 @@ describe("export name collision guard", () => {
     expect([...result.exportedNames]).toEqual(["importedValue", "remoteValue"]);
   });
 
+  it("exempts only the exact handoff loader substitution", () => {
+    const name = "loadFreeBsdProcessIdentityNative";
+    const paths = [
+      "src/infra/update-managed-service-handoff-native-loader.ts",
+      "src/shared/freebsd-process-identity-native.ts",
+    ];
+    const modules = paths.map((id) => ({ path: id, content: `export function ${name}() {}` }));
+    expect(findExportNameCollisions(modules)).toEqual([]);
+    const extra = { path: "src/extra.ts", content: `export function ${name}() {}` };
+    expect(findExportNameCollisions([...modules, extra])).toEqual([
+      { name, files: [...paths, extra.path].toSorted() },
+    ]);
+    expect(findExportNameCollisions([modules[0]!, extra])).toEqual([
+      { name, files: [paths[0]!, extra.path].toSorted() },
+    ]);
+    expect(
+      findExportNameCollisions(
+        paths.map((id) => ({ path: id, content: "export function otherBehavior() {}" })),
+      ),
+    ).toEqual([{ name: "otherBehavior", files: paths }]);
+  });
+
   it("reports direct aliasing re-exports only outside the Plugin SDK", () => {
     expect(
       findAliasingReExports([
@@ -143,11 +165,56 @@ describe("export name collision guard", () => {
           return runtime.runThing(...args);
         }
       `,
+      `
+        import { createLazyRuntimeMethodBinder as createBinder } from "./shared/lazy-runtime.js";
+        const bind = createBinder(loadRuntime);
+        export const runThing = bind((runtime) => runtime.runThing);
+      `,
+      `
+        import { createLazyRuntimeMethod } from "openclaw/plugin-sdk/lazy-runtime";
+        export const runThing = createLazyRuntimeMethod(loadRuntime, (runtime) => runtime.runThing);
+      `,
     ];
     for (const content of forwarders) {
-      expect([...collectModuleExportNames(content).definitions]).toEqual([]);
+      expect([...collectModuleExportNames(content, "src/runtime-facade.ts").definitions]).toEqual(
+        [],
+      );
     }
   });
+
+  it.each([
+    ["different member", "runtime => runtime.otherThing"],
+    ["selector call", "runtime => runtime.runThing()"],
+    ["different receiver", "runtime => other.runThing"],
+    ["selector transformation", "runtime => (...args) => runtime.runThing(...args, fallback)"],
+    ["extra argument", "runtime => runtime.runThing, fallback"],
+    ["defaulted receiver", "(runtime = fallback) => runtime.runThing"],
+    ["rest receiver", "(...runtime) => runtime.runThing"],
+    ["selector block", "runtime => { prepare(); return runtime.runThing; }"],
+  ])("keeps lazy binders with %s as definitions", (_name, selector) => {
+    const content = `
+      import { createLazyRuntimeMethodBinder } from "./shared/lazy-runtime.js";
+      const bind = createLazyRuntimeMethodBinder(loadRuntime);
+      export const runThing = bind(${selector});
+    `;
+    expect([...collectModuleExportNames(content, "src/runtime-facade.ts").definitions]).toEqual([
+      "runThing",
+    ]);
+  });
+
+  it.each(["./unrelated.js", "./shared/lazy-runtime.fake.js"])(
+    "keeps same-named factories from %s as definitions",
+    (specifier) => {
+      const content = `
+        import { createLazyRuntimeMethodBinder } from "${specifier}";
+        const bind = createLazyRuntimeMethodBinder(loadRuntime);
+        export const runThing = bind(runtime => runtime.runThing);
+      `;
+      expect([...collectModuleExportNames(content, "src/runtime-facade.ts").definitions]).toEqual([
+        "runThing",
+      ]);
+    },
+  );
 
   it.each([
     {
@@ -253,6 +320,43 @@ describe("export name collision guard", () => {
         },
       ]);
     });
+  });
+
+  it("marks only collisions reachable through shared and cyclic SDK barrels", () => {
+    const definitions = "export const cycleOnly = 1, extraOnly = 1, privateOnly = 1;";
+    expect(
+      findExportNameCollisions([
+        { path: "src/one.ts", content: definitions },
+        { path: "src/two.ts", content: definitions },
+        {
+          path: "src/plugin-sdk/first.ts",
+          content:
+            'export * from "../../packages/left.js"; export * from "../../packages/right.js";',
+        },
+        {
+          path: "src/plugin-sdk/second.ts",
+          content:
+            'export * from "../../packages/right.js"; export * from "../../packages/extra.js";',
+        },
+        ...(
+          [
+            ["packages/left.ts", 'export * from "./shared.js";'],
+            ["packages/right.ts", 'export * from "./shared.js";'],
+            ["packages/shared.ts", 'export * from "./left.js"; export const cycleOnly = 1;'],
+            ["packages/extra.ts", "export const extraOnly = 1;"],
+            ["packages/unreachable.ts", "export const privateOnly = 1;"],
+          ] as const
+        ).map(([modulePath, content]) => ({
+          path: modulePath,
+          content,
+          includeDefinitions: false,
+        })),
+      ]),
+    ).toEqual([
+      { name: "cycleOnly", files: ["src/one.ts", "src/two.ts"], sdk: true },
+      { name: "extraOnly", files: ["src/one.ts", "src/two.ts"], sdk: true },
+      { name: "privateOnly", files: ["src/one.ts", "src/two.ts"] },
+    ]);
   });
 
   it("rejects debt-baseline updates with the collision trailer", () => {

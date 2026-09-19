@@ -202,6 +202,11 @@ const pwMocks = vi.hoisted(() => {
       close: async () => await closePlaywrightBrowserConnection(opts),
     })),
     cookiesGetViaPlaywright: vi.fn(async () => ({ cookies: [] })),
+    downloadCurrentDocumentViaPlaywright: vi.fn(async (_opts?: unknown) => ({
+      url: "https://example.com/inline.png",
+      suggestedFilename: "inline.png",
+      path: "/tmp/managed-inline.png",
+    })),
     downloadViaPlaywright: vi.fn(async () => ({
       url: "https://example.com/report.pdf",
       suggestedFilename: "report.pdf",
@@ -392,6 +397,7 @@ const chromeMcpMocks = vi.hoisted(() => ({
   clickChromeMcpElement: vi.fn(async () => {}),
   closeChromeMcpSession: vi.fn(async () => true),
   closeChromeMcpTab: vi.fn(async () => {}),
+  countChromeMcpTabs: vi.fn(async () => 1),
   dragChromeMcpElement: vi.fn(async () => {}),
   ensureChromeMcpAvailable: vi.fn(async () => {}),
   evaluateChromeMcpScript: vi.fn(async () => true),
@@ -535,7 +541,9 @@ vi.mock("./chrome.js", () => ({
     };
   }),
   resolveOpenClawUserDataDir: vi.fn(() => chromeUserDataDir.dir),
-  stopOwnedOpenClawChrome: vi.fn(async () => false),
+  stopOwnedOpenClawChrome: vi.fn<typeof import("./chrome.js").stopOwnedOpenClawChrome>(
+    async () => ({ status: "not-running" }),
+  ),
   stopOpenClawChrome: vi.fn(async () => {
     state.reachable = false;
   }),

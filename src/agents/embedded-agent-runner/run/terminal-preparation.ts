@@ -1,10 +1,11 @@
 import { copyReplyPayloadMetadata } from "../../../auto-reply/reply-payload.js";
 import type { AssistantMessage } from "../../../llm/types.js";
-import { estimateAggregateUsageCost, resolveModelCostConfig } from "../../../utils/usage-format.js";
+import { estimateAggregateUsageCost } from "../../../utils/usage-format.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import type { AgentRunTerminalReceipt } from "../../agent-run-terminal-receipt.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
+import { isProviderModelRerouted } from "../../provider-model-route.js";
 import { getCoreTtsAttemptResultMediaUrls } from "../../tools/tts-tool-result-provenance.js";
 import type { NormalizedUsage, UsageLike } from "../../usage.js";
 import { hasMessagingToolDeliveryEvidence } from "../delivery-evidence.js";
@@ -22,16 +23,21 @@ import {
 } from "./helpers.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import { buildEmbeddedRunPayloads } from "./payloads.js";
-import { buildTraceToolSummary } from "./run-attempt-result.js";
+import { resolveProviderRefusal } from "./provider-refusal.js";
+import { buildTraceToolSummary, resolveSuccessfulToolNames } from "./run-attempt-result.js";
 import {
   isEmbeddedRunTerminalInterrupted,
   isEmbeddedRunTerminalTimeout,
   isEmbeddedRunTimeoutFinal,
   type EmbeddedRunTerminalState,
 } from "./terminal-outcome.js";
-import { mergeAttemptToolMediaPayloads } from "./tool-media-payloads.js";
+import {
+  mergeAttemptToolMediaPayloads,
+  type createPendingToolMediaCarry,
+} from "./tool-media-payloads.js";
 
 export function prepareEmbeddedRunTerminal(input: {
+  mergeToolMedia?: ReturnType<typeof createPendingToolMediaCarry>["merge"];
   runParams: RunEmbeddedAgentParams;
   attempt: EmbeddedRunAttemptWithReceiptEvidence;
   currentAttemptCompletedAssistant?: AssistantMessage;
@@ -94,12 +100,10 @@ export function prepareEmbeddedRunTerminal(input: {
     finalAssistantStopReason !== "error" && finalAssistantStopReason !== "aborted";
   const costUsd = estimateAggregateUsageCost({
     usage: usageMeta.usage,
-    cost: resolveModelCostConfig({
-      provider: reportedModelRef.provider,
-      model: reportedModelRef.model,
-      config: runParams.config,
-      agentDir: runParams.agentDir,
-    }),
+    provider: reportedModelRef.provider,
+    model: reportedModelRef.model,
+    config: runParams.config,
+    agentDir: runParams.agentDir,
   });
   // Attempt normalization already folded every attempt (terminal included)
   // into the accumulator, so read it directly instead of re-adding the attempt.
@@ -120,6 +124,7 @@ export function prepareEmbeddedRunTerminal(input: {
         }
       : {}),
     agentHarnessId: attempt.agentHarnessId,
+    providerRefusal: resolveProviderRefusal(attributionAssistant),
     ...(attempt.runtimeModelSelection
       ? { runtimeModelSelection: attempt.runtimeModelSelection }
       : {}),
@@ -145,9 +150,8 @@ export function prepareEmbeddedRunTerminal(input: {
     ...(costUsd !== undefined ? { costUsd } : {}),
   };
   const attemptFinalText = attempt.assistantTexts
-    .toReversed()
-    .map((text) => text.trim())
-    .find((text) => text.length > 0);
+    .findLast((text) => text.trim().length > 0)
+    ?.trim();
   const finalAssistantVisibleText = terminalAssistantCanOwnFinalText
     ? (resolveFinalAssistantVisibleText(terminalAssistant) ?? attemptFinalText)
     : undefined;
@@ -155,22 +159,6 @@ export function prepareEmbeddedRunTerminal(input: {
     ? (resolveFinalAssistantRawText(terminalAssistant) ?? attemptFinalText)
     : undefined;
   const terminalTurnId = (attempt as { terminalTurnId?: string }).terminalTurnId;
-  const successfulToolNames = [
-    ...new Set(
-      attempt.toolMetas
-        .filter((entry) => entry.isError === false)
-        .map((entry) => entry.toolName.trim())
-        .filter(Boolean),
-    ),
-  ];
-  const missingNestedToolNames = [
-    ...new Set(
-      (attempt.successfulNestedToolNames ?? []).map((name) => name.trim()).filter(Boolean),
-    ),
-  ]
-    .filter((name) => !successfulToolNames.includes(name))
-    .toSorted();
-  successfulToolNames.push(...missingNestedToolNames);
   Object.assign(agentMeta, {
     terminalReceipt: {
       runId: runParams.runId,
@@ -182,11 +170,13 @@ export function prepareEmbeddedRunTerminal(input: {
         model: reportedModelRef.model,
         responseModel,
       },
-      successfulToolNames,
-      rerouted:
-        reportedModelRef.provider !== input.provider ||
-        reportedModelRef.model !== input.model ||
-        responseModel !== input.model,
+      successfulToolNames: resolveSuccessfulToolNames(attempt),
+      assistantTranscriptIdempotencyKey: attempt.assistantTranscriptIdempotencyKey,
+      sourceReplyDelivered: attempt.sourceReplyDelivered,
+      rerouted: isProviderModelRerouted(
+        { provider: input.provider, model: input.model },
+        { ...reportedModelRef, responseModel },
+      ),
     } satisfies Omit<AgentRunTerminalReceipt, "terminalDisposition">,
   });
   // A yielded attempt ends before message_end. Its aborted tool-call assistant,
@@ -196,6 +186,7 @@ export function prepareEmbeddedRunTerminal(input: {
     : input.currentAttemptCompletedAssistant;
   const payloads = buildEmbeddedRunPayloads({
     assistantTexts: attempt.assistantTexts,
+    answerSegments: attempt.answerSegments,
     assistantMessageIndex: attempt.lastAssistantTextMessageIndex,
     assistantTranscriptOwned: attempt.assistantTranscriptOwned,
     assistantTranscriptIdempotencyKey: attempt.assistantTranscriptIdempotencyKey,
@@ -216,7 +207,6 @@ export function prepareEmbeddedRunTerminal(input: {
     reasoningLevel: runParams.reasoningLevel,
     thinkingLevel: runParams.thinkLevel,
     toolResultFormat: input.resolvedToolResultFormat,
-    suppressToolErrorWarnings: runParams.suppressToolErrorWarnings,
     didSendViaMessagingTool: attempt.didSendViaMessagingTool,
     didDeliverSourceReplyViaMessageTool: attempt.didDeliverSourceReplyViaMessageTool === true,
     messagingToolSentTargets: attempt.messagingToolSentTargets,
@@ -234,21 +224,25 @@ export function prepareEmbeddedRunTerminal(input: {
     didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
     heartbeatToolResponse: attempt.heartbeatToolResponse,
   });
-  const payloadsWithToolMedia = mergeAttemptToolMediaPayloads({
-    payloads,
-    toolMediaUrls: attempt.toolMediaUrls,
-    // Preserve harness provenance through terminal delivery. Without it,
-    // message-tool-only routes silently drop native runtime artifacts.
-    hostOwnedToolMediaUrls: attempt.hostOwnedToolMediaUrls,
-    toolAutoDeliveryMediaUrls: getCoreTtsAttemptResultMediaUrls(
-      attempt,
-      attempt.toolMediaUrls,
-      runParams.admittedRunContext?.operationalRunInstance,
-    ),
-    toolAudioAsVoice: attempt.toolAudioAsVoice,
-    toolTrustedLocalMedia: attempt.toolTrustedLocalMedia,
-    sourceReplyDeliveryMode: runParams.sourceReplyDeliveryMode,
-  });
+  const mergeToolMedia = input.mergeToolMedia ?? mergeAttemptToolMediaPayloads;
+  const payloadsWithToolMedia = mergeToolMedia(
+    {
+      payloads,
+      toolMediaUrls: attempt.toolMediaUrls,
+      // Preserve harness provenance through terminal delivery. Without it,
+      // message-tool-only routes silently drop native runtime artifacts.
+      hostOwnedToolMediaUrls: attempt.hostOwnedToolMediaUrls,
+      toolAutoDeliveryMediaUrls: getCoreTtsAttemptResultMediaUrls(
+        attempt,
+        attempt.toolMediaUrls,
+        runParams.admittedRunContext?.operationalRunInstance,
+      ),
+      toolAudioAsVoice: attempt.toolAudioAsVoice,
+      toolTrustedLocalMedia: attempt.toolTrustedLocalMedia,
+      sourceReplyDeliveryMode: runParams.sourceReplyDeliveryMode,
+    },
+    runParams.admittedRunContext?.operationalRunInstance,
+  );
   const recoveredFinalAssistantTextAfterPromptTimeout =
     timedOutDuringPrompt &&
     !timeoutFinal &&
@@ -290,7 +284,7 @@ export function prepareEmbeddedRunTerminal(input: {
     (attempt.toolMetas?.length ?? 0) === 0;
   const attemptToolSummary = buildTraceToolSummary({
     toolMetas: attempt.toolMetas,
-    fallbackHadFailure: Boolean(attempt.lastToolError),
+    lastToolError: attempt.lastToolError,
   });
   const failureSignal = resolveEmbeddedRunFailureSignal({
     trigger: runParams.trigger,

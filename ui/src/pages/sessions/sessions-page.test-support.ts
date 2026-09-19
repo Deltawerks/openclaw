@@ -11,10 +11,12 @@ import type {
   SessionListOptions,
   SessionListSnapshot,
 } from "../../lib/sessions/index.ts";
+import { createSessionArchiveState } from "../../lib/sessions/session-archive-state.ts";
 import type { SessionRefreshOptions } from "../../lib/sessions/session-capability.ts";
+import { createSessionRowProvenance } from "../../lib/sessions/session-row-provenance.ts";
 import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
-import { sessionsPageListQuery, type SessionsRouteData } from "./route.ts";
-import type { TranscriptSearchState } from "./view.ts";
+import { buildSessionsListQuery } from "./list-query.ts";
+import type { SessionsRouteData } from "./route.ts";
 import "./sessions-page.ts";
 
 export type TestSessionsPage = HTMLElement & {
@@ -26,6 +28,7 @@ export type TestSessionsPage = HTMLElement & {
   result: SessionsListResult | null;
   error: string | null;
   loading: boolean;
+  refreshing: boolean;
   statusFilter: "active" | "archived" | "all";
   selectedKeys: Set<string>;
   sessionMenu: { key: string; x: number; y: number } | null;
@@ -36,7 +39,6 @@ export type TestSessionsPage = HTMLElement & {
   checkpointBusyKey: string | null;
   sessionMutationPending: boolean;
   transcriptSearchQuery: string;
-  transcriptSearch: TranscriptSearchState;
   updateTranscriptSearchQuery: (query: string) => void;
   runTranscriptSearch: () => Promise<void>;
   loadCheckpoint: (sessionKey: string) => Promise<void>;
@@ -61,7 +63,7 @@ export type TestSessionsPage = HTMLElement & {
   forkSession: (key: string, fromLastCompleted?: boolean) => Promise<void>;
   branchCheckpoint: (sessionKey: string, checkpointId: string) => Promise<void>;
   restoreCheckpoint: (sessionKey: string, checkpointId: string) => Promise<void>;
-  addToWorkboard: (session: GatewaySessionRow) => Promise<void>;
+  runPluginAction: (id: string, session: GatewaySessionRow) => Promise<void>;
 };
 
 type MutableGateway = {
@@ -131,6 +133,11 @@ const managedListPublishers = new WeakMap<
 
 export function createManagedSessions(overrides: Partial<SessionCapability> = {}) {
   const subscribe = () => () => undefined;
+  const archiveState = createSessionArchiveState(
+    (key) => overrides.state?.result?.sessions.find((row) => row.key === key),
+    () => {},
+    createSessionRowProvenance(),
+  );
   const snapshots = new Map<string, SessionListSnapshot>();
   const listeners = new Map<string, Set<(snapshot: SessionListSnapshot) => void>>();
   const emptySnapshot = (): SessionListSnapshot => ({
@@ -182,6 +189,8 @@ export function createManagedSessions(overrides: Partial<SessionCapability> = {}
     listCheckpoints: vi.fn(async () => []),
     deleteMany: vi.fn(async () => ({ deleted: [], errors: [], preservedWorktrees: [] })),
     patch: vi.fn(async () => null),
+    archiveVisibility: archiveState.visibility,
+    beginArchive: archiveState.beginPending,
     create: vi.fn(async () => null),
     branchCheckpoint: vi.fn(async () => ({ key: "branch" })),
     restoreCheckpoint: vi.fn(async () => ({ ok: true })),
@@ -212,9 +221,9 @@ export function createContext(
     },
     channels: { subscribe },
     runtimeConfig: { state: { configSnapshot: null }, subscribe },
-    workboard: {
-      state: { cards: [], capturingSessionKeys: new Set() },
-      notify: vi.fn(),
+    plugins: {
+      registrations: vi.fn(() => []),
+      reportError: vi.fn(),
       subscribe,
     },
     navigate: vi.fn(),
@@ -228,7 +237,7 @@ export async function createRenderedPage(
   statusFilter: "active" | "archived" | "all" = "active",
   expandedSessionKey: string | null = null,
 ): Promise<TestSessionsPage> {
-  const query = sessionsPageListQuery(context, {
+  const query = buildSessionsListQuery(context, {
     limit: 50,
     includeGlobal: true,
     includeUnknown: false,
