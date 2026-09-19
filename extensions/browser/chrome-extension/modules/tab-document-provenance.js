@@ -141,33 +141,25 @@ export function createTabDocumentProvenance({ access }) {
     send(event);
   }
 
+  function resolveTabSnapshot(tabId, tab) {
+    const rootUrl = lifetimes.get(tabId)?.rootUrl;
+    // Chrome's tab metadata can lag the native root commit, including in fresh reads.
+    return tab?.id === tabId &&
+      tab.url === "about:blank" &&
+      typeof rootUrl === "string" &&
+      tab.pendingUrl === rootUrl
+      ? { ...tab, url: rootUrl }
+      : tab;
+  }
+
   return {
-    isInitialBlank: (tab) =>
-      tab.url === "about:blank" || (!tab.url && tab.pendingUrl === "about:blank"),
-    async readTab(tabId, readNativeTab) {
-      // A native root commit can overtake Chrome's snapshot callback. Discard it
-      // before consuming provenance, without recapturing the admitted epoch.
-      let root;
-      let tab;
-      do {
-        root = lifecycle(tabId).root;
-        tab = await readNativeTab();
-      } while (root !== lifecycle(tabId).root);
-      return tab;
-    },
     get: (tabId) => documents.get(tabId),
     rootRevision: (tabId) => lifecycle(tabId).root,
-    resolveTabUpdate: (tabId, tab, change) => {
-      const rootUrl = lifetimes.get(tabId)?.rootUrl;
-      // Chrome can deliver its initial loading snapshot after the native commit.
-      return change.status === "loading" &&
-        change.url === undefined &&
-        tab?.url === "about:blank" &&
-        typeof rootUrl === "string" &&
-        tab.pendingUrl === rootUrl
-        ? { ...tab, url: rootUrl }
-        : tab;
-    },
+    resolveTabSnapshot,
+    resolveTabUpdate: (tabId, tab, change) =>
+      change.status === "loading" && change.url === undefined
+        ? resolveTabSnapshot(tabId, tab)
+        : tab,
     observeTab,
     revokeDocument,
     retireAttachment: (tabId) => {

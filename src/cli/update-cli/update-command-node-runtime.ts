@@ -3,9 +3,11 @@ import path from "node:path";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { applyPathPrepend } from "../../infra/path-prepend.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
+import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveNodeRunner, type UpdateCommandOptions } from "./shared.js";
+import { createUpdateCommandAuthority } from "./update-command-authority.js";
 import {
   withUpdateCommandExecutorChild,
   type UpdateCommandExecutor,
@@ -24,28 +26,37 @@ export function createPackageRuntimeRecovery(params: {
   timeoutMs: number;
   executorFence?: UpdateRecoveryFence;
 }): PackageRuntimeRecovery {
-  const executor = params.opts.run?.executorFence ?? params.executorFence;
+  const authority = createUpdateCommandAuthority(params, "Node runtime provisioning");
+  const executor = authority.executorFence;
   return {
     env: params.opts.runtimeRecoveryEnv ?? {},
     ...(executor
       ? {
           installCommand: async (command: string, args: string[], env: NodeJS.ProcessEnv) => {
-            executor.assertCurrent();
+            authority.assertCurrent();
             const installResult = await withUpdateCommandExecutorChild(
               executor,
               params.root,
-              async (_grant, beforeInput) => {
+              async (_grant, bindChild) => {
+                authority.assertRequesterCurrent();
                 const result = await runCommandWithTimeout([command, ...args], {
                   baseEnv: {},
                   env,
                   cwd: params.root,
                   input: "",
-                  beforeInput,
+                  beforeInput: (pid, argv) => {
+                    authority.assertRequesterCurrent();
+                    bindChild(pid, argv);
+                  },
                   timeoutMs: params.timeoutMs,
                   killProcessTree: true,
                   requireProcessTreeExtinction: true,
                   maxOutputBytes: 64 * 1024,
                 });
+                if (result.cleanup === "forced" || result.cleanup === "uncertain") {
+                  throw new CommandProcessCleanupError();
+                }
+                authority.assertRequesterCurrent();
                 // A fulfilled runner result can still be a failed/unsettled child.
                 // Fail inside its owner interval, before handoff eligibility can be used.
                 if (
@@ -65,7 +76,7 @@ export function createPackageRuntimeRecovery(params: {
               },
               { auxiliaryPreflight: true },
             );
-            executor.assertCurrent();
+            authority.assertCurrent();
             return installResult.termination === "exit" && !installResult.killed
               ? installResult.code
               : null;
@@ -107,6 +118,9 @@ export async function preparePackageUpdateRuntime(params: {
   executor: UpdateCommandExecutor;
   timeoutMs: number;
   tag: string;
+  invocationCwd?: string;
+  channel?: import("../../infra/update-channels.js").UpdateChannel;
+  requestedChannel?: import("../../infra/update-channels.js").UpdateChannel | null;
 }) {
   const managedServiceNodeRunner = params.managedService?.serviceNodeRunner;
   const canRefreshManagedServiceNode =
@@ -122,6 +136,12 @@ export async function preparePackageUpdateRuntime(params: {
     params.opts.run.executorFence = fence;
   }
   const result = await resolvePackageRuntimePreflight({
+    root: params.root,
+    service: params.managedService,
+    shouldRestart: params.shouldRestart,
+    invocationCwd: params.invocationCwd,
+    channel: params.channel,
+    requestedChannel: params.requestedChannel,
     target: params.packageRuntimeTarget,
     timeoutMs: params.timeoutMs,
     nodeRunner:

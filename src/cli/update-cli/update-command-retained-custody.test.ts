@@ -174,7 +174,7 @@ describe.skipIf(process.platform === "win32")("POSIX bound native control", () =
       expected: { code: 0, termination: "exit", stdout: "raw-out", stderr: "raw-err" },
     },
   ])(
-    "preserves real native $name result through the bound gate",
+    "preserves real native $name result or cleanup uncertainty through the bound gate",
     async ({ name, script, expected }) => {
       const fixture = setup();
       const result = await runCommandWithTimeout(
@@ -194,9 +194,26 @@ describe.skipIf(process.platform === "win32")("POSIX bound native control", () =
           requireProcessTreeExtinction: true,
         },
       );
-      expect(fs.existsSync(fixture.outcome), result.stderr).toBe(true);
-      expect(JSON.parse(fs.readFileSync(fixture.outcome, "utf8"))).toMatchObject(expected);
-      expect(result.code, result.stderr).toBe(name === "healthy" ? 0 : 1);
+      if (name === "signal") {
+        // The shared runner deliberately marks a child-requested signal uncertain.
+        // Do not convert it to a settled native failure or release retained roots.
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain(
+          "Command cleanup could not confirm that owned work stopped",
+        );
+        expect(fs.existsSync(fixture.outcome)).toBe(false);
+        const store = createManagedHandoffLeaseStore({
+          databasePath: path.join(fixture.temp, "managed-update-handoffs.sqlite"),
+          serviceManagerEnv: {},
+        });
+        for (const root of [fixture.a, fixture.b]) {
+          expect(store.read(root).kind).toBe("current");
+        }
+      } else {
+        expect(fs.existsSync(fixture.outcome), result.stderr).toBe(true);
+        expect(JSON.parse(fs.readFileSync(fixture.outcome, "utf8"))).toMatchObject(expected);
+        expect(result.code, result.stderr).toBe(name === "healthy" ? 0 : 1);
+      }
     },
     20000,
   );
@@ -271,6 +288,7 @@ it("never retries a refused scoped runner and leaves nested legacy native scopes
       expect(ordinary).toMatchObject({ code: 0, stdout: "ordinary-native", termination: "exit" });
       expect(calls).toBe(1);
     },
+    undefined,
     async () => {
       calls += 1;
       throw Object.assign(new Error("fixture native refusal"), { code: "EACCES" });

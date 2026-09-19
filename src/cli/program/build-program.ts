@@ -1,13 +1,15 @@
 // Builds the root Commander program, context, help, hooks, and command registry.
 import process from "node:process";
 import { registerProgramCommands } from "./command-registry.js";
-import { createProgramContext } from "./context.js";
+import { createProgramContext, type ProgramContext } from "./context.js";
 import { configureProgramHelp } from "./help.js";
 import { OpenClawCommand } from "./openclaw-command.js";
 import { registerPreActionHooks } from "./preaction.js";
 import { setProgramContext } from "./program-context.js";
 
-export function buildProgram(options: { runtimeRecoveryEnv?: NodeJS.ProcessEnv } = {}) {
+export function buildProgram(
+  prepared?: Pick<ProgramContext, "doctorDatabasePreflight" | "runtimeRecoveryEnv">,
+) {
   const program = new OpenClawCommand();
   program.enablePositionalOptions();
   // Preserve Commander-computed exit codes while still aborting parse flow.
@@ -17,8 +19,7 @@ export function buildProgram(options: { runtimeRecoveryEnv?: NodeJS.ProcessEnv }
     process.exitCode = typeof err.exitCode === "number" ? err.exitCode : 1;
     throw err;
   });
-  const ctx = createProgramContext();
-  ctx.runtimeRecoveryEnv = options.runtimeRecoveryEnv;
+  const ctx = createProgramContext(prepared);
   const argv = process.argv;
 
   setProgramContext(program, ctx);

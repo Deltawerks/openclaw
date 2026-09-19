@@ -3,6 +3,7 @@ import {
   withGatewayServiceUpdateAuthority,
   type GatewayServiceNativeCommand,
 } from "../../daemon/service-update-authority.js";
+import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import {
@@ -81,8 +82,8 @@ export async function withRetainedUpdateServiceAuthority<T>(
     const result = await withUpdateCommandExecutorChild(
       executor,
       candidateRoot,
-      async (_grant, bind) =>
-        runCommandWithTimeout(
+      async (_grant, bind) => {
+        const nativeResult = await runCommandWithTimeout(
           [process.execPath, "--input-type=module", "-e", nativeCommandGate, "--", ...command],
           {
             ...nativeOptions,
@@ -100,16 +101,17 @@ export async function withRetainedUpdateServiceAuthority<T>(
             killProcessTree: true,
             requireProcessTreeExtinction: true,
           },
-        ),
+        );
+        // Classify inside child custody: neither root may be released until
+        // a failed or successful native writer has settled safely.
+        if (nativeResult.cleanup === "uncertain" || nativeResult.cleanup === "forced") {
+          throw new CommandProcessCleanupError();
+        }
+        return nativeResult;
+      },
     );
     assertCurrent();
-    if (
-      (result.termination === "exit" &&
-        result.code === 0 &&
-        (result.cleanup === "uncertain" || result.cleanup === "forced")) ||
-      result.outputLimitExceeded ||
-      result.outputErrorStream
-    ) {
+    if (result.outputLimitExceeded || result.outputErrorStream) {
       throw new UpdateCommandRecoveryPendingError(
         "Retained native command cleanup is unconfirmed.",
       );
@@ -138,6 +140,7 @@ export async function withRetainedUpdateServiceAuthority<T>(
   return await withGatewayServiceUpdateAuthority(
     assertCurrent,
     () => operation(assertCurrent),
+    params.root,
     nativeCommand,
   );
 }

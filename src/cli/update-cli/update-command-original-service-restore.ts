@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { readDaemonRuntimePinForInstall } from "../../daemon/runtime-pin-state.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import { fingerprintGatewayServiceDefinition } from "../../daemon/service-rebind.js";
 import { resolveGatewayService } from "../../daemon/service.js";
@@ -38,7 +39,16 @@ export async function restoreOriginalManagedServiceDefinition(params: {
         assertOwned();
         const current = await fingerprintGatewayServiceDefinition(state.command);
         assertOwned();
-        if (current === original.definition.fingerprint) {
+        const expectedPin = readDaemonRuntimePinForInstall(
+          { kind: "gateway", env },
+          state.command,
+          true,
+        );
+        assertOwned();
+        if (
+          current === original.definition.fingerprint &&
+          expectedPin.revision === original.definition.runtimePin.revision
+        ) {
           return;
         }
         if (!original.definition.rebound || current !== original.definition.rebound) {
@@ -50,10 +60,14 @@ export async function restoreOriginalManagedServiceDefinition(params: {
             "Retained service has operator-owned definition overrides; restoration refused.",
           );
         }
+        if (expectedPin.revision !== original.definition.reboundRuntimePin) {
+          throw new Error("Runtime intent changed after this update rebind; restoration refused.");
+        }
         await resolveGatewayService().install({
           env,
           stdout: params.stdout,
           preserveAutoStart: true,
+          runtimePinUpdate: { expected: expectedPin, pin: original.definition.runtimePin.pin },
           assertCurrent: assertOwned,
           beforeMutation: async () => {
             await assertOriginalServiceStateCompatible(original, assertOwned);
@@ -80,6 +94,7 @@ export async function restoreOriginalManagedServiceDefinition(params: {
         assertOwned();
         original.definition.fingerprint = fingerprint;
         original.definition.rebound = undefined;
+        original.definition.reboundRuntimePin = undefined;
         await revalidateOriginalManagedServiceRuntime(original, assertOwned, params.timeoutMs);
       }),
   );

@@ -70,9 +70,11 @@ const respawnSignalForceKillGraceMs = 1_000;
 const respawnSignalHardExitGraceMs = 1_000;
 
 export const runRespawnedChild = (command, args, env) => {
+  const stdioIsTerminal = process.stdin.isTTY || process.stdout.isTTY;
   const child = spawn(command, args, {
     stdio: "inherit",
     env,
+    windowsHide: !stdioIsTerminal,
   });
   const listeners = new Map();
   // Keep signal forwarding and bounded shutdown in sync with src/entry.compile-cache.ts.
@@ -396,23 +398,23 @@ export function isUsableNode(
       probeEnv[key] = value;
     }
   }
-  const result = spawnSync(
-    resolved,
-    [
-      "-e",
-      `const probe = ${SQLITE_CAPABILITY_PROBE}; process.stdout.write(JSON.stringify({ version: process.versions.node, probe }));`,
-    ],
-    {
-      encoding: "utf8",
-      env: probeEnv,
-      timeout: 5_000,
-      killSignal: "SIGKILL",
-      maxBuffer: 65_536,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
   try {
+    const result = spawnSync(
+      resolved,
+      [
+        "-e",
+        `const probe = ${SQLITE_CAPABILITY_PROBE}; process.stdout.write(JSON.stringify({ version: process.versions.node, probe }));`,
+      ],
+      {
+        encoding: "utf8",
+        env: probeEnv,
+        timeout: 5_000,
+        killSignal: "SIGKILL",
+        maxBuffer: 65_536,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     const details = JSON.parse(result.stdout);
     return (
       result.status === 0 &&

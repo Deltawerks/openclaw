@@ -23,7 +23,7 @@ export async function runGatewayServiceUpdateCommand(
     return;
   }
   if (mode === "check") {
-    writeGatewayServiceUpdateCapability();
+    await writeGatewayServiceUpdateCapability();
     return;
   }
   if (mode !== "run") {
@@ -75,16 +75,30 @@ export async function runGatewayServiceUpdateCommand(
     }
     // Destination admission never replaces the original installation's live authority.
     await withDelegatedUpdateCommandExecutor(grant, grant.runId, grant.root, async (fence) =>
-      withGatewayServiceUpdateAuthority(fence.assertCurrent, async () => {
-        if (input.originalDefinition !== undefined) {
-          if (action !== "install" || typeof input.originalDefinition !== "string") {
-            throw new Error("Invalid rebind action.");
+      withGatewayServiceUpdateAuthority(
+        fence.assertCurrent,
+        async () => {
+          if (input.originalDefinition !== undefined) {
+            if (action !== "install" || typeof input.originalDefinition !== "string") {
+              throw new Error("Invalid rebind action.");
+            }
+            if (
+              input.originalRuntimePin !== undefined &&
+              typeof input.originalRuntimePin !== "string"
+            ) {
+              throw new Error("Invalid runtime intent binding.");
+            }
+            await withGatewayServiceRebindCapture(
+              input.originalDefinition,
+              operation,
+              input.originalRuntimePin,
+            );
+          } else {
+            await operation();
           }
-          await withGatewayServiceRebindCapture(input.originalDefinition, operation);
-        } else {
-          await operation();
-        }
-      }),
+        },
+        grant.retainedParent?.key ?? grant.originalParent?.key ?? grant.parent.key,
+      ),
     );
   } catch (cause) {
     throw new Error(

@@ -343,6 +343,7 @@ describe("successful update finalization ordering", () => {
   });
 
   it("restarts when shell completion cache generation returns false", async () => {
+    vi.stubEnv("OPENCLAW_PROFILE", undefined);
     Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
     mocks.checkCompletionStatus.mockResolvedValueOnce({
       shell: "zsh",

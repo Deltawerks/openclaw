@@ -99,6 +99,7 @@ describe("current native placement", () => {
             }
             return "current scope completed";
           }),
+        undefined,
         native,
       ).then(
         (value) => {

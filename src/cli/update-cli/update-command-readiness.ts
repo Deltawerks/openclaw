@@ -29,18 +29,28 @@ export async function verifyPreviousGatewayForUpdate(params: {
   timeoutMs?: number;
   observedStartupMs?: number;
   assertCurrent?: () => void;
+  signal?: AbortSignal;
+  requirePluginHealth?: boolean;
+  expectedVersion?: string;
 }): Promise<boolean> {
   const { config, env } = params;
-  const readiness = captureUpdateGatewayReadinessOwner({ opts: params.opts });
+  const readiness = captureUpdateGatewayReadinessOwner({
+    opts: params.opts,
+    signal: params.signal,
+  });
   const assertCurrent = () => {
     readiness.assertCurrent();
     params.assertCurrent?.();
   };
   const port = await resolveUpdatedGatewayRestartPort({ config, serviceEnv: env });
-  const [expectedVersion, expectedBuildId] = await Promise.all([
+  const [installedVersion, expectedBuildId] = await Promise.all([
     readPackageVersion(params.root),
     readBuiltGatewayBuildId(params.root),
   ]);
+  if (params.expectedVersion && installedVersion !== params.expectedVersion) {
+    return false;
+  }
+  const expectedVersion = params.expectedVersion ?? installedVersion;
   const { health, readyz } = await observeUpdateGatewayReadiness({
     serviceEnv: env,
     gatewayPort: port,
@@ -50,6 +60,8 @@ export async function verifyPreviousGatewayForUpdate(params: {
     observedStartupMs: params.observedStartupMs,
     requireRunningService: true,
     settle: { probes: 1 },
+    signal: params.signal,
+    requirePluginHealth: params.requirePluginHealth,
     assertCurrent,
   });
   const servesPreviousPackage = await gatewayServiceCommandUsesRoot({ root: params.root, env });
@@ -106,6 +118,7 @@ export type UpdateGatewayReadinessParams = {
   expectedVersion?: string;
   expectedBuildId?: string;
   requireRunningService?: boolean;
+  requirePluginHealth?: boolean;
   health?: GatewayRestartSnapshot;
   settle?: { probes: number };
   signal?: AbortSignal;
@@ -118,6 +131,26 @@ export type UpdateGatewayReadinessParams = {
     launchAgentRecovery: PostUpdateLaunchAgentRecoveryResult | null;
   }>;
 };
+
+export function gatewayReadinessPending(health: GatewayRestartSnapshot): boolean {
+  if (health.waitOutcome === "still-starting") {
+    return true;
+  }
+  return (
+    health.waitOutcome === "timeout" &&
+    health.runtime.status === "running" &&
+    (typeof health.runtime.pid === "number" || Boolean(health.gatewayBootId)) &&
+    // Only the restart owner can establish startup; an HTTP failure is not progress.
+    ["waiting for Gateway listener", "startup migration", "settling healthy Gateway"].includes(
+      health.startupPhase ?? "",
+    ) &&
+    !health.versionMismatch &&
+    !health.buildIdMismatch &&
+    !health.activatedPluginErrors?.length &&
+    !health.channelProbeErrors?.length &&
+    health.staleGatewayPids.length === 0
+  );
+}
 
 /** Observe one ready generation before activation or after restart, without recording a verdict. */
 export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadinessParams) {
@@ -142,7 +175,7 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
     port: params.gatewayPort,
     expectedVersion: params.expectedVersion,
     ...(params.expectedBuildId ? { expectedBuildId: params.expectedBuildId } : {}),
-    requirePluginHealth: false,
+    requirePluginHealth: params.requirePluginHealth ?? false,
     env: params.serviceEnv,
     ...(params.signal ? { signal: params.signal } : {}),
   };
@@ -166,7 +199,7 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
   };
   let health = params.health ?? (await waitForHealthy());
   let launchAgentRecovery: PostUpdateLaunchAgentRecoveryResult | null = null;
-  if (params.recoverHealth) {
+  if (params.recoverHealth && !gatewayReadinessPending(health)) {
     ({ health, launchAgentRecovery } = await params.recoverHealth(health, waitForHealthy));
     assertCurrent();
   }
@@ -194,11 +227,7 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
   });
   assertCurrent();
   const readyz = http.readyz === 200;
-  if (
-    health.healthy &&
-    readyz &&
-    (!params.requireRunningService || health.runtime.status === "running")
-  ) {
+  if (health.healthy && (!params.requireRunningService || health.runtime.status === "running")) {
     // HTTP readiness cannot transfer an earlier settle to a replacement boot.
     const settled = health;
     const inspect = () =>
@@ -213,16 +242,24 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
     // or PID-less reboot during that observation cannot inherit the old boot.
     health = inspected.healthy ? await inspect() : inspected;
     assertCurrent();
+    health.startupPhase = settled.startupPhase;
     const sameGeneration =
       isSameGatewayRestartGeneration(settled, inspected) &&
       isSameGatewayRestartGeneration(inspected, health);
     if (!sameGeneration) {
       health.healthy = false;
+      health.waitOutcome = "generation-changed";
       health.probeError = "Gateway process changed during final readiness verification.";
     }
   }
-  if (remainingMs() === 0) {
-    health = { ...health, healthy: false, waitOutcome: "timeout" };
+  if (health.waitOutcome !== "generation-changed" && (!readyz || remainingMs() === 0)) {
+    health = {
+      ...health,
+      healthy: false,
+      waitOutcome: "timeout",
+      elapsedMs: performance.now() - startedAtMs,
+      ...(!readyz ? { startupPhase: "waiting for Gateway HTTP readiness" } : {}),
+    };
   }
   return { health, readyz, http, launchAgentRecovery };
 }

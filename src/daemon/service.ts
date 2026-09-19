@@ -19,6 +19,13 @@ import {
   uninstallLaunchAgent,
 } from "./launchd.js";
 import {
+  assertDaemonRuntimePinCurrent,
+  assertDaemonRuntimePinDefinition,
+  assertDaemonRuntimePinPlan,
+  commitDaemonRuntimePin,
+  readDaemonRuntimePinForInstall,
+} from "./runtime-pin-state.js";
+import {
   installScheduledTask,
   isScheduledTaskEnabled,
   isScheduledTaskInstalled,
@@ -61,7 +68,7 @@ import type {
 import { getGatewayServiceUpdateNativeCommand } from "./service-update-authority.js";
 import { readSystemdDefinitionMutationCapability } from "./systemd-definition-mutation.js";
 import { admitSystemdServiceReadBinding } from "./systemd-peer.js";
-import { isSystemdServiceAbsent } from "./systemd-scope.js";
+import { findSystemdGatewayInstallation, isSystemdServiceAbsent } from "./systemd-scope.js";
 import {
   findInstalledSystemdGatewayScope,
   installSystemdService,
@@ -109,6 +116,7 @@ export type GatewayService = {
       environment?: GatewayServiceEnv;
       requireLoaded?: boolean;
       systemdReadBinding?: GatewayServiceReadOptions["systemdReadBinding"];
+      systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
     },
   ) => ReturnType<typeof readSystemdDefinitionMutationCapability>;
   readCommand: (
@@ -122,6 +130,8 @@ export type GatewayService = {
 };
 
 type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
+  systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
+  systemdInstallation?: GatewayServiceState["systemdInstallation"];
   requireEffective?: boolean;
   requireLoadedCommand?: boolean;
   loadForInspection?: GatewayServiceReadOptions["loadForInspection"];
@@ -223,11 +233,28 @@ export async function readGatewayServiceLoadState(
 
 export async function readGatewayServiceState(
   service: GatewayService,
-  args: ReadGatewayServiceStateArgs = {},
+  input: ReadGatewayServiceStateArgs = {},
 ): Promise<GatewayServiceState> {
+  let args = input;
   const baseEnv = args.env ?? (process.env as GatewayServiceEnv);
+  if (service.readCommand === readSystemdServiceExecStart && !args.systemdReadTarget) {
+    const installation = await findSystemdGatewayInstallation(baseEnv);
+    if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
+      throw new Error(
+        "Both user and system systemd units own this Gateway name. Run openclaw doctor interactively to inspect the competing supervisors before maintenance.",
+      );
+    }
+    const target =
+      installation.kind === "system"
+        ? installation.system
+        : installation.kind === "user" || installation.kind === "dueling"
+          ? installation.user
+          : undefined;
+    args = { ...args, systemdInstallation: installation, systemdReadTarget: target };
+  }
   if (
     service.readCommand === readSystemdServiceExecStart &&
+    args.systemdReadTarget?.scope !== "system" &&
     args.requireEffective &&
     args.requireLoadedCommand &&
     !args.systemdReadBinding
@@ -259,10 +286,12 @@ async function readGatewayServiceStateWithBinding(
   args: ReadGatewayServiceStateArgs,
 ): Promise<GatewayServiceState> {
   const baseEnv = args.env ?? process.env;
-  const { timeoutMs, systemdReadBinding } = args;
+  const { timeoutMs, systemdReadBinding, systemdReadTarget } = args;
   const deadline = performance.now() + (timeoutMs && timeoutMs > 0 ? timeoutMs : 5000);
   systemdReadBinding?.verify();
   let absent = await service.isAbsent?.({ env: baseEnv, timeoutMs }).catch(() => false);
+  // Initial systemd absence proves no manager; strict absence below only proves no unit.
+  const managerAbsent = absent && service.readCommand === readSystemdServiceExecStart;
   systemdReadBinding?.verify();
   let commandInspection: GatewayServiceCommandInspection | undefined;
   const command = absent
@@ -279,12 +308,14 @@ async function readGatewayServiceStateWithBinding(
               }
             : {}),
           ...(systemdReadBinding ? { systemdReadBinding } : {}),
+          ...(systemdReadTarget ? { systemdReadTarget } : {}),
           ...(args.requireLoadedCommand ? { requireLoaded: true } : {}),
           ...(args.loadForInspection ? { loadForInspection: args.loadForInspection } : {}),
         })
       : await service
           .readCommand(baseEnv, {
             timeoutMs,
+            ...(systemdReadTarget ? { systemdReadTarget } : {}),
             onCommandInspection: (inspection) => {
               commandInspection = inspection;
             },
@@ -315,13 +346,15 @@ async function readGatewayServiceStateWithBinding(
     }
   }
   if (absent) {
+    const inspectionReason = managerAbsent ? "service-manager-unavailable" : undefined;
     return {
+      inspectionReason,
       installed: false,
       loadState: { status: "not-loaded" },
       running: false,
       env,
       command: null,
-      runtime: { status: "stopped", missingUnit: true },
+      runtime: { status: "stopped", missingUnit: true, inspectionReason },
     };
   }
   const readInstalled = async () =>
@@ -334,6 +367,7 @@ async function readGatewayServiceStateWithBinding(
     service
       .readRuntime(env, {
         timeoutMs,
+        ...(systemdReadTarget ? { systemdReadTarget } : {}),
         ...(commandInspection ? { commandInspection } : {}),
         ...(systemdReadBinding ? { systemdReadBinding } : {}),
         ...(args.requireEffective && args.requireLoadedCommand ? { requireLoaded: true } : {}),
@@ -348,6 +382,7 @@ async function readGatewayServiceStateWithBinding(
             env: baseEnv,
             environment: env,
             timeoutMs,
+            ...(systemdReadTarget ? { systemdReadTarget } : {}),
             ...(systemdReadBinding ? { systemdReadBinding } : {}),
             ...(args.requireLoadedCommand ? { requireLoaded: true } : {}),
           })
@@ -374,6 +409,7 @@ async function readGatewayServiceStateWithBinding(
     inspectionReason:
       runtime?.inspectionReason ??
       (loadState.status === "unknown" ? loadState.inspectionReason : undefined),
+    ...(args.systemdInstallation ? { systemdInstallation: args.systemdInstallation } : {}),
     installed,
     loadState,
     running: runtime?.status === "running",
@@ -543,7 +579,7 @@ const GATEWAY_SERVICE_REGISTRY: Record<SupportedGatewayServicePlatform, GatewayS
     readRuntime: readLaunchAgentRuntime,
   },
   linux: {
-    label: "systemd user",
+    label: "systemd",
     loadedText: "enabled",
     notLoadedText: "disabled",
     stage: ignoreServiceWriteResult(stageSystemdService),
@@ -564,11 +600,13 @@ const GATEWAY_SERVICE_REGISTRY: Record<SupportedGatewayServicePlatform, GatewayS
       timeoutMs,
       requireLoaded,
       systemdReadBinding,
+      systemdReadTarget,
     }) =>
       readSystemdDefinitionMutationCapability(env ?? process.env, {
         environment,
         timeoutMs,
         ...(systemdReadBinding ? { systemdReadBinding } : {}),
+        ...(systemdReadTarget ? { systemdReadTarget } : {}),
         ...(requireLoaded ? { requireLoaded: true } : {}),
       }),
     readCommand: readSystemdServiceExecStart,
@@ -602,6 +640,7 @@ function guardGatewayServiceMutation<
   action: string,
   mutate: (args: TArgs) => Promise<TResult>,
   readCommand?: GatewayService["readCommand"],
+  readRuntimePinRevision?: (env: GatewayServiceEnv) => string,
 ): (args: TArgs) => Promise<TResult> {
   return async (args) => {
     // Mutations must satisfy both lifecycle ownership and durable-config
@@ -630,6 +669,9 @@ function guardGatewayServiceMutation<
                 assertCurrent,
                 ...(preserveAutoStart ? { preserveAutoStart: true } : {}),
               }),
+            readRuntimePinRevision
+              ? () => readRuntimePinRevision(args.env ?? process.env)
+              : undefined,
           )
         : await mutate({ ...args, assertCurrent });
       assertCurrent();
@@ -638,16 +680,72 @@ function guardGatewayServiceMutation<
   };
 }
 
-function withGatewayServiceMutationGuards(service: GatewayService): GatewayService {
+function withGatewayServiceMutationGuards(
+  service: GatewayService,
+  kind: ServiceKind,
+): GatewayService {
+  const write = (
+    action: string,
+    mutate: GatewayService["install"],
+    readCommand?: GatewayService["readCommand"],
+  ) =>
+    guardGatewayServiceMutation(
+      action,
+      async (args: GatewayServiceInstallArgs & { assertCurrent?: () => void }) => {
+        const scope = { kind, env: { ...args.env } };
+        const update = args.runtimePinUpdate ?? {
+          expected: readDaemonRuntimePinForInstall(scope, null, true),
+        };
+        // Pin-unaware callers cannot decide whether existing intent should survive a rewrite.
+        if (!args.runtimePinUpdate && update.expected.stored) {
+          throw new Error(
+            "This service has explicit runtime intent. Reinstall with --runtime-path to preserve the pin or --runtime to choose a new runtime before rewriting it.",
+          );
+        }
+        assertDaemonRuntimePinCurrent(scope, update.expected);
+        if (update.pin || update.expected.stored) {
+          const previous = await service.readCommand(args.env);
+          args.assertCurrent?.();
+          assertDaemonRuntimePinPlan(update.expected, previous);
+          assertDaemonRuntimePinCurrent(scope, update.expected);
+        }
+        await mutate(args);
+        if (update.pin || update.expected.stored) {
+          const command = await service.readCommand(args.env);
+          args.assertCurrent?.();
+          assertDaemonRuntimePinDefinition(
+            { programArguments: args.programArguments, workingDirectory: args.workingDirectory },
+            command,
+          );
+          commitDaemonRuntimePin(scope, update, command);
+        } else {
+          assertDaemonRuntimePinCurrent(scope, update.expected);
+        }
+      },
+      readCommand,
+      (env) => readDaemonRuntimePinForInstall({ kind, env }, null, true).revision,
+    );
   return {
     ...service,
-    stage: guardGatewayServiceMutation("rewrite the gateway service", service.stage),
-    install: guardGatewayServiceMutation(
-      "install or rewrite the gateway service",
-      service.install,
-      service.readCommand,
+    stage: write("rewrite the gateway service", service.stage),
+    install: write("install or rewrite the gateway service", service.install, service.readCommand),
+    uninstall: guardGatewayServiceMutation(
+      "uninstall the gateway service",
+      async (args: GatewayServiceManageArgs & { assertCurrent?: () => void }) => {
+        const scope = { kind, env: { ...args.env } };
+        const expected = readDaemonRuntimePinForInstall(scope, null, true);
+        await service.uninstall(args);
+        if (!expected.stored) {
+          return;
+        }
+        const command = await service.readCommand(args.env);
+        args.assertCurrent?.();
+        if (command) {
+          throw new Error("Service definition remains after uninstall; runtime pin retained.");
+        }
+        commitDaemonRuntimePin(scope, { expected }, null);
+      },
     ),
-    uninstall: guardGatewayServiceMutation("uninstall the gateway service", service.uninstall),
     start: guardGatewayServiceMutation("start the gateway service", service.start),
     stop: guardGatewayServiceMutation("stop the gateway service", service.stop),
     restart: guardGatewayServiceMutation("restart the gateway service", service.restart),
@@ -662,7 +760,7 @@ function isSupportedGatewayServicePlatform(
 
 export function resolveGatewayService(kind: ServiceKind = "gateway"): GatewayService {
   if (isSupportedGatewayServicePlatform(process.platform)) {
-    return withGatewayServiceMutationGuards(GATEWAY_SERVICE_REGISTRY[process.platform]);
+    return withGatewayServiceMutationGuards(GATEWAY_SERVICE_REGISTRY[process.platform], kind);
   }
   return createUnsupportedGatewayService(kind);
 }

@@ -13,6 +13,7 @@ import * as packageIntegrity from "../../infra/package-update-integrity.js";
 import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
 import { resolveManagedUpdateLeaseDatabasePath } from "../../infra/update-managed-service-handoff-lease.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
+import * as commandProcess from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db-lifecycle.js";
@@ -104,7 +105,14 @@ beforeEach(async () => {
   vi.clearAllMocks();
   state = await createOpenClawTestState({
     label: "original-service",
-    env: { OPENCLAW_UPDATE_RUN_ID: undefined, OPENCLAW_UPDATE_RUN_HANDOFF: undefined },
+    env: {
+      OPENCLAW_UPDATE_RUN_ID: undefined,
+      OPENCLAW_UPDATE_RUN_HANDOFF: undefined,
+      OPENCLAW_PROFILE: undefined,
+      OPENCLAW_LAUNCHD_LABEL: undefined,
+      OPENCLAW_SYSTEMD_UNIT: undefined,
+      OPENCLAW_WINDOWS_TASK_NAME: undefined,
+    },
   });
   vi.spyOn(os, "userInfo").mockReturnValue({ ...os.userInfo(), homedir: state.home });
   delete state.env.OPENCLAW_HOME;
@@ -534,6 +542,7 @@ it("refuses B ledger admission independently from compatible service A state", a
     db.close();
     const parentBytes = await fs.readFile(resolveOpenClawStateSqlitePath(parentEnv));
     const compensation = rollbackFailedUpdate({
+      definitionRecovery: {},
       result: { status: "error", mode: "npm", root: rootB, steps: [], durationMs: 0 },
       previousRoot: rootB,
       previousSchemaVersions: schemas,
@@ -733,3 +742,87 @@ it.each([
 });
 
 registerCurrentF3Controls(() => ({ state, rootA, rootB, before, serviceState, mocks }));
+
+it.each([false, true])(
+  "handles restored receipt fingerprints with actual mutation=%s",
+  async (mutated) => {
+    const run: NonNullable<UpdateCommandOptions["run"]> = {
+      runId: createUpdateRun({ trigger: "cli" }, { env: state.env }).runId,
+      env: state.env,
+    };
+    await withUpdateCommandExecutor(run.runId, async (executor) => {
+      run.executorFence = await executor.enter(rootB, { serviceRoot: rootA });
+      const opts: UpdateCommandOptions = { json: true, run };
+      const original = await observeOriginalManagedServiceRuntime({ root: rootB, opts }, before);
+      if (!original) {
+        throw new Error("original service fixture was not observed");
+      }
+      const { runUpdatedInstallGatewayCommand } = await vi.importActual<
+        typeof import("./update-command-service-command.js")
+      >("./update-command-service-command.js");
+      const command = vi.spyOn(commandProcess, "runCommandWithTimeout").mockResolvedValue({
+        stdout: JSON.stringify({
+          action: "install",
+          ok: false,
+          error: mutated ? "activation failed after compensation" : "pre-write refused",
+          rebind: {
+            ...(mutated ? { mutated: true } : {}),
+            before: original.definition.fingerprint,
+            after: original.definition.fingerprint,
+            runtimePinBefore: original.definition.runtimePin.revision,
+            runtimePinAfter: original.definition.runtimePin.revision,
+          },
+        }),
+        stderr: "",
+        code: 1,
+        signal: null,
+        killed: false,
+        termination: "exit",
+        cleanup: "normal",
+      });
+      if (mutated) {
+        mocks.running = false;
+        mocks.nativeInstall.mockImplementation(async (args) => {
+          await args.beforeMutation();
+          args.assertCurrent();
+        });
+      }
+      try {
+        await expect(
+          runUpdatedInstallGatewayCommand(
+            {
+              result: { root: rootB },
+              opts: { json: true },
+              invocationEnv: state.env,
+              originalManagedServiceRuntime: original,
+            },
+            "install",
+          ),
+        ).rejects.toThrow(mutated ? "activation failed after compensation" : "pre-write refused");
+      } finally {
+        command.mockRestore();
+      }
+      expect(original.definition.rebound).toBe(
+        mutated ? original.definition.fingerprint : undefined,
+      );
+      expect(original.definition.reboundRuntimePin).toBe(
+        mutated ? original.definition.runtimePin.revision : undefined,
+      );
+      await rollbackFailedUpdate({
+        definitionRecovery: {},
+        result: { status: "error", mode: "npm", root: rootB, steps: [], durationMs: 0 },
+        previousRoot: rootB,
+        previousSchemaVersions: schemas,
+        originalManagedServiceRuntime: original,
+        configSnapshot: await readConfigFileSnapshot(),
+        opts,
+        preManagedServiceStop: before,
+        allowGatewayRestart: mutated,
+        timeoutMs: 30000,
+      });
+      expect(mocks.nativeInstall).not.toHaveBeenCalled();
+      expect(mocks.nativeRestart).toHaveBeenCalledTimes(mutated ? 1 : 0);
+      expect(mocks.running).toBe(true);
+    });
+  },
+);

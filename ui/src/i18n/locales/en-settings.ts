@@ -4,6 +4,15 @@ import { en } from "./en.ts";
 // Settings copy loads with its lazy page or search, not the startup shell.
 const enSettings = {
   connection: {
+    browser: {
+      title: "Browser",
+      savedSignIn: "Saved sign-in for this gateway",
+      forgetDevice: "Forget this browser",
+      confirmTitle: "Forget this browser?",
+      confirmMessage:
+        "Removes the saved sign-in for {gateway} and signs this tab out, clearing any active password or session credential, then reconnects fresh. Other gateways, your preferences, and this browser’s device identity are kept. You may need to sign in or approve this browser again.",
+      confirmLabel: "Forget",
+    },
     ping: {
       title: "Gateway ping",
       latest: "Latest ping",
@@ -320,13 +329,24 @@ const enSettings = {
     login: {
       action: "Connect provider",
       title: "Connect a provider",
+      noOptions: "No account connection methods are available.",
+      method: "Connection method",
+      searchProviders: "Search providers…",
+      noMatches: "No providers match your search.",
+      noProviders: "No providers are available to connect.",
+      discover: "On this Gateway",
       description: "Save credentials for this agent. Choose the active model separately.",
       done: "Provider credentials saved.",
       finishing: "Credentials are being saved. Wait for the result.",
       sessionExpired:
         "This sign-in session ended. Close this dialog and refresh Models to check the result.",
     },
-    subtitle: "Providers and credentials for the selected agent.",
+    subtitle: "Global model defaults and provider access for your agents.",
+    accessTitle: "Provider access",
+    accessDescription:
+      "Manage connections for the selected agent. Global defaults above apply to all agents.",
+    search: "Search providers…",
+    noMatches: "No providers match your search.",
     updated: "Updated {time}",
     refreshing: "Refreshing…",
     disconnected: "Connect to the gateway to see configured model providers.",
@@ -341,6 +361,7 @@ const enSettings = {
       apiKey: "API key",
       denied: "Credentials rejected",
       configured: "Credentials configured",
+      modelsUnavailable: "Models unavailable",
     },
     expiresIn: "Credential expires in {time}",
     models: "{count} models",
@@ -366,6 +387,8 @@ const enSettings = {
     profiles: {
       title: "Provider profiles",
       accountOne: "1 account",
+      account: "Account {number}",
+      details: "Details",
       accounts: "{count} accounts",
       reorderHint: "Drag to set your preferred account order.",
       reorder: "Reorder {account}, position {position}",
@@ -441,7 +464,7 @@ const enSettings = {
       saved: "Provider {provider} added.",
     },
     defaults: {
-      title: "Global defaults",
+      title: "Defaults for all agents",
       subtitle:
         "Model and behavior defaults for all agents. Agent-specific settings override these defaults. View each agent's model in Agents → Overview.",
       primary: "Model",
@@ -471,7 +494,6 @@ const enSettings = {
         "Sets the global default for new sessions. Auto starts in fast mode and returns to standard mode after the model's configured interval; On and Off keep that behavior fixed.",
       fastModeDefaultHelp:
         "Uses the selected model's fast-mode policy. Unlike Auto, Default does not enable fast mode by itself.",
-      saved: "Defaults saved.",
     },
     readOnly: {
       disconnected: "Connect to the gateway to change model settings.",
@@ -536,6 +558,9 @@ const enSettings = {
       gitFetchFailed: "Could not fetch the tracked upstream",
       gitNoUpstream: "No tracked upstream is configured",
       gitComparisonFailed: "Could not compare this checkout with its tracked upstream",
+      checking: "Checking for updates…",
+      checkRequired: "Check for updates successfully before starting an update.",
+      updating: "Updating…",
       updateNow: "Update now",
       updateNowDescription: "Install the available update and restart the Gateway.",
       latestAttempt: "Latest update attempt",
@@ -577,6 +602,9 @@ const enSettings = {
       permissionsIntro: "macOS access for notifications, capture, voice, and device context.",
       permissionsIntroIos: "Device access for notifications, capture, voice, and personal data.",
       app: "App",
+      nativeExperience: "Native experience (Experimental)",
+      nativeExperienceHint:
+        "Use native Mac views for chat and navigation. When off, use the Web experience. Settings always open here.",
       appearance: "Appearance",
       appearanceModes: { system: "System", light: "Light", dark: "Dark" },
       notificationsEnabled: "Notifications",
@@ -619,7 +647,7 @@ const enSettings = {
       computerControlHint:
         "Starts enabled. After this Mac is paired and macOS access is granted, the paired Gateway can move the pointer, click, and type without per-action confirmation. High risk.",
       computerControlProvider: "Computer Control provider",
-      unattendedDesktop: "Unattended desktop hosting",
+      unattendedDesktop: "Keep computer awake",
       unattendedDesktopHint:
         "Keep this Mac awake between jobs while it is connected and hosting. Manual lock and logout are still respected; OpenClaw never unlocks the Mac.",
       desktopAvailability: "Desktop availability",
@@ -930,6 +958,7 @@ const enSettings = {
       intro: "Theme, chat, and sidebar preferences for this Control UI client.",
       theme: "Theme",
       chooseTheme: "Choose a theme family.",
+      themeUnavailable: "{id} is unavailable. Using Claw until the theme becomes available again.",
       typography: "Typography",
       fonts: {
         ui: "Interface",
@@ -957,7 +986,6 @@ const enSettings = {
       accent: "Accent color",
       accentHint: "Choose an accent color for buttons, highlights, and other controls.",
       customAccent: "Custom color",
-      usingInheritedAccent: "Using inherited accent",
       usingAccent: "Using {value}",
       accents: {
         default: "Theme default",
@@ -996,9 +1024,12 @@ const enSettings = {
         "Optional CSS width for the centered transcript, such as 960px, 82%, or min(1280px, 82%).",
       messageWidthInvalid:
         "Enter a CSS width such as 960px, 82%, min(1280px, 82%), or calc(100% - 2rem).",
+      showTaskProgress: "Show task progress cards",
+      showTaskProgressHint:
+        "Show task progress in the chat composer. Hiding it does not stop the agent or clear saved progress. Dashboard widgets and session previews are unchanged.",
       collapseTaskProgress: "Collapse task progress by default",
       collapseTaskProgressHint:
-        "Keep task progress collapsed while work is active, then expand it at the bottom when the response finishes. Manual changes last for the current task.",
+        "Start task progress collapsed. It can expand when the response finishes if you are at the end of the chat. A manual close keeps it collapsed for that session.",
     },
     sessionSources: {
       title: "Session sources",

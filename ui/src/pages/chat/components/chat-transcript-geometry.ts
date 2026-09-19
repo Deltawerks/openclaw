@@ -85,6 +85,27 @@ export function maxTranscriptScrollOffset(element: HTMLElement | null): number |
     : null;
 }
 
+export function reconcileInitialTranscriptOffset(
+  element: HTMLDivElement | null,
+  virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
+): "pending" | "settled" | "corrected" {
+  const maxOffset = maxTranscriptScrollOffset(element);
+  const offset = virtualizer.scrollOffset;
+  if (maxOffset === null || offset === null) {
+    return "pending";
+  }
+  if (offset >= 0 && offset <= maxOffset) {
+    return "settled";
+  }
+  if (maxOffset !== 0) {
+    return "pending";
+  }
+  // An underfilled end anchor clamps to zero without a native scroll event.
+  virtualizer.scrollOffset = 0;
+  virtualizer.scrollToOffset(0);
+  return "corrected";
+}
+
 export class PositionRailGutterController implements ReactiveController {
   private frame: number | null = null;
 
@@ -124,6 +145,9 @@ export class PositionRailGutterController implements ReactiveController {
     }
     const left = viewport.getBoundingClientRect().left + viewport.clientLeft;
     const gutter = inner.getBoundingClientRect().left - left;
+    // The conversation region stays fixed when its composer resizes the scrollport.
+    const region = viewport.closest<HTMLElement>(".chat-main__conversation") ?? viewport;
+    viewport.style.setProperty("--chat-position-rail-viewport-height", `${region.clientHeight}px`);
     // Reserve room for the compact left rail and breathing space, including
     // when a saved width fills the pane.
     viewport.toggleAttribute("data-position-rail-gutter", gutter >= 68);

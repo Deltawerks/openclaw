@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
 import { isDefaultInstallIdentity } from "../config/paths.js";
@@ -32,11 +31,22 @@ it.each(["success", "config-revoked", "definition-raced"] as const)(
       mockProcessPlatform("darwin");
       state.applyEnv();
       mockSystemAccountHome();
-      vi.stubEnv("OPENCLAW_HOME", undefined);
+      for (const key of [
+        "OPENCLAW_HOME",
+        "OPENCLAW_PROFILE",
+        "OPENCLAW_LAUNCHD_LABEL",
+        "OPENCLAW_SYSTEMD_UNIT",
+        "OPENCLAW_WINDOWS_TASK_NAME",
+      ]) {
+        vi.stubEnv(key, undefined);
+      }
       const env = {
         ...state.env,
         OPENCLAW_HOME: undefined,
-        OPENCLAW_LAUNCHD_LABEL: `test.rebind.${randomUUID()}`,
+        OPENCLAW_PROFILE: undefined,
+        OPENCLAW_LAUNCHD_LABEL: undefined,
+        OPENCLAW_SYSTEMD_UNIT: undefined,
+        OPENCLAW_WINDOWS_TASK_NAME: undefined,
       };
       expect(isDefaultInstallIdentity(process.env)).toBe(true);
       expect(isDefaultInstallIdentity(env)).toBe(true);
@@ -77,6 +87,9 @@ it.each(["success", "config-revoked", "definition-raced"] as const)(
           expect(currentGatewayServiceRebindReceipt()).toEqual({
             before,
             after: await fingerprintGatewayServiceDefinition(command),
+            mutated: true,
+            runtimePinBefore: expect.stringMatching(/^[a-f0-9]{64}$/),
+            runtimePinAfter: expect.stringMatching(/^[a-f0-9]{64}$/),
           });
         } else {
           await expect(work).rejects.toThrow(

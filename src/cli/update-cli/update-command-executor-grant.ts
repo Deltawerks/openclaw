@@ -1,78 +1,23 @@
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveServiceManagerEnv } from "../../daemon/service-process-env.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
+import { captureManagedUpdateLeaseDatabaseIdentity } from "../../infra/update-managed-service-handoff-database.js";
+import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import {
-  captureManagedUpdateLeaseDatabaseIdentity,
-  type ManagedUpdateLeaseDatabaseIdentity,
-} from "../../infra/update-managed-service-handoff-database.js";
-import {
-  createManagedHandoffLeaseStore,
-  type ManagedHandoffLease,
-} from "../../infra/update-managed-service-handoff-lease.js";
+  childLineageDigest,
+  type UpdateCommandChildGrant,
+} from "./update-command-executor-children.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
-
-/** Private correlation sent only to the spawned candidate's stdin. The receiver
- * independently reads both live owners and checks its own PID/start identity. */
-export type UpdateCommandChildGrant = {
-  runId: string;
-  root: string;
-  databasePath: string;
-  parent: ManagedHandoffLease;
-  /** Original owner and its lineage survive a package-generation change. */
-  originalParent?: ManagedHandoffLease;
-  originalChildKey?: string;
-  spawner?: ManagedHandoffLease;
-  /** Independently retained service authority; both fields are required together. */
-  retainedParent?: ManagedHandoffLease;
-  retainedChildKey?: string;
-  childKey: string;
-  databaseIdentity?: ManagedUpdateLeaseDatabaseIdentity;
-};
-// Correlate the transported lineage with the spawning owner's recorded child
-// names. This is not another credential: live rows and PID/start checks still
-// authorize the receiver. A mirror cannot be substituted for its original root.
-export function childLineageDigest(
-  original: ManagedHandoffLease,
-  spawner: ManagedHandoffLease,
-  parent: ManagedHandoffLease,
-  database: ManagedUpdateLeaseDatabaseIdentity,
-  retained?: ManagedHandoffLease,
-): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify([
-        database.databasePath,
-        database.databaseIdentity,
-        database.parentIdentity,
-        [original, spawner, parent].map((lease) => [
-          lease.key,
-          lease.owner,
-          lease.payload,
-          lease.updatedAt,
-        ]),
-        // Absent retention preserves the shipped single-root digest bytes.
-        ...(retained
-          ? [
-              [
-                "retained-owner-v1",
-                retained.key,
-                retained.owner,
-                retained.payload,
-                retained.updatedAt,
-              ],
-            ]
-          : []),
-      ]),
-    )
-    .digest("hex");
-}
+export type { UpdateCommandChildGrant } from "./update-command-executor-children.js";
 
 export function resolveUpdateCommandChildBinding(
   grant: UpdateCommandChildGrant,
   runId: string,
   root: string,
+  onProcessIdentityWarning?: NonNullable<
+    Parameters<typeof createManagedHandoffLeaseStore>[0]
+  >["onProcessIdentityWarning"],
 ) {
   const retainedFields =
     Object.hasOwn(grant, "retainedParent") || Object.hasOwn(grant, "retainedChildKey");
@@ -109,6 +54,7 @@ export function resolveUpdateCommandChildBinding(
     databasePath,
     serviceManagerEnv: resolveServiceManagerEnv(),
     existingIdentity: databaseIdentity,
+    onProcessIdentityWarning,
   });
   const parent = store.read(resolveUpdateInstallRoot(root));
   const originalChild = store.read(grant.originalChildKey ?? grant.childKey);

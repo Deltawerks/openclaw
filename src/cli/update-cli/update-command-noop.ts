@@ -5,7 +5,7 @@ import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.j
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
-import { readPackageVersion, resolveNodeRunner, UpdatePreMutationError } from "./shared.js";
+import { readPackageVersion, UpdatePreMutationError } from "./shared.js";
 import { maybeRepairLegacyConfigForUpdateChannel } from "./update-command-config.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
@@ -74,15 +74,11 @@ export async function finishAlreadyCurrentUpdate(
       },
     };
     const inspection = {
+      ...params,
       roots: [params.root],
-      legacyConfigPlan: params.legacyConfigPlan,
       updateInstallKind: params.result.mode === "git" ? ("git" as const) : ("package" as const),
-      shouldRestart: params.shouldRestart,
       jsonMode: Boolean(params.opts.json),
       timeoutMs: params.updateStepTimeoutMs,
-      invocationCwd: params.invocationCwd,
-      managedServiceRootRedirect: params.managedServiceRootRedirect,
-      managedServiceRoot: params.managedServiceRoot,
     };
     const admission = await inspectUpdateDatabaseContexts(inspection);
     const service = admission.service;
@@ -91,18 +87,13 @@ export async function finishAlreadyCurrentUpdate(
       service?.serviceUpdateVerdict?.kind === "owned" &&
       service.serviceUpdateVerdict.refreshDefinition;
     const runtime = await resolvePackageRuntimePreflight({
+      ...params,
       target: params.runtimeTarget,
       installedRoot: params.root,
-      nodeRunner: params.managedServiceRoot
-        ? resolveNodeRunner()
-        : (service?.serviceNodeRunner ?? params.packageUpdateNodeRunner),
-      fallbackNodeRunner:
-        params.shouldRestart &&
-        service?.running &&
-        service.serviceUpdateVerdict?.kind === "owned" &&
-        service.serviceUpdateVerdict.refreshDefinition
-          ? resolveNodeRunner()
-          : undefined,
+      nodeRunner: params.packageUpdateNodeRunner,
+      alreadyCurrent: true,
+      service: service ?? admission.services.get(params.root),
+      sourceRoot: result.mode === "git" ? params.root : undefined,
       timeoutMs: params.updateStepTimeoutMs,
       runtimeRecovery:
         !service?.serviceNodeRunner || canRefreshRuntime
@@ -116,6 +107,7 @@ export async function finishAlreadyCurrentUpdate(
     if (!runtime.ok) {
       throw new UpdatePreMutationError("node-runtime-preflight", runtime.error, {
         failureFacts: runtime.failureFacts,
+        recoverySteps: runtime.recoverySteps,
       });
     }
     const packageUpdateNodeRunner = runtime.value.nodeRunner;
@@ -248,6 +240,7 @@ export async function finishAlreadyCurrentUpdate(
         error instanceof UpdatePreMutationError ? error.reason : "managed-service-preflight",
         error.message,
         error.failureFacts,
+        error instanceof UpdatePreMutationError ? error.recoverySteps : undefined,
       );
       return;
     }

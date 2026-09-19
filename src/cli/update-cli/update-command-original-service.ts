@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import {
+  readDaemonRuntimePin,
+  readDaemonRuntimePinForInstall,
+} from "../../daemon/runtime-pin-state.js";
 import { resolveServiceEntrypoint } from "../../daemon/service-layout.js";
 import { fingerprintGatewayServiceDefinition } from "../../daemon/service-rebind.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js";
@@ -137,6 +141,17 @@ export async function revalidateOriginalManagedServiceRuntime(
   const definition = await fingerprintGatewayServiceDefinition(state.command);
   assertCurrent();
   const ownRebind = allowOwnRebind && original.definition.rebound === definition;
+  const runtimePin = readDaemonRuntimePinForInstall(
+    { kind: "gateway", env: original.service.serviceEnv ?? {} },
+    state.command,
+    true,
+  );
+  const expectedRuntimePin = ownRebind
+    ? original.definition.reboundRuntimePin
+    : original.definition.runtimePin.revision;
+  if (runtimePin.revision !== expectedRuntimePin) {
+    throw new Error("Original managed service runtime intent changed.");
+  }
   if (definition !== original.definition.fingerprint && !ownRebind) {
     throw new Error("Original managed service definition changed.");
   }
@@ -247,6 +262,7 @@ export async function observeOriginalManagedServiceRuntime(
     }
     const definition = {
       command: structuredClone(state.command),
+      runtimePin: readDaemonRuntimePin({ kind: "gateway", env: before.serviceEnv }, state.command),
       fingerprint: await fingerprintGatewayServiceDefinition(state.command),
     };
     assertCurrent();

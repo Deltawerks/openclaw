@@ -193,10 +193,12 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
     executor?.assertCurrent();
   };
   const before = params.preManagedServiceStop;
-  if (!before?.stopped || !before.serviceEnv) {
+  const original = params.originalManagedServiceRuntime;
+  // An own-rebind receipt also proves an activation effect if final stop
+  // inspection observed A already down and did not record a native stop.
+  if (!before?.serviceEnv || (!before.stopped && !original?.definition.rebound)) {
     return undefined;
   }
-  const original = params.originalManagedServiceRuntime;
   const serviceEnv = { ...(original?.service.serviceEnv ?? before.serviceEnv) };
   const packageRecovery =
     params.recovery?.serviceRestartSafe === true && params.recovery.version
@@ -313,7 +315,6 @@ export async function maybeRestartServiceAfterFailedMutableUpdate(params: {
           assertCurrent,
         },
         "restart",
-        true,
       );
     }
     assertCurrent();

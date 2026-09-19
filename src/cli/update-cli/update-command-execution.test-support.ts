@@ -117,7 +117,6 @@ vi.mock("./update-command-service.js", async () => {
     maybeStopManagedServiceBeforeMutableUpdate: mocks.maybeStopService,
     shouldBlockMutableUpdateFromGatewayServiceEnv: mocks.shouldBlockServiceUpdate,
     UpdateCommandAbort: actual.UpdateCommandAbort,
-    resolvePreparedGatewayUpdatePolicy: actual.resolvePreparedGatewayUpdatePolicy,
     resolveUpdatedGatewayRestartPort,
   };
 });

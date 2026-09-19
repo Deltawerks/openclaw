@@ -6,6 +6,7 @@ import {
 } from "../../infra/update-failure-facts.js";
 import type { UpdateRepairValidation } from "../../infra/update-repair-protocol.js";
 import { recordUpdateRunStep, recordUpdateRunVerification } from "../../infra/update-run-ledger.js";
+import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
@@ -20,6 +21,7 @@ import {
 } from "./update-command-plugins-internals.js";
 import {
   captureUpdateGatewayReadinessOwner,
+  gatewayReadinessPending,
   observeUpdateGatewayReadiness,
   type UpdateGatewayReadinessParams,
 } from "./update-command-readiness.js";
@@ -63,12 +65,10 @@ export function recordUpdateGatewayHealth(
       port,
       runningVersion: health.gatewayVersion ?? undefined,
       runningBuildId: health.gatewayBuildId ?? undefined,
-      ...(health.expectedVersion
-        ? {
-            versionMatch:
-              health.gatewayVersion === health.expectedVersion && !health.buildIdMismatch,
-          }
-        : {}),
+      versionMatch:
+        health.expectedVersion && health.gatewayVersion != null
+          ? health.gatewayVersion === health.expectedVersion && !health.buildIdMismatch
+          : undefined,
       pluginErrors: [
         ...(health.activatedPluginErrors?.map((error) => JSON.stringify(error)) ?? []),
         ...(health.unavailablePlugins?.map((error) => JSON.stringify(error)) ?? []),
@@ -102,7 +102,11 @@ export async function verifyUpdatedGateway(
     );
   }
   const serviceRunning = !params.requireRunningService || health.runtime.status === "running";
-  const recordVerificationStep = (failureFacts?: UpdateFailureFact[], detail?: string) => {
+  const recordVerificationStep = (
+    failureFacts?: UpdateFailureFact[],
+    detail?: string,
+    warning?: string,
+  ) => {
     const endedAtMs = Date.now();
     const step: UpdateStepResult = {
       name: params.result.recovery?.packageRollbackVerified
@@ -113,28 +117,29 @@ export async function verifyUpdatedGateway(
       durationMs: endedAtMs - startedAtMs,
       exitCode: failureFacts ? 1 : 0,
       ...(failureFacts ? { failureFacts } : {}),
+      ...(warning
+        ? {
+            termination: "timeout" as const,
+            advisory: { kind: "recoverable-maintenance" as const, message: warning },
+          }
+        : {}),
     };
     // Repair reuses the result: the last observation replaces its earlier failure.
     const index = params.result.steps.findIndex((entry) => entry.name === step.name);
     if (index === -1) {
-      if (failureFacts) {
-        params.result.steps.push(step);
-      }
+      params.result.steps.push(step);
     } else {
       params.result.steps[index] = step;
     }
     if (proofOptions.run) {
-      recordUpdateRunStep(
-        proofOptions.run.runId,
-        {
-          step: step.name,
-          status: failureFacts ? "failed" : "completed",
-          endedAtMs,
-          detail,
-          failureFacts,
-        },
-        { env: proofOptions.run.env },
-      );
+      for (const row of updateRunStepsFromResultStep(step)) {
+        // A recheck must clear failure facts from the previous observation.
+        recordUpdateRunStep(
+          proofOptions.run.runId,
+          { failureFacts: undefined, ...row, endedAtMs, detail: row.detail ?? detail },
+          { env: proofOptions.run.env },
+        );
+      }
     }
   };
   if (health.healthy && serviceRunning && readyz) {
@@ -172,6 +177,23 @@ export async function verifyUpdatedGateway(
     };
   }
   recordUpdateGatewayHealth(proofOptions.run, health, params.gatewayPort, readyz);
+  if (gatewayReadinessPending(health)) {
+    const detail = [
+      "Gateway readiness is pending; leaving the observed running process starting without another recovery restart or rollback.",
+      ...renderRestartDiagnostics(health),
+      ...(http ? [`Last HTTP readiness response: ${http.readyz ?? "unavailable"}.`] : []),
+      `Keep recovery backups and check progress with \`${formatCliCommand("openclaw gateway status --deep")}\`.`,
+    ].join("\n");
+    recordVerificationStep(undefined, detail, detail);
+    defaultRuntime.error(detail);
+    return {
+      ok: false,
+      score: 0,
+      summary: "Gateway is still starting; readiness remains unverified.",
+      stopReason:
+        health.waitOutcome === "still-starting" ? "still-starting" : "gateway-readiness-pending",
+    };
+  }
   const httpFailed = http !== undefined && !readyz;
   const diagnosticLines: [string, ...string[]] = [
     "Gateway did not become healthy after restart.",
@@ -281,3 +303,5 @@ export async function verifyUpdatedGateway(
   ].filter(Boolean).length;
   return { ok: false, score, summary: reason };
 }
+
+export { verifyPreviousGatewayForUpdate } from "./update-command-readiness.js";

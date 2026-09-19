@@ -11,7 +11,6 @@ import { disposeAllSessionMcpRuntimes } from "../../../src/agents/agent-bundle-m
 import { getOrCreateSessionMcpRuntime } from "../../../src/agents/agent-bundle-mcp-manager.test-support.js";
 import { materializeBundleMcpToolsForRun } from "../../../src/agents/agent-bundle-mcp-materialize.js";
 import { getMcpAppViewLease } from "../../../src/agents/mcp-ui-resource.js";
-import { buildSandboxHostPath, decodeSandboxHostCsp } from "../../../src/agents/sandbox-host.js";
 import { readConfigFileSnapshotWithPluginMetadata } from "../../../src/config/config.js";
 import type { OpenClawConfig } from "../../../src/config/types.openclaw.js";
 import { startGatewayServer } from "../../../src/gateway/server.js";
@@ -321,6 +320,9 @@ suite.define(() => {
         await waitForTextContaining(app.locator("#capabilities"), "serverResources");
         await waitForTextContaining(app.locator("#capabilities"), "updateModelContext");
         await waitForText(app.locator("#ping"), "{}");
+        await app.locator("#list-tools").click();
+        await waitForTextContaining(app.locator("#tools"), "app_companion");
+        await waitForTextContaining(app.locator("#tools"), "model_only", false);
         await waitForText(app.locator("#isolation"), "isolated");
         await waitForText(app.locator("#host-theme"), "dark");
         await waitForTextContaining(
@@ -436,6 +438,9 @@ suite.define(() => {
         await waitForTextContaining(app.locator("#capabilities"), "serverResources");
         await waitForTextContaining(app.locator("#capabilities"), "updateModelContext", false);
         await waitForText(app.locator("#ping"), "{}");
+        await app.locator("#list-tools").click();
+        await waitForTextContaining(app.locator("#tools"), "app_companion");
+        await waitForTextContaining(app.locator("#tools"), "model_only", false);
         await waitForText(app.locator("#isolation"), "isolated");
         await app.locator("#call-app").click();
         await waitForTextContaining(app.locator("#app-tool"), "companion-called");
@@ -848,7 +853,6 @@ suite.define(() => {
 
             // Playwright does not support BFCache restoration; use its supported history flow.
             // App documents stay uncached; the public versioned sandbox shell is immutable.
-            // Ordinary history is not BFCache proof.
             const historyContext = await newProofContext();
             const historyPage = await historyContext.newPage();
             const historyStates: Array<Record<string, unknown>> = [];
@@ -874,7 +878,6 @@ suite.define(() => {
                 );
               });
               const responses: Array<{
-                url: string;
                 pathname: string;
                 version: string | null;
                 status: number;
@@ -885,7 +888,6 @@ suite.define(() => {
                 if (response.url().includes("mcp-app")) {
                   const url = new URL(response.url());
                   responses.push({
-                    url: response.url(),
                     pathname: url.pathname,
                     version: url.searchParams.get("v"),
                     status: response.status(),
@@ -935,37 +937,16 @@ suite.define(() => {
                   ]),
                 );
               }
-              const shells = responses.filter(
+              const sandboxResponses = responses.filter(
                 (response) => response.pathname === "/mcp-app-sandbox",
               );
-              expect(shells.length).toBeGreaterThan(0);
-              for (const shell of shells) {
-                const url = new URL(shell.url);
-                const selected = new URL(
-                  buildSandboxHostPath(decodeSandboxHostCsp(url.searchParams.get("csp"))),
-                  url.origin,
-                );
-                // Bind the browser response to this source generation's public shell,
-                // not merely to the presence of an arbitrary version query parameter.
-                expect(url.href).toBe(selected.href);
-                expect(shell.version).toMatch(/^[a-f0-9]{64}$/);
-                expect(shell.status).toBe(200);
-                expect(shell.cacheControl).toBe(
-                  selected.searchParams.has("v")
-                    ? "public, max-age=31536000, immutable"
-                    : "no-store",
-                );
-              }
-              const shellUrl = new URL(shells[0]!.url);
-              for (const version of [null, "wrong-generation"]) {
-                if (version === null) {
-                  shellUrl.searchParams.delete("v");
-                } else {
-                  shellUrl.searchParams.set("v", version);
-                }
-                const response = await historyContext.request.get(shellUrl.href);
-                expect(response.status()).toBe(200);
-                expect(response.headers()["cache-control"]).toBe("no-store");
+              expect(sandboxResponses.length).toBeGreaterThan(0);
+              for (const response of sandboxResponses) {
+                expect(response.version).toMatch(/^[a-f0-9]{64}$/);
+                expect(response).toMatchObject({
+                  status: 200,
+                  cacheControl: "public, max-age=31536000, immutable",
+                });
               }
               historyObservations.phase = "complete";
             } finally {

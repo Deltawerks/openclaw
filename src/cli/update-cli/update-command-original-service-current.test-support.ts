@@ -2,12 +2,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, it, vi, type Mock } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import {
+  commitDaemonRuntimePin,
+  readDaemonRuntimePinForInstall,
+} from "../../daemon/runtime-pin-state.js";
 import * as nativeLock from "../../daemon/service-operation-lock.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import {
   captureGatewayServiceRebind,
   currentGatewayServiceRebindReceipt,
   fingerprintGatewayServiceDefinition,
+  settleGatewayServiceRebind,
   withGatewayServiceRebindCapture,
 } from "../../daemon/service-rebind.js";
 import type { GatewayServiceState } from "../../daemon/service.js";
@@ -203,102 +208,177 @@ export function registerCurrentF3Controls(fixture: () => Fixture) {
     },
   );
 
-  it.each(["own-rebind", "unrelated-replacement", "revoked", "schema-newer"] as const)(
-    "retained own-rebind compensation: %s",
-    async (scenario) => {
-      const { state, rootB, before, serviceState, mocks } = fixture();
-      await admitted(async (run) => {
-        const original = await observeOriginalManagedServiceRuntime(
-          { root: rootB, opts: { run } },
-          before,
-        );
-        if (!original) {
-          throw new Error("missing original observation");
-        }
-        const originalCommand = structuredClone(serviceState.command!);
-        const originalDigest = await fingerprintGatewayServiceDefinition(originalCommand);
-        let receipt: { before: string; after: string } | undefined;
-        await withGatewayServiceOperationLock(state.env, async (assertCurrent) =>
-          withGatewayServiceRebindCapture(originalDigest, async () => {
-            await captureGatewayServiceRebind(
-              async () => serviceState.command,
-              assertCurrent,
-              async () => {
-                serviceState.command = {
-                  ...originalCommand,
-                  programArguments: [
-                    process.execPath,
-                    path.join(rootB, "dist/index.js"),
-                    "gateway",
-                  ],
-                };
-              },
-            );
+  it.each([
+    "own-rebind",
+    "own-rebind-without-stop",
+    "own-compensated-rebind-without-stop",
+    "own-pin-rebind",
+    "foreign-pin",
+    "unrelated-replacement",
+    "revoked",
+    "schema-newer",
+  ] as const)("retained own-rebind compensation: %s", async (scenario) => {
+    const { state, rootB, before, serviceState, mocks } = fixture();
+    const pinScope = { kind: "gateway" as const, env: state.env };
+    const pinScenario = scenario === "own-pin-rebind" || scenario === "foreign-pin";
+    if (pinScenario) {
+      commitDaemonRuntimePin(
+        pinScope,
+        {
+          expected: readDaemonRuntimePinForInstall(pinScope, serviceState.command, true),
+          pin: { runtime: "node", path: process.execPath },
+        },
+        serviceState.command,
+      );
+    }
+    await admitted(async (run) => {
+      const original = await observeOriginalManagedServiceRuntime(
+        { root: rootB, opts: { run } },
+        before,
+      );
+      if (!original) {
+        throw new Error("missing original observation");
+      }
+      const originalCommand = structuredClone(serviceState.command!);
+      const originalDigest = await fingerprintGatewayServiceDefinition(originalCommand);
+      let receipt: ReturnType<typeof currentGatewayServiceRebindReceipt>;
+      await withGatewayServiceOperationLock(state.env, async (assertCurrent) =>
+        withGatewayServiceRebindCapture(
+          originalDigest,
+          async () => {
+            await settleGatewayServiceRebind(assertCurrent, async () => {
+              await captureGatewayServiceRebind(
+                async () => serviceState.command,
+                assertCurrent,
+                async () => {
+                  serviceState.command = {
+                    ...originalCommand,
+                    programArguments: [
+                      process.execPath,
+                      path.join(rootB, "dist/index.js"),
+                      "gateway",
+                    ],
+                  };
+                  if (pinScenario) {
+                    commitDaemonRuntimePin(
+                      pinScope,
+                      {
+                        expected: original.definition.runtimePin,
+                        pin: { runtime: "node", path: "/selected-B-node" },
+                      },
+                      serviceState.command,
+                    );
+                  }
+                },
+                () => readDaemonRuntimePinForInstall(pinScope, null, true).revision,
+              );
+              if (scenario === "own-compensated-rebind-without-stop") {
+                // Main's definition compensation restores A, but does not restart it.
+                serviceState.command = structuredClone(originalCommand);
+              }
+            });
             receipt = currentGatewayServiceRebindReceipt();
-          }),
-        );
-        // Receipt is emitted by the actual native rewrite owner, never a synthesized success.
-        if (!receipt) {
-          throw new Error("missing native receipt");
-        }
-        original.definition = {
-          command: originalCommand,
-          fingerprint: originalDigest,
-          rebound: receipt.after,
-        };
-        mocks.nativeInstall.mockImplementation(async (args) => {
-          await args.beforeMutation();
-          args.assertCurrent();
-          expect(args.programArguments).toEqual(originalCommand.programArguments);
-          expect(args.preserveAutoStart).toBe(true);
-          serviceState.command = structuredClone(originalCommand);
-        });
-        if (scenario === "unrelated-replacement") {
-          if (!serviceState.command) {
-            throw new Error("missing rebound command");
-          }
-          serviceState.command.programArguments.push("--foreign");
-        }
-        if (scenario === "revoked") {
-          run.executorFence = undefined;
-        }
-        if (scenario === "schema-newer") {
-          original.schemaVersions = { state: 0, agent: 0 };
-        }
-        const result: UpdateRunResult = {
-          status: "error",
-          mode: "npm",
-          root: rootB,
-          reason: "B-health-failed",
-          steps: [],
-          durationMs: 1,
-        };
-        const bytes = await fs.readFile(state.env.OPENCLAW_CONFIG_PATH!);
-        const outcome = compensateOriginalManagedService(
-          {
-            result,
-            opts: { run, json: true },
-            originalManagedServiceRuntime: original,
-            preManagedServiceStop: { ...before, stopped: true },
-            allowGatewayRestart: true,
-            timeoutMs: 30_000,
           },
-          () => run.executorFence!.assertCurrent(),
-        );
-        if (scenario === "revoked") {
-          await expect(outcome).rejects.toThrow();
-        } else {
-          const recovery = await outcome;
-          expect(recovery).toMatchObject({
-            rolledBack: false,
-            originalServiceRecovery: scenario === "own-rebind" ? "healthy" : "failed",
-          });
-        }
-        expect(mocks.nativeInstall).toHaveBeenCalledTimes(scenario === "own-rebind" ? 1 : 0);
-        expect(await fs.readFile(state.env.OPENCLAW_CONFIG_PATH!)).toEqual(bytes);
+          original.definition.runtimePin.revision,
+        ),
+      );
+      // Receipt is emitted by the actual native rewrite owner, never a synthesized success.
+      if (!receipt) {
+        throw new Error("missing native receipt");
+      }
+      if (scenario === "own-compensated-rebind-without-stop") {
+        expect(receipt).toMatchObject({
+          before: originalDigest,
+          after: originalDigest,
+          mutated: true,
+        });
+      }
+      original.definition = {
+        ...original.definition,
+        command: originalCommand,
+        fingerprint: originalDigest,
+        rebound: receipt.after,
+        reboundRuntimePin: receipt.runtimePinAfter,
+      };
+      mocks.nativeInstall.mockImplementation(async (args) => {
+        await args.beforeMutation();
+        args.assertCurrent();
+        expect(args.programArguments).toEqual(originalCommand.programArguments);
+        expect(args.preserveAutoStart).toBe(true);
+        serviceState.command = structuredClone(originalCommand);
+        commitDaemonRuntimePin(pinScope, args.runtimePinUpdate, serviceState.command);
       });
-    },
-  );
+      if (scenario === "foreign-pin") {
+        commitDaemonRuntimePin(
+          pinScope,
+          {
+            expected: readDaemonRuntimePinForInstall(pinScope, serviceState.command, true),
+            pin: { runtime: "node", path: "/operator-node" },
+          },
+          serviceState.command,
+        );
+      }
+      if (scenario === "unrelated-replacement") {
+        if (!serviceState.command) {
+          throw new Error("missing rebound command");
+        }
+        serviceState.command.programArguments.push("--foreign");
+      }
+      if (scenario === "revoked") {
+        run.executorFence = undefined;
+      }
+      if (scenario === "schema-newer") {
+        original.schemaVersions = { state: 0, agent: 0 };
+      }
+      const result: UpdateRunResult = {
+        status: "error",
+        mode: "npm",
+        root: rootB,
+        reason: "B-health-failed",
+        steps: [],
+        durationMs: 1,
+      };
+      const bytes = await fs.readFile(state.env.OPENCLAW_CONFIG_PATH!);
+      const readinessBeforeRecovery = mocks.readiness.mock.calls.length;
+      const outcome = compensateOriginalManagedService(
+        {
+          result,
+          opts: { run, json: true },
+          originalManagedServiceRuntime: original,
+          preManagedServiceStop: { ...before, stopped: !scenario.endsWith("without-stop") },
+          allowGatewayRestart: true,
+          timeoutMs: 30_000,
+        },
+        () => run.executorFence!.assertCurrent(),
+      );
+      if (scenario === "revoked") {
+        await expect(outcome).rejects.toThrow();
+      } else {
+        const recovery = await outcome;
+        expect(recovery).toMatchObject({
+          rolledBack: false,
+          originalServiceRecovery: scenario.startsWith("own-") ? "healthy" : "failed",
+        });
+      }
+      const restoredByInstaller = scenario === "own-compensated-rebind-without-stop";
+      expect(mocks.nativeInstall).toHaveBeenCalledTimes(
+        scenario.startsWith("own-") && !restoredByInstaller ? 1 : 0,
+      );
+      if (restoredByInstaller) {
+        expect(mocks.nativeRestart).toHaveBeenCalledOnce();
+        expect(mocks.readiness).toHaveBeenCalledTimes(readinessBeforeRecovery + 1);
+        expect(mocks.readiness.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+          mocks.nativeRestart.mock.invocationCallOrder[0]!,
+        );
+      }
+      if (scenario === "own-pin-rebind") {
+        expect(readDaemonRuntimePinForInstall(pinScope, serviceState.command, true).revision).toBe(
+          original.definition.runtimePin.revision,
+        );
+      }
+      expect(await fs.readFile(state.env.OPENCLAW_CONFIG_PATH!)).toEqual(bytes);
+    });
+  });
 
   it.each(["slow", "revoked", "generation-change"] as const)(
     "retained readiness uses current bounded owner: %s",

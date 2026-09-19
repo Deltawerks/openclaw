@@ -5,7 +5,7 @@ import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolut
 
 export const GATEWAY_UPDATE_EXECUTOR_CONTRACT = "root-spawner-v1";
 
-const owners = new AsyncLocalStorage<() => void>();
+const owners = new AsyncLocalStorage<{ assertCurrent: () => void; originalRoot?: string }>();
 export type GatewayServiceNativeCommand = (
   argv: string[],
   options: CommandOptions,
@@ -15,7 +15,7 @@ const nativeCommands = new WeakMap<() => void, GatewayServiceNativeCommand>();
 /** Only the current update interval can supply native process custody. */
 export function getGatewayServiceUpdateNativeCommand(): GatewayServiceNativeCommand | undefined {
   const owner = owners.getStore();
-  return owner ? nativeCommands.get(owner) : undefined;
+  return owner ? nativeCommands.get(owner.assertCurrent) : undefined;
 }
 
 /** The target CLI installs this only after binding its original update grant.
@@ -23,6 +23,7 @@ export function getGatewayServiceUpdateNativeCommand(): GatewayServiceNativeComm
 export async function withGatewayServiceUpdateAuthority<T>(
   assertOwner: () => void,
   operation: () => Promise<T>,
+  originalRoot?: string,
   nativeCommand?: GatewayServiceNativeCommand,
 ): Promise<T> {
   let active = true;
@@ -87,7 +88,7 @@ export async function withGatewayServiceUpdateAuthority<T>(
     });
   }
   try {
-    return await owners.run(assertCurrent, async () => {
+    return await owners.run({ assertCurrent, originalRoot }, async () => {
       if (!nativeCommand) {
         const result = await operation();
         assertCurrent();
@@ -132,7 +133,14 @@ export async function withGatewayServiceUpdateAuthority<T>(
 
 /** Ordinary user service commands have no update owner and retain their behavior. */
 export function assertGatewayServiceUpdateCurrent(): void {
-  owners.getStore()?.();
+  owners.getStore()?.assertCurrent();
+}
+
+/** Original-root evidence is usable only while the delegated owner remains live. */
+export function readGatewayServiceUpdateOriginalRoot(): string | undefined {
+  const owner = owners.getStore();
+  owner?.assertCurrent();
+  return owner?.originalRoot;
 }
 
 export function isUpdateOwnedGatewayServiceCommand(): boolean {

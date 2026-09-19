@@ -7,9 +7,17 @@ import { resolveManagedServicePackageUpdatePlan } from "./update-command-service
 const service = vi.hoisted(() => ({
   admit: vi.fn(),
   readCommand: vi.fn(),
+  isLoaded: async () => true,
+  readRuntime: async () => ({
+    status: "running",
+    systemd: { managerUid: process.getuid?.() ?? 501 },
+  }),
   readDefinitionMutationCapability: vi.fn(),
 }));
-vi.mock("../../daemon/service.js", () => ({ resolveGatewayService: () => service }));
+vi.mock("../../daemon/service.js", async (original) => ({
+  ...(await original<typeof import("../../daemon/service.js")>()),
+  resolveGatewayService: () => service,
+}));
 vi.mock("../../infra/gateway-supervision.js", () => ({
   assertGatewayServiceMutationAllowed: service.admit,
 }));
@@ -48,6 +56,7 @@ describe("managed service root planning", () => {
     });
     expect(await resolveManagedServicePackageUpdatePlan({ root: f.invokingRoot })).toEqual({
       rootRedirect: null,
+      serviceUnitTarget: "not inspected (service management unavailable)",
     });
     expect(service.readCommand).not.toHaveBeenCalled();
   });
@@ -57,12 +66,16 @@ describe("managed service root planning", () => {
     expect(await resolveManagedServicePackageUpdatePlan({ root: f.invokingRoot })).toEqual({
       rootRedirect: { root: f.serviceRoot, previousRoot: f.invokingRoot },
       nodeRunner: f.nodeRunner,
+      serviceUnitTarget: path.join(f.serviceRoot, "dist", "index.js"),
     });
-    expect(service.readCommand).toHaveBeenCalledWith(process.env, {
-      requireEffective: true,
-      requireLoaded: true,
-    });
-    expect(service.readDefinitionMutationCapability).not.toHaveBeenCalled();
+    expect(service.readCommand).toHaveBeenCalledWith(
+      process.env,
+      expect.objectContaining({
+        requireEffective: true,
+        requireLoaded: true,
+      }),
+    );
+    expect(service.readDefinitionMutationCapability).toHaveBeenCalledOnce();
   });
   it.each(["managedOverrides", "managedDefinition"] as const)(
     "preserves writable operator definitions through service-root fallback (%s)",
@@ -82,8 +95,9 @@ describe("managed service root planning", () => {
       expect(await resolveManagedServicePackageUpdatePlan({ root: f.invokingRoot })).toEqual({
         rootRedirect: { root: f.serviceRoot, previousRoot: f.invokingRoot },
         nodeRunner: f.nodeRunner,
+        serviceUnitTarget: path.join(f.serviceRoot, "dist", "index.js"),
       });
-      expect(service.readDefinitionMutationCapability).not.toHaveBeenCalled();
+      expect(service.readDefinitionMutationCapability).toHaveBeenCalledOnce();
     },
   );
   it.each(["darwin", "linux"])("keeps writable split-prefix rebinds on %s", async (platform) => {
@@ -93,6 +107,7 @@ describe("managed service root planning", () => {
       rootRedirect: null,
       serviceRoot: f.serviceRoot,
       nodeRunner: f.nodeRunner,
+      serviceUnitTarget: path.join(f.serviceRoot, "dist", "index.js"),
     });
     expect(service.readDefinitionMutationCapability).toHaveBeenCalledOnce();
   });
@@ -102,8 +117,9 @@ describe("managed service root planning", () => {
     expect(await resolveManagedServicePackageUpdatePlan({ root: f.serviceRoot })).toEqual({
       rootRedirect: null,
       nodeRunner: f.nodeRunner,
+      serviceUnitTarget: path.join(f.serviceRoot, "dist", "index.js"),
     });
-    expect(service.readDefinitionMutationCapability).not.toHaveBeenCalled();
+    expect(service.readDefinitionMutationCapability).toHaveBeenCalledOnce();
   });
   it("retains the existing protected-definition redirect", async () => {
     const f = await fixture();
@@ -112,6 +128,7 @@ describe("managed service root planning", () => {
     expect(await resolveManagedServicePackageUpdatePlan({ root: f.invokingRoot })).toEqual({
       rootRedirect: { root: f.serviceRoot, previousRoot: f.invokingRoot },
       nodeRunner: f.nodeRunner,
+      serviceUnitTarget: path.join(f.serviceRoot, "dist", "index.js"),
     });
   });
 });

@@ -15,6 +15,7 @@ it("revokes a captured native runner when its service authority scope closes", a
     async () => {
       captured = getGatewayServiceUpdateNativeCommand();
     },
+    undefined,
     async () => {
       effects += 1;
       return { stdout: "", stderr: "", code: 0, signal: null, killed: false, termination: "exit" };
@@ -57,6 +58,7 @@ it("serializes parallel native reads before checking a suspended parent", async 
       expect(completed.map((entry) => entry.code)).toEqual([0, 0]);
       expect(commands).toEqual(["first", "second"]);
     },
+    undefined,
     async (argv) => {
       running = true;
       commands.push(argv[0]!);
@@ -99,6 +101,7 @@ it("expires a queued deadline without invoking it or releasing its predecessor",
         await first;
         throw new Error("fixture complete after expiry");
       },
+      undefined,
       async (argv) => {
         commands.push(argv[0]!);
         entered.resolve();
@@ -132,6 +135,7 @@ it("closes unstarted submissions but joins the already running native call", asy
       void runner(["never"], {}).catch(() => undefined);
       throw new Error("initiating failure");
     },
+    undefined,
     async (argv) => {
       commands.push(argv[0]!);
       entered.resolve();

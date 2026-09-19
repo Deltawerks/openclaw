@@ -42,9 +42,9 @@ it.skipIf(process.platform === "win32").each([true, false])(
         assert(typeof options !== "number");
         return runCommand(argv, {
           ...options,
-          beforeInput(pid) {
-            options.beforeInput?.(pid);
-            expect(() => fence.assertCurrent()).toThrow("suspended");
+          beforeInput(pid, spawnedArgv) {
+            options.beforeInput?.(pid, spawnedArgv);
+            expect(() => fence.assertCurrent()).toThrow("The update process is still running.");
             bound();
           },
         });
@@ -193,12 +193,9 @@ it
       );
     });
     if (change === "cleanup-uncertain") {
-      const state = await work;
-      expect(state.loadState).toEqual({
-        status: "unknown",
-        detail: "Error: Retained native command cleanup is unconfirmed.",
-      });
-      expect(state.running).toBe(false);
+      await expect(work).rejects.toThrow(
+        "Command cleanup could not confirm that owned work stopped",
+      );
     } else {
       const reason =
         change === "requester-revoked"
@@ -209,9 +206,7 @@ it
       await expect(work).rejects.toThrow(reason);
     }
     expect(actualCommands).toBe(1);
-    if (change !== "cleanup-uncertain") {
-      expect(parentReads).toBe(0);
-    }
+    expect(parentReads).toBe(0);
   },
   15000,
 );

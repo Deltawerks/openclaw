@@ -152,26 +152,26 @@ function readMockAuthProfileStore(agentDir?: string): {
   }
 }
 
+function readMockRuntimeAuthProfileStore(agentDir?: string) {
+  const store = readMockAuthProfileStore(agentDir);
+  if (process.env.OPENCLAW_TEST_CODEX_CLI_OAUTH === "1") {
+    store.profiles["openai:default"] = {
+      provider: "openai",
+      type: "oauth",
+    };
+  }
+  return store;
+}
+
 vi.mock("../auth-profiles.js", () => ({
   externalCliDiscoveryForProviderAuth: (params: { provider: string }) => params,
-  ensureAuthProfileStore: (agentDir?: string) => {
-    const store = readMockAuthProfileStore(agentDir);
-    if (process.env.OPENCLAW_TEST_CODEX_CLI_OAUTH === "1") {
-      store.profiles["openai:default"] = {
-        provider: "openai",
-        type: "oauth",
-      };
-    }
-    return store;
-  },
-  ensureAuthProfileStoreWithoutExternalProfiles: (agentDir?: string) =>
-    readMockAuthProfileStore(agentDir),
-  hasAnyAuthProfileStoreSource: (agentDir?: string) => {
-    if (!agentDir) {
-      return false;
-    }
-    return fsSync.existsSync(path.join(agentDir, "auth-profiles.json"));
-  },
+  ensureAuthProfileStore: readMockRuntimeAuthProfileStore,
+  loadAuthProfileStoreForRuntime: readMockRuntimeAuthProfileStore,
+  loadAuthProfileStoreForRuntimeAsync: async (agentDir?: string) =>
+    readMockRuntimeAuthProfileStore(agentDir),
+  ensureAuthProfileStoreWithoutExternalProfiles: readMockAuthProfileStore,
+  hasAnyAuthProfileStoreSource: (agentDir?: string) =>
+    Boolean(agentDir && fsSync.existsSync(path.join(agentDir, "auth-profiles.json"))),
   listProfilesForProvider: (
     store: { profiles?: Record<string, { provider?: string }> },
     provider: string,

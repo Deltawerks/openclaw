@@ -162,6 +162,7 @@ function writeLaunchAgentActionLine(
 
 async function ensureLaunchAgentLoadedAfterFailure(params: {
   skipEnable?: boolean;
+  preserveAutoStart?: boolean;
   domain: string;
   serviceTarget: string;
   plistPath: string;
@@ -179,6 +180,7 @@ async function ensureLaunchAgentLoadedAfterFailure(params: {
       actionHint: "openclaw gateway start",
       onMutation: params.onMutation,
       skipEnable: params.skipEnable,
+      preserveAutoStart: params.preserveAutoStart,
     });
     return { loaded: true };
   } catch (error) {
@@ -238,7 +240,8 @@ export async function startLaunchAgent({
       plistPath,
       actionHint: "openclaw gateway start",
       onMutation: reportMutation,
-      skipEnable: preserveAutoStart || enabled,
+      skipEnable: enabled,
+      preserveAutoStart,
       assertCurrent,
     });
     // Loading does not start demand-only jobs. Without -k, an auto-started job is left running.
@@ -369,7 +372,7 @@ export async function restartLaunchAgent({
         plistPath,
         actionHint: "openclaw gateway restart",
         onMutation: reportMutation,
-        skipEnable: preserveAutoStart,
+        preserveAutoStart,
         retryPendingTeardown: true,
       });
     } catch (error) {
@@ -381,7 +384,7 @@ export async function restartLaunchAgent({
         serviceTarget,
         plistPath,
         onMutation: reportMutation,
-        skipEnable: preserveAutoStart,
+        preserveAutoStart,
       });
       if (restored.loaded) {
         throw error;
@@ -414,7 +417,7 @@ export async function restartLaunchAgent({
       serviceTarget,
       plistPath,
       onMutation: reportMutation,
-      skipEnable: preserveAutoStart,
+      preserveAutoStart,
     });
     const failure = `launchctl kickstart failed: ${start.stderr || start.stdout}`.trim();
     if (restored.loaded) {
@@ -438,7 +441,7 @@ export async function restartLaunchAgent({
     plistPath,
     actionHint: "openclaw gateway restart",
     onMutation: reportMutation,
-    skipEnable: preserveAutoStart,
+    preserveAutoStart,
   });
   if (preserveDefinition) {
     const kick = await execLaunchctl(["kickstart", serviceTarget]);

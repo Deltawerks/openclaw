@@ -66,7 +66,7 @@ it("binds the real Doctor child while the parent remains suspended, then resumes
         assert(typeof options !== "number", "Doctor supplies input-admission options");
         // Only the Doctor program is substituted. Spawn, PID binding, input ordering,
         // native executor custody, and process-tree settlement are the production owners.
-        expect(() => fence.assertCurrent()).toThrow("suspended");
+        expect(() => fence.assertCurrent()).toThrow("The update process is still running.");
         spawned = true;
         return runUtf8(
           [
@@ -127,7 +127,7 @@ it.each([
       vi.spyOn(processRunner, "runUtf8CommandWithTimeout").mockImplementation(
         async (_argv, options) => {
           assert(typeof options !== "number", "Doctor supplies input-admission options");
-          expect(() => fence.assertCurrent()).toThrow("suspended");
+          expect(() => fence.assertCurrent()).toThrow("The update process is still running.");
           return runUtf8(
             [
               process.execPath,
@@ -137,7 +137,7 @@ it.each([
             ],
             {
               ...options,
-              beforeInput(pid) {
+              beforeInput(pid, spawnedArgv) {
                 childPid = pid;
                 if (change === "requester-revoked") {
                   current = false;
@@ -166,7 +166,7 @@ it.each([
                     db.close();
                   }
                 }
-                options.beforeInput?.(pid);
+                options.beforeInput?.(pid, spawnedArgv);
               },
             },
           );
@@ -215,9 +215,9 @@ it("returns a settled failing Doctor result without making the parent permanentl
           ],
           {
             ...options,
-            beforeInput(pid) {
+            beforeInput(pid, spawnedArgv) {
               childPid = pid;
-              options.beforeInput?.(pid);
+              options.beforeInput?.(pid, spawnedArgv);
             },
           },
         );
@@ -246,7 +246,7 @@ it("returns a settled failing Doctor result without making the parent permanentl
   });
 });
 
-it("preserves uncertain before-input failure while settling the child without input", async () => {
+it("preserves before-input failure after owned child cleanup without input", async () => {
   const runId = randomUUID();
   const runUtf8 = processRunner.runUtf8CommandWithTimeout;
   let childPid: number | undefined;
@@ -266,9 +266,9 @@ it("preserves uncertain before-input failure while settling the child without in
           ],
           {
             ...options,
-            beforeInput(pid) {
+            beforeInput(pid, spawnedArgv) {
               childPid = pid;
-              options.beforeInput?.(pid);
+              options.beforeInput?.(pid, spawnedArgv);
               throw new Error("injected before-input failure after live child binding");
             },
           },
@@ -291,7 +291,7 @@ it("preserves uncertain before-input failure while settling the child without in
   });
   await expect(work).rejects.toMatchObject({
     message: "injected before-input failure after live child binding",
-    cleanup: "uncertain",
+    cleanup: process.platform === "win32" ? "forced" : "cooperative",
   });
   expect(childPid).toBeTypeOf("number");
   if (childPid !== undefined) {

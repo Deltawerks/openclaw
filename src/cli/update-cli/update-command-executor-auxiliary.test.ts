@@ -6,6 +6,8 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
+import * as processRunner from "../../process/exec.js";
+import type { UpdateCommandOptions } from "./shared.js";
 import {
   releaseUpdateCommandPreflightForHandoff,
   withUpdateCommandExecutor,
@@ -54,8 +56,12 @@ it.each(["admitted", "initializing"] as const)(
       );
       try {
         await vi.waitFor(() => expect(fs.existsSync(ready)).toBe(true), { timeout: 5000 });
-        expect(() => releaseUpdateCommandPreflightForHandoff(fence)).toThrow("suspended");
-        await expect(executor.enter(root, { serviceRoot })).rejects.toThrow("suspended");
+        expect(() => releaseUpdateCommandPreflightForHandoff(fence)).toThrow(
+          "The update process is still running.",
+        );
+        await expect(executor.enter(root, { serviceRoot })).rejects.toThrow(
+          "The update process is still running.",
+        );
         for (const key of [root, serviceRoot]) {
           expect(
             createManagedHandoffLeaseStore().acquire(key, "contender", { kind: "update" }).kind,
@@ -260,7 +266,9 @@ it("preserves eligible preflight release until a healthy auxiliary descendant dr
     );
     try {
       await vi.waitFor(() => expect(fs.existsSync(ready)).toBe(true), { timeout: 5000 });
-      expect(() => releaseUpdateCommandPreflightForHandoff(fence)).toThrow("suspended");
+      expect(() => releaseUpdateCommandPreflightForHandoff(fence)).toThrow(
+        "The update process is still running.",
+      );
       expect(
         createManagedHandoffLeaseStore().acquire(root, "contender", { kind: "update" }).kind,
       ).toBe("busy");
@@ -270,4 +278,92 @@ it("preserves eligible preflight release until a healthy auxiliary descendant dr
     expect(await pending).toMatchObject({ code: 0, cleanup: "cooperative" });
     releaseUpdateCommandPreflightForHandoff(fence);
   });
+});
+
+it.each(
+  (["before-launch", "at-input"] as const).flatMap((boundary) =>
+    (
+      [
+        "options-replaced",
+        "run-replaced",
+        "run-id-changed",
+        "executor-replaced",
+        "requester-replaced",
+        "requester-revoked",
+      ] as const
+    ).map((change) => ({ boundary, change })),
+  ),
+)("refuses Node provisioning after $change at $boundary", async ({ boundary, change }) => {
+  const runId = randomUUID();
+  const effect = path.join(root, "installer-effect");
+  let requesterCurrent = true;
+  const opts: UpdateCommandOptions = {
+    run: {
+      runId,
+      env: process.env,
+      requesterAuthority: { requester: {}, isCurrent: () => requesterCurrent },
+    },
+  };
+  const recoveryParams = { root, opts, timeoutMs: 10000 };
+  const revoke = () => {
+    assert(opts.run);
+    if (change === "options-replaced") {
+      recoveryParams.opts = { run: { ...opts.run } };
+    }
+    if (change === "run-replaced") {
+      opts.run = { ...opts.run };
+    }
+    if (change === "run-id-changed") {
+      opts.run.runId = randomUUID();
+    }
+    if (change === "executor-replaced") {
+      opts.run.executorFence = { assertCurrent() {} };
+    }
+    if (change === "requester-replaced") {
+      opts.run.requesterAuthority = { requester: {}, isCurrent: () => true };
+    }
+    if (change === "requester-revoked") {
+      requesterCurrent = false;
+    }
+  };
+  const runCommand = processRunner.runCommandWithTimeout;
+  const commands = vi
+    .spyOn(processRunner, "runCommandWithTimeout")
+    .mockImplementation((argv, options) => {
+      assert(typeof options !== "number");
+      return runCommand(argv, {
+        ...options,
+        beforeInput: (pid, spawnedArgv) => {
+          if (boundary === "at-input") {
+            revoke();
+          }
+          options.beforeInput?.(pid, spawnedArgv);
+        },
+      });
+    });
+  const work = withUpdateCommandExecutor(runId, async (executor) => {
+    assert(opts.run);
+    opts.run.executorFence = await executor.enter(root, { serviceRoot, preflight: true });
+    const recovery = createPackageRuntimeRecovery(recoveryParams);
+    assert(recovery.installCommand);
+    if (boundary === "before-launch") {
+      revoke();
+    }
+    await recovery.installCommand(
+      process.execPath,
+      [
+        "-e",
+        `const fs=require('node:fs');fs.readFileSync(0,'utf8');fs.writeFileSync(${JSON.stringify(effect)},'unauthorized')`,
+      ],
+      process.env,
+    );
+  });
+  await expect(work).rejects.toThrow(
+    change === "requester-revoked" ? "requester-revoked" : "lost its original update executor",
+  );
+  expect(commands).toHaveBeenCalledTimes(boundary === "at-input" ? 1 : 0);
+  expect(fs.existsSync(effect)).toBe(false);
+  for (const key of [root, serviceRoot]) {
+    expect(createManagedHandoffLeaseStore().read(key)).toEqual({ kind: "absent" });
+  }
 });

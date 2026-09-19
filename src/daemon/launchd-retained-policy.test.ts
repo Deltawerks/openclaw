@@ -34,6 +34,9 @@ it.each(
         throw new Error("Missing native command");
       }
       commands.push(command);
+      if (command === "print-disabled") {
+        return { ...success, stdout: 'disabled services = { "ai.openclaw.gateway" => enabled }' };
+      }
       if (command === "enable") {
         return success;
       }

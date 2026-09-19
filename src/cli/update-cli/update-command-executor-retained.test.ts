@@ -82,12 +82,11 @@ it.each([
   { destination: "C", revoke: "A" },
   { destination: "C", revoke: "A-child" },
   { destination: "C", revoke: "C" },
-  { destination: "A", revoke: "none" },
   { destination: "B", revoke: "none" },
 ] as const)(
   "retains B capture and live A through nested B->$destination, revoke $revoke",
   async ({ destination, revoke }) => {
-    const leafRoot = destination === "C" ? candidateRoot : destination === "A" ? serviceRoot : root;
+    const leafRoot = destination === "C" ? candidateRoot : root;
     const receipt = path.join(root, "receipt");
     const proceed = path.join(root, "proceed");
     const output = path.join(root, "effect");
@@ -322,3 +321,39 @@ function publishedPackageFixture(
     db.close();
   }
 }
+
+it("refuses nested delegation into retained service A before leaf effects", async () => {
+  const output = path.join(root, "effect");
+  const receipt = path.join(root, "receipt");
+  const proceed = path.join(root, "proceed");
+  await withUpdateCommandExecutor(randomUUID(), async (executor) => {
+    const fence = await executor.enter(root, { serviceRoot });
+    const authority = captureUpdateCommandExecutorAuthority(fence);
+    publishedPackageFixture(authority);
+    const result = await withUpdateCommandExecutorChild(fence, root, (grant, beforeInput) =>
+      runUtf8CommandWithTimeout([process.execPath, "--input-type=module", "-e", program], {
+        input: JSON.stringify({
+          grant,
+          authority,
+          nextRoot: serviceRoot,
+          receipt,
+          proceed,
+          output,
+          program,
+        }),
+        beforeInput,
+        timeoutMs: 30000,
+        killProcessTree: true,
+        requireProcessTreeExtinction: true,
+      }),
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("Retained service root is not a candidate executor");
+    expect(fs.existsSync(receipt)).toBe(false);
+    expect(fs.existsSync(output)).toBe(false);
+    fence.assertCurrent();
+  });
+  for (const key of [root, serviceRoot]) {
+    expect(createManagedHandoffLeaseStore().read(key)).toEqual({ kind: "absent" });
+  }
+});

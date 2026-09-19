@@ -42,6 +42,7 @@ export function registerBoundaryFinalizationControls({
           definition: {
             command: { programArguments: [process.execPath, path.join(home, "dist/index.js")] },
             fingerprint: "fixture-original",
+            runtimePin: { revision: "fixture-no-runtime-pin", stored: false },
           },
           service: { serviceEnv: { HOME: home } },
           packageIdentity: { identity: "fixture-directory", version: "2026.9.3" },
