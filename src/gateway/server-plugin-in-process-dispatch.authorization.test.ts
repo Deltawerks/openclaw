@@ -6,6 +6,10 @@ import {
 } from "../../packages/gateway-protocol/src/client-info.js";
 import { PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/version.js";
 import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.js";
+import {
+  callAgentToolGatewayRequest,
+  callInProcessGatewayTool,
+} from "../agents/tools/in-process-gateway.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
@@ -141,7 +145,7 @@ describe("typed in-process agent authorization", () => {
       context.createAgentTurnFacade = createFacade;
       const result = { runId: "host-owned", status: "ok" };
       startTurn.mockImplementation(async ({ io }) => io.emitAcceptance([true, result, undefined]));
-      waitForTurn.mockResolvedValue(result);
+      waitForTurn.mockResolvedValue({ result });
 
       await expect(dispatchScopedMethod({ client, context, method, params })).resolves.toEqual(
         result,
@@ -243,6 +247,53 @@ describe("typed in-process agent authorization", () => {
       });
     },
   );
+
+  it("preserves read access after a tool-routed followup admits a write-only agent turn", async () => {
+    const owner = createOperatorClient({
+      profileId: "followup-owner",
+      scopes: ["operator.read", "operator.write"],
+    });
+    const readHandler = vi.fn(({ client, respond }: GatewayRequestHandlerOptions) => {
+      expect(client?.connect.scopes).toEqual(["operator.read"]);
+      expect(client?.authenticatedUserProfile?.profileId).toBe("followup-owner");
+      respond(true, { sessions: [] });
+    });
+    const context = createContext();
+    context.getGatewayMethodRegistry = () =>
+      createGatewayMethodRegistry([
+        {
+          name: "sessions.list",
+          scope: "operator.read",
+          owner: { kind: "core", area: "sessions" },
+          handler: readHandler,
+        },
+      ]);
+    startTurn.mockImplementation(async ({ principal, io }) => {
+      expect(principal.connect.scopes).toEqual(["operator.write"]);
+      await expect(callInProcessGatewayTool("sessions.list", {})).resolves.toEqual({
+        sessions: [],
+      });
+      io.emitAcceptance([true, { runId: "followup-run", status: "accepted" }, undefined]);
+    });
+    await withPluginRuntimeGatewayRequestScope(
+      { client: owner, context, isWebchatConnect: () => false },
+      () =>
+        callAgentToolGatewayRequest({
+          method: "agent",
+          params: {
+            message: "Continue the delegated task",
+            idempotencyKey: "followup-run",
+            inputProvenance: {
+              kind: "inter_session",
+              sourceSessionKey: "agent:main:parent",
+              sourceTool: "sessions_send",
+            },
+          },
+        }),
+    );
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect(readHandler).toHaveBeenCalledOnce();
+  });
 
   it.each([
     { method: "sessions.patch", cleanup: false, scopedActor: false },
