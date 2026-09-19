@@ -66,6 +66,57 @@ function readPool(): ReadPool {
   return state.pool;
 }
 
+function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "audit.run.inspect") {
+    const input = command.input;
+    const common = {
+      now: input.now,
+      decisionCursor: input.decisionCursor,
+      decisionLimit: input.decisionLimit,
+    };
+    return {
+      type: command.type,
+      input:
+        "executionId" in input
+          ? { ...common, executionId: input.executionId }
+          : {
+              ...common,
+              runId: input.runId,
+              executionOffset: input.executionOffset,
+              executionLimit: input.executionLimit,
+            },
+    };
+  }
+  return command.type === "fleet.get"
+    ? { type: command.type, tenantId: command.tenantId }
+    : { type: command.type };
+}
+
+function commandBytes(command: OpenClawStateReadRequest["command"]): number {
+  let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "fleet.get") {
+    return bytes + Buffer.byteLength(command.tenantId, "utf8");
+  }
+  if (command.type === "audit.run.inspect") {
+    const input = command.input;
+    // Each supplied numeric scalar retains one eight-byte JavaScript number.
+    bytes += Buffer.byteLength(input.decisionCursor ?? "", "utf8") + 8;
+    if (input.decisionLimit !== undefined) {
+      bytes += 8;
+    }
+    if ("executionId" in input) {
+      return bytes + Buffer.byteLength(input.executionId, "utf8");
+    }
+    return (
+      bytes +
+      Buffer.byteLength(input.runId, "utf8") +
+      (input.executionOffset === undefined ? 0 : 8) +
+      (input.executionLimit === undefined ? 0 : 8)
+    );
+  }
+  return bytes;
+}
+
 function requestBytes(request: OpenClawStateReadRequest): number {
   return [
     ...Object.values(request.context.environment),
@@ -75,8 +126,10 @@ function requestBytes(request: OpenClawStateReadRequest): number {
     request.location,
     request.expectedIdentity,
     request.snapshotRoot,
-    ...Object.values(request.command),
-  ].reduce((bytes, value) => bytes + (value === undefined ? 0 : Buffer.byteLength(value)), 0);
+  ].reduce(
+    (bytes, value) => bytes + (value === undefined ? 0 : Buffer.byteLength(value, "utf8")),
+    commandBytes(request.command),
+  );
 }
 
 function decodeTaskReply(reply: OpenClawStateReadReply): OpenClawStateReadOutcome {
@@ -92,6 +145,8 @@ function decodeTaskReply(reply: OpenClawStateReadReply): OpenClawStateReadOutcom
 }
 
 export function createOpenClawStateReadTransport(command: OpenClawStateReadCommand) {
+  // Capture nested input before the read owner can yield during snapshot preparation.
+  const capturedCommand = captureCommand(command);
   const tasks = new Map<
     OwnedWorkerTask<OpenClawStateReadReply>,
     { retire: boolean; error?: Error }
@@ -190,7 +245,7 @@ export function createOpenClawStateReadTransport(command: OpenClawStateReadComma
         source.context,
         source.location,
         source.checkFreshAdmission,
-        command,
+        capturedCommand,
         authority,
         source.expectedIdentity,
         source.snapshotRoot,

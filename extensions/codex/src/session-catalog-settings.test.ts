@@ -124,7 +124,6 @@ async function fixture(sameSecond = false, overflow = false, evicted = false) {
       projectCodexCatalogPage(
         // Overflow queries still have a native reader after the live settings source closes.
         await (overflow ? b.client : a.client).request("thread/list", params, {
-          timeoutMs: 1_000,
           catalogPreview: true,
         }),
         { sanitize: sanitizeTerminalText },

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import type { ExecutionIdentityInspectionQuery } from "../audit/execution-identity-inspection.types.js";
 import type {
   OwnedWorkerTask,
   WorkerTaskInput,
@@ -423,6 +424,95 @@ it("charges retained UTF-8 input and keeps the captured request while dispatch w
     dispatch.resolve();
   }
 });
+
+it.each([
+  {
+    input: {
+      runId: "运行🦞",
+      now: 0,
+      executionOffset: 0,
+      executionLimit: 0,
+      decisionLimit: 0,
+      decisionCursor: "游标🦞",
+    },
+    numericBytes: 32,
+  },
+  { input: { runId: "运行🦞", now: 0 }, numericBytes: 8 },
+  {
+    input: { executionId: "执行🦞", now: 0, decisionLimit: 0, decisionCursor: "游标🦞" },
+    numericBytes: 16,
+  },
+  { input: { executionId: "执行🦞", now: 0 }, numericBytes: 8 },
+] satisfies Array<{ input: ExecutionIdentityInspectionQuery; numericBytes: number }>)(
+  "captures audit query before preparation and charges queued scalar input: $input",
+  async ({
+    input,
+    numericBytes,
+  }: {
+    input: ExecutionIdentityInspectionQuery;
+    numericBytes: number;
+  }) => {
+    const { pathname, options } = source();
+    const context = captureOpenClawStateWorkerContext(options);
+    const location = { context, location: pathname, checkFreshAdmission: false };
+    const authority = { signal: new AbortController().signal, assertCurrent: () => {} };
+    const expected = { ...input };
+    const command = { type: "audit.run.inspect" as const, input };
+    const transport = createOpenClawStateReadTransport(command);
+    const baseline = createOpenClawStateReadTransport({ type: "fleet.list" });
+    // The caller can mutate its input while the owner prepares a read location.
+    input.now = 999;
+    input.decisionCursor = "changed before read";
+    input.decisionLimit = 99;
+    if ("executionId" in input) {
+      input.executionId = "changed execution";
+    } else {
+      input.runId = "changed run";
+      input.executionOffset = 99;
+      input.executionLimit = 99;
+    }
+    const dispatch = createDeferredCore();
+    const baselineTask = queueTask(dispatch.promise);
+    const task = queueTask(dispatch.promise);
+    const baselineRead = baseline.read(location, authority);
+    const read = transport.read(location, authority);
+    // A pre-admission failure must surface directly rather than leave this test waiting for dispatch.
+    const submitted = Promise.race([
+      task.submitted,
+      read.then(() => {
+        throw new Error("Read completed before dispatch");
+      }),
+    ]);
+    try {
+      const [baselineOptions, auditOptions] = await Promise.all([
+        baselineTask.submitted,
+        submitted,
+      ]);
+      const selector = "executionId" in expected ? expected.executionId : expected.runId;
+      const additionalBytes =
+        Buffer.byteLength("audit.run.inspect") -
+        Buffer.byteLength("fleet.list") +
+        Buffer.byteLength(selector) +
+        Buffer.byteLength(expected.decisionCursor ?? "") +
+        numericBytes;
+      expect(auditOptions.inputBytes).toBe(Number(baselineOptions.inputBytes) + additionalBytes);
+      input.now = 1234;
+      input.decisionCursor = "changed while queued";
+      dispatch.resolve();
+      const request = await task.captured;
+      expect(request.command).toEqual({ type: "audit.run.inspect", input: expected });
+      baselineTask.result.resolve(emptyReply);
+      task.result.resolve(emptyReply);
+      await Promise.all([baselineRead, read]);
+    } finally {
+      dispatch.resolve();
+      baselineTask.result.resolve(emptyReply);
+      task.result.resolve(emptyReply);
+      await Promise.allSettled([baselineRead, read]);
+      await Promise.all([baseline.close(), transport.close()]);
+    }
+  },
+);
 
 it("captures and charges independent snapshot and schema paths before queued dispatch", async () => {
   const { root, options } = source();
