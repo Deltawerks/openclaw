@@ -35,13 +35,9 @@ import {
   captureChatCommandComposerRecovery,
   cancelChatDelivery,
   chatSubmitKey,
-  clearOwnedCommandComposerFallback,
   clearSubmittedComposerState,
-  commandComposerFallbackRetainsAttachments,
-  releaseCommandComposerAttachments,
-  restoreFailedCommandComposer,
+  settleChatCommandComposer,
   snapshotChatAttachments,
-  submittedCommandConnectionIsCurrent,
   submittedCommandScopeIsVisible,
 } from "./chat-send-composer.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
@@ -437,16 +433,9 @@ export async function handleSendChat(
           }
         }
         if (dispatchResult === "failed" || dispatchResult === "cancelled") {
-          if (!restoreFailedCommandComposer(host, recovery)) {
-            releaseCommandComposerAttachments(host, recovery, recovery.composer?.attachments);
-          }
+          settleChatCommandComposer(host, recovery, false, recovery.composer?.attachments);
         } else if (dispatchResult === "completed") {
-          if (submittedCommandConnectionIsCurrent(host, recovery)) {
-            clearOwnedCommandComposerFallback(host, recovery);
-          }
-          if (!commandComposerFallbackRetainsAttachments(host, recovery)) {
-            releaseCommandComposerAttachments(host, recovery, recovery.composer?.attachments);
-          }
+          settleChatCommandComposer(host, recovery, true, recovery.composer?.attachments);
         }
       };
       if (waitsForPicker) {
