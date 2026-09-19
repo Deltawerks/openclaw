@@ -3497,25 +3497,19 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
     },
   );
 
-  it.each([0, 24])(
-    "keeps the compact mobile composer bottom edge stable with %spx safe area",
-    async (safeArea) => {
-      await withBrowserPage(openFixture(390, 844), async (page) => {
-        await page.evaluate((inset) => {
-          document.documentElement.style.setProperty("--safe-area-bottom", `${inset}px`);
-        }, safeArea);
-        const shell = page.locator(".agent-chat__composer-shell");
-        const readPosition = () => shell.evaluate((node) => getComputedStyle(node).marginBottom);
-        const unfocused = await readPosition();
+  it("keeps the compact mobile composer bottom edge stable when its textarea is focused", async () => {
+    await withBrowserPage(openFixture(390, 844), async (page) => {
+      const shell = page.locator(".agent-chat__composer-shell");
+      const readPosition = () => shell.evaluate((node) => getComputedStyle(node).marginBottom);
+      const unfocused = await readPosition();
 
-        await page.locator(".agent-chat__composer-combobox > textarea").focus();
-        const focused = await readPosition();
+      await page.locator(".agent-chat__composer-combobox > textarea").focus();
+      const focused = await readPosition();
 
-        expect(focused).toBe(unfocused);
-        expect(focused).toBe(`${6 + safeArea}px`);
-      });
-    },
-  );
+      expect(focused).toBe(unfocused);
+      expect(focused).toBe("6px");
+    });
+  });
 
   it.each([
     [320, 568],

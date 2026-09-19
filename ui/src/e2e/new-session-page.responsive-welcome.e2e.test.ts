@@ -73,14 +73,13 @@ suite.define(() => {
             }),
           );
           expect(new Set(layout.map((box) => box.row)).size).toBe(width <= 560 ? 2 : 1);
-          for (const box of layout) {
+          for (const [index, box] of layout.entries()) {
             expect(box.left).toBeGreaterThanOrEqual(0);
             expect(box.right).toBeLessThanOrEqual(width);
             expect(box.height).toBeGreaterThanOrEqual(width <= 560 ? 44 : 26);
-          }
-          for (let index = 0; index < layout.length - 1; index += 1) {
-            if (layout[index].row === layout[index + 1].row) {
-              expect(layout[index].right).toBeLessThanOrEqual(layout[index + 1].left);
+            const next = layout[index + 1];
+            if (next && box.row === next.row) {
+              expect(box.right).toBeLessThanOrEqual(next.left);
             }
           }
         }

@@ -227,6 +227,22 @@ suite.define(() => {
           await page.locator(".chat-group").first().waitFor();
           const composer = page.locator(".agent-chat__input");
           await composer.waitFor();
+          const shell = page.locator(".agent-chat__composer-shell");
+          const textarea = composer.locator("textarea");
+          const bottomGap = () =>
+            shell.evaluate((element) => getComputedStyle(element).marginBottom);
+          for (const safeArea of [0, 24]) {
+            await page.evaluate((inset) => {
+              document.documentElement.style.setProperty("--safe-area-bottom", `${inset}px`);
+            }, safeArea);
+            expect(await bottomGap()).toBe(`${6 + safeArea}px`);
+            await textarea.focus();
+            expect(await bottomGap()).toBe(`${6 + safeArea}px`);
+            await textarea.blur();
+          }
+          await page.evaluate(() =>
+            document.documentElement.style.removeProperty("--safe-area-bottom"),
+          );
           await capturePanel(page, "mobile-composer-spacing");
           await page.locator(".chat-side-panel-toggle").click();
           const picker = page.locator(".side-panel-empty--selector");
