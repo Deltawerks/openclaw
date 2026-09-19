@@ -26,6 +26,7 @@ import {
   reserveFleetCellInDatabase,
   updateFleetCellImageInDatabase,
 } from "../fleet/registry.kernel.js";
+import { readPendingRepositoryGitHubPublicationInDatabase } from "../gateway/github-repository-publication.kernel.js";
 import {
   readManagedImageRecordInDatabase,
   listManagedImageRecordEntriesInDatabase,
@@ -401,6 +402,9 @@ function createSharedStateWorkerBackend(
           : read(open().db);
       }
       const database = open();
+      if (command.type === "githubRepository.personalPending") {
+        return readPendingRepositoryGitHubPublicationInDatabase(database.db, command.input);
+      }
       if (command.type === "deviceAuth.list") {
         return deviceAuth.readDeviceAuthTokensFromDatabase(database.db, command.input);
       }
