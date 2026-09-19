@@ -34,8 +34,12 @@ import * as nodeSqlite from "./node-sqlite.js";
 import { runtimeProcessEntrypoints } from "./runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { SqliteSchemaVersionError } from "./sqlite-user-version.js";
+import { registerSharedStateWorkerAdmissionTests } from "./sqlite-worker-shared-state-admission.test-support.js";
 import { closeUnclaimedSharedStateSqliteWorkers } from "./sqlite-worker-store.js";
-import { acquireGatewayLifecycleCoordinator } from "./state-database-coordinator.js";
+import {
+  acquireGatewayLifecycleCoordinator,
+  resolveStateDatabaseCoordinatorPath,
+} from "./state-database-coordinator.js";
 
 const dirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
@@ -365,6 +369,8 @@ describe("canonical shared-state worker admission", () => {
   });
 });
 
+registerSharedStateWorkerAdmissionTests(context);
+
 function createRun(runId: string): SubagentRunRecord {
   return {
     runId,
@@ -380,7 +386,7 @@ function createRun(runId: string): SubagentRunRecord {
   };
 }
 
-it("commits captured registry rows in the real shared-state worker without host SQL", async () => {
+it("commits captured registry rows with only host coordinator control SQL", async () => {
   await withEnvAsync({ OPENCLAW_STATE_DIR: dirs.make("openclaw-registry-worker-") }, async () => {
     const retained = createRun("retained");
     const removed = createRun("removed");
@@ -392,6 +398,11 @@ it("commits captured registry rows in the real shared-state worker without host 
     );
     const queued = createRun("queued");
     const capturedContext = captureOpenClawStateWorkerContext();
+    const coordinatorPath = resolveStateDatabaseCoordinatorPath({
+      databasePath: capturedContext.admission.databasePath,
+      runtimeDirectory: capturedContext.coordinatorRuntime.directory,
+      uid: process.getuid?.(),
+    });
     const sql = observeMainThreadSql();
     try {
       const write = persistSubagentRunsToDiskAsyncOrThrow(
@@ -401,7 +412,7 @@ it("commits captured registry rows in the real shared-state worker without host 
       );
       queued.task = "mutated after capture";
       await write;
-      sql.expectIdle();
+      sql.expectOnlyCoordinatorExec(coordinatorPath, 2);
     } finally {
       sql.restore();
       await closeOpenClawStateDatabaseAsync();
@@ -414,11 +425,24 @@ it("commits captured registry rows in the real shared-state worker without host 
       completion: queued.completion,
       delivery: queued.delivery,
     });
-    await closeOpenClawStateDatabaseAsync();
+    const database = openOpenClawStateDatabase({
+      path: capturedContext.admission.databasePath,
+      env: capturedContext.environment,
+    });
+    const calibration = observeMainThreadSql();
+    try {
+      database.db.exec("BEGIN EXCLUSIVE;");
+      database.db.exec("ROLLBACK");
+      expect(() => calibration.expectIdle()).toThrow();
+      expect(() => calibration.expectOnlyCoordinatorExec(coordinatorPath, 2)).toThrow();
+    } finally {
+      calibration.restore();
+      await closeOpenClawStateDatabaseAsync();
+    }
   });
 });
 
-it("awaits the queued registration caller's two worker writes without host SQL", async () => {
+it("awaits the queued registration caller's two writes with only host coordinator control SQL", async () => {
   await withEnvAsync({ OPENCLAW_STATE_DIR: dirs.make("openclaw-queued-caller-") }, async () => {
     const entry = createRun("queued-caller");
     entry.queuedLaunch = {
@@ -449,6 +473,11 @@ it("awaits the queued registration caller's two worker writes without host SQL",
         createdAt: entry.createdAt,
       };
     });
+    const coordinatorPath = resolveStateDatabaseCoordinatorPath({
+      databasePath: capturedContext.admission.databasePath,
+      runtimeDirectory: capturedContext.coordinatorRuntime.directory,
+      uid: process.getuid?.(),
+    });
     const sql = observeMainThreadSql();
     try {
       const registration = registerRequiredQueuedSubagent({
@@ -472,12 +501,11 @@ it("awaits the queued registration caller's two worker writes without host SQL",
         }),
         bindReservation: () => {},
         activate,
-        settleFailedLaunch: () => {},
       });
       expect(entry.queuedLaunch).toBeUndefined();
       expect(createTask).not.toHaveBeenCalled();
       await registration;
-      sql.expectIdle();
+      sql.expectOnlyCoordinatorExec(coordinatorPath, 4);
       expect(createTask).toHaveBeenCalledOnce();
       expect(activate).toHaveBeenCalledOnce();
       expect(entry.queuedLaunch).toEqual(descriptor);

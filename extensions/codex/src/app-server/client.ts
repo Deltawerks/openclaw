@@ -3,8 +3,7 @@
  * routing, notification fanout, server request handlers, and version checks.
  */
 import { randomUUID } from "node:crypto";
-import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import { embeddedAgentLog, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { coerceErrorMessage, toStringifiedError } from "openclaw/plugin-sdk/error-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sliceUtf16Safe, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
@@ -14,6 +13,8 @@ import {
   closeCodexCatalogClientSource,
   codexCatalogSourceForClient,
 } from "../session-catalog-source.js";
+import { buildCodexAppServerInitializeParams } from "./client-initialize.js";
+import { CodexAppServerMessageDecoder } from "./client-message-decoder.js";
 import { dispatchCodexAppServerResponse } from "./client-response.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config-runtime.js";
@@ -21,7 +22,6 @@ import {
   type CodexAppServerRequestMethod,
   type CodexAppServerRequestParams,
   type CodexAppServerRequestResult,
-  type CodexInitializeParams,
   type CodexInitializeResponse,
   isJsonObject,
   isRpcResponse,
@@ -47,8 +47,6 @@ import {
 import { CODEX_APP_SERVER_VERSION, MIN_SUPPORTED_CODEX_APP_SERVER_VERSION } from "./version.js";
 
 const CODEX_APP_SERVER_PARSE_LOG_MAX = 500;
-const CODEX_APP_SERVER_PARSE_BUFFER_MAX = 8 * 1024 * 1024;
-const CODEX_APP_SERVER_PARSE_BUFFER_MAX_LINES = 1_000;
 const CODEX_APP_SERVER_STDERR_TAIL_MAX = 2_000;
 const CODEX_APP_SERVER_OVERLOAD_MAX_RETRIES = 3;
 const CODEX_APP_SERVER_OVERLOAD_RETRY_BASE_MS = 50;
@@ -213,7 +211,7 @@ export type CodexAppServerRuntimeIdentity = {
 export class CodexAppServerClient {
   private readonly instanceId = randomUUID();
   private readonly child: CodexAppServerTransport;
-  private readonly lines: ReadlineInterface;
+  private readonly closeMessageReader: () => void;
   private readonly pending = new Map<number | string, CodexRequestAttempt>();
   private readonly catalogResponses = new WeakMap<
     CodexRequestAttempt,
@@ -246,19 +244,12 @@ export class CodexAppServerClient {
   private stderrTail = "";
   private readonly privateTransportSecrets = new Set<string>();
   private privateStderrPending = "";
-  private pendingParse:
-    | {
-        text: string;
-        lineCount: number;
-        firstError: unknown;
-      }
-    | undefined;
 
   private constructor(child: CodexAppServerTransport) {
     this.child = child;
-    this.lines = createInterface({ input: child.stdout });
-    this.lines.on("line", (line) => this.handleLine(line));
-    this.lines.on("error", (error) => this.closeWithError(toStringifiedError(error)));
+    this.closeMessageReader = new CodexAppServerMessageDecoder(
+      logCodexAppServerParseFailure,
+    ).listen(child.stdout, (message) => this.handleParsedMessage(message));
     child.stdout.on("error", (error) => this.closeWithError(toStringifiedError(error)));
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
@@ -343,23 +334,7 @@ export class CodexAppServerClient {
     }
     // The handshake identifies the exact app-server process we will keep using,
     // which matters when callers override the binary or app-server args.
-    const response = await this.request("initialize", {
-      clientInfo: {
-        name: "openclaw",
-        title: "OpenClaw",
-        version: OPENCLAW_VERSION,
-      },
-      capabilities: {
-        experimentalApi: true,
-        extensions: {
-          "openai/standard-form-input": {},
-          "openai/form": {},
-          "io.modelcontextprotocol/ui": {
-            mimeTypes: ["text/html;profile=mcp-app"],
-          },
-        },
-      },
-    } satisfies CodexInitializeParams);
+    const response = await this.request("initialize", buildCodexAppServerInitializeParams());
     this.serverVersion = assertSupportedCodexAppServerVersion(response);
     this.runtimeIdentity = buildCodexAppServerRuntimeIdentity(response, this.serverVersion);
     this.notify("initialized");
@@ -899,58 +874,6 @@ export class CodexAppServerClient {
     return held ? text.slice(0, -held) : text;
   }
 
-  private handleLine(line: string): void {
-    // Live RPC values remain exact; the canonical presentation boundary redacts diagnostics.
-    const rawLine = line.endsWith("\r") ? line.slice(0, -1) : line;
-    if (this.pendingParse) {
-      this.handlePendingParseLine(rawLine);
-      return;
-    }
-    const trimmed = rawLine.trim();
-    if (!trimmed) {
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (error) {
-      if (shouldBufferCodexAppServerParseFailure(trimmed, error)) {
-        this.pendingParse = { text: trimmed, lineCount: 1, firstError: error };
-        return;
-      }
-      logCodexAppServerParseFailure(trimmed, error, 1);
-      return;
-    }
-    this.handleParsedMessage(parsed);
-  }
-
-  private handlePendingParseLine(line: string): void {
-    const pending = this.pendingParse;
-    if (!pending) {
-      return;
-    }
-    const candidate = `${pending.text}\\n${line}`;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(candidate);
-    } catch (error) {
-      const lineCount = pending.lineCount + 1;
-      if (
-        shouldBufferCodexAppServerParseFailure(candidate.trim(), error) &&
-        candidate.length <= CODEX_APP_SERVER_PARSE_BUFFER_MAX &&
-        lineCount <= CODEX_APP_SERVER_PARSE_BUFFER_MAX_LINES
-      ) {
-        this.pendingParse = { text: candidate, lineCount, firstError: pending.firstError };
-        return;
-      }
-      this.pendingParse = undefined;
-      logCodexAppServerParseFailure(candidate, error, lineCount);
-      return;
-    }
-    this.pendingParse = undefined;
-    this.handleParsedMessage(parsed);
-  }
-
   private handleParsedMessage(parsed: unknown): void {
     if (this.closed || !parsed || typeof parsed !== "object") {
       return;
@@ -1039,7 +962,7 @@ export class CodexAppServerClient {
     this.closed = true;
     closeCodexCatalogClientSource(this);
     this.closeError = error;
-    this.lines.close();
+    this.closeMessageReader();
     this.serverRequests.close(error);
     this.rejectPendingRequests(error);
     return true;
@@ -1167,19 +1090,6 @@ function buildCodexAppServerExitError(code: unknown, signal: unknown, stderrTail
     `codex app-server exited: code=${formatExitValue(code)} signal=${formatExitValue(
       signal,
     )}${suffix}`,
-  );
-}
-
-// Codex has emitted JSON with raw newlines inside string values, which breaks
-// line framing. Buffer the fragments and re-join with an escaped newline so
-// the message parses; bounded by CODEX_APP_SERVER_PARSE_BUFFER_MAX*.
-function shouldBufferCodexAppServerParseFailure(value: string, error: unknown): boolean {
-  if (!value.startsWith("{") && !value.startsWith("[")) {
-    return false;
-  }
-  const message = coerceErrorMessage(error);
-  return (
-    message.includes("Unterminated string") || message.includes("Unexpected end of JSON input")
   );
 }
 

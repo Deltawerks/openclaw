@@ -19,11 +19,7 @@ import {
 import { resolvePreparedProviderStaticConfigs } from "../plugins/provider-discovery.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import { getPluginRegistryInspectionResources } from "../plugins/registry-inspection-resources.js";
-import {
-  capturePluginLifecycleAuthority,
-  capturePluginRegistryLifecycleEpoch,
-} from "../plugins/registry-lifecycle.js";
-import { disposePluginRegistryInstances } from "../plugins/runtime.js";
+import { capturePluginLifecycleAuthority } from "../plugins/registry-lifecycle.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { resolveRuntimeSyntheticAuthProviderRefs } from "../plugins/synthetic-auth.runtime.js";
 import { prepareAmbientAgentCredentialsForDiscovery } from "./agent-auth-discovery.js";
@@ -70,8 +66,11 @@ import {
 import { hasSameOAuthProviderGeneration } from "./prepared-model-runtime.oauth-providers.js";
 import { prepareOwnedPluginLoadContext } from "./prepared-model-runtime.plugin-context.js";
 import { createPreparedPluginGeneration } from "./prepared-model-runtime.plugin-generation.js";
-import { discardPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
-import type { PreparedModelRuntimeBuildResources } from "./prepared-model-runtime.resources.js";
+import {
+  discardPreparedPluginGeneration,
+  retainPreparedPluginRegistry,
+} from "./prepared-model-runtime.plugin-lifetime.js";
+import { PreparedModelRuntimeBuildResources } from "./prepared-model-runtime.resources.js";
 import {
   listPreparedSyntheticAuthProviderRefs,
   prepareSyntheticAuth,
@@ -106,6 +105,7 @@ export async function prepareWorkspaceBuildGroup(
     assertCurrent?: (input: PreparedModelRuntimeInput) => void;
     onBeforeAuthCapture?: (input: PreparedModelRuntimeInput) => void;
     registryResources?: PreparedModelRuntimeBuildResources;
+    loadRuntimeRegistry?: PreparedModelRuntimeBuildResources["load"];
     purpose?: RuntimePluginLoadPurpose;
   } = {},
   loadInboundPluginRegistry?: PreparedInboundRegistryLoader,
@@ -159,16 +159,22 @@ export async function prepareWorkspaceBuildGroup(
   const preferBuiltPluginArtifacts =
     reusablePluginGeneration?.preferBuiltPluginArtifacts ??
     options.preferBuiltPluginArtifacts === true;
-  options.registryResources?.retainGeneration(reusablePluginGeneration);
+  await using localResources = new AsyncDisposableStack();
+  const registryResources =
+    options.registryResources ??
+    localResources.use(new PreparedModelRuntimeBuildResources(retainPreparedPluginRegistry));
+  registryResources.retainGeneration(reusablePluginGeneration);
+  // Borrowing spans the caller's construction; registry acquisition is selected independently.
   const preparingRegistries = prepareWorkspacePluginRegistries(
     input,
     pluginMetadataSnapshot,
+    (registry) => registryResources.retainRegistry(registry),
     loadInboundPluginRegistry,
     preferBuiltPluginArtifacts,
     reusablePluginGeneration,
     options.getConfiguredHarnessRuntimes,
     options.basePluginIds,
-    options.registryResources,
+    options.loadRuntimeRegistry,
     options.purpose,
   );
   const { inboundPluginRegistry, runtimePluginRegistry, primaryRegistry } =
@@ -515,15 +521,7 @@ export async function prepareWorkspaceBuildGroup(
     }
     return outcome.value;
   } catch (error) {
-    const cleanup = preparedGeneration
-      ? [discardPreparedPluginGeneration(preparedGeneration)]
-      : [...new Set([runtimePluginRegistry, inboundPluginRegistry])].flatMap((registry) =>
-          registry &&
-          !getPluginRegistryInspectionResources(registry) &&
-          !capturePluginRegistryLifecycleEpoch(registry)
-            ? [disposePluginRegistryInstances(registry)]
-            : [],
-        );
+    const cleanup = preparedGeneration ? [discardPreparedPluginGeneration(preparedGeneration)] : [];
     const results = await Promise.allSettled(cleanup);
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],

@@ -6,7 +6,10 @@ import { compareLineCapViolations, main } from "../../scripts/check-line-cap-rat
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 function git(root: string, ...args: string[]) {
   return execFileSync(
@@ -28,12 +31,13 @@ function source(lines: number) {
   );
 }
 
-function fixture(lines = 5, severity = "warn") {
+function fixture(lines = 5, severity = "warn", ignorePatterns: string[] = []) {
   const root = tempDirs.make("openclaw-line-cap-test-");
   fs.mkdirSync(path.join(root, "src"));
   fs.writeFileSync(
     path.join(root, ".oxlintrc.json"),
     JSON.stringify({
+      ignorePatterns,
       overrides: [
         {
           files: ["src/**/*.ts"],
@@ -53,6 +57,32 @@ function fixture(lines = 5, severity = "warn") {
 }
 
 describe("line-cap growth ratchet", () => {
+  it("measures ignored repository-contained scratch while preserving explicit exclusions", () => {
+    const root = fixture(5, "warn", ["src/ignored/**"]);
+    fs.writeFileSync(path.join(root, ".gitignore"), ".artifacts/\n");
+    const scratch = path.join(root, ".artifacts", "scratch");
+    fs.mkdirSync(scratch, { recursive: true });
+    vi.stubEnv("TMPDIR", scratch);
+    vi.stubEnv("TMP", scratch);
+    vi.stubEnv("TEMP", scratch);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const target = path.join(root, "src/file.ts");
+    fs.writeFileSync(target, source(6));
+    expect(main(root, ["--base", "HEAD"])).toBe(1);
+    expect(errors).toHaveBeenCalledWith(
+      expect.stringContaining("src/file.ts: 5 -> 6 counted lines (cap 3)"),
+    );
+    fs.writeFileSync(target, source(4));
+    for (const directory of ["ignored", "generated"]) {
+      fs.mkdirSync(path.join(root, "src", directory));
+      fs.writeFileSync(path.join(root, "src", directory, "excluded.ts"), source(8));
+    }
+    errors.mockClear();
+    expect(main(root, ["--base", "HEAD"])).toBe(0);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
   it.each([
     { label: "over-cap shrinking", before: 705, after: 703, fails: false },
     { label: "over-cap growing", before: 705, after: 706, fails: true },
@@ -123,39 +153,56 @@ describe("line-cap growth ratchet", () => {
     expect(main(root, ["--base", base])).toBe(0);
   });
 
-  it.each([false, true])(
-    "accepts an under-cap syntax repair alongside inherited debt (staged: %s)",
-    (staged) => {
-      const root = fixture(5);
-      vi.spyOn(console, "log").mockImplementation(() => {});
-      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-      const repaired = path.join(root, "src/repaired.ts");
-      fs.writeFileSync(repaired, source(2) + source(1));
-      git(root, "add", ".");
-      git(root, "commit", "-m", "duplicate declaration");
-      fs.writeFileSync(repaired, source(3));
-      fs.writeFileSync(path.join(root, "src/file.ts"), source(4));
-      if (staged) {
+  it.each([
+    {
+      label: "repaired under-cap head",
+      invalidBase: true,
+      invalidHead: false,
+      lines: 3,
+      result: 0,
+    },
+    {
+      label: "over-cap head with unmeasurable debt",
+      invalidBase: true,
+      invalidHead: false,
+      lines: 4,
+      result: 1,
+    },
+    { label: "malformed head", invalidBase: false, invalidHead: true, lines: 2, result: 1 },
+  ])(
+    "handles $label without relaxing the head check",
+    ({ invalidBase, invalidHead, lines, result }) => {
+      const root = fixture(2);
+      const target = path.join(root, "src/file.ts");
+      const broken = "const duplicate = 1;\nconst duplicate = 2;\n";
+      if (invalidBase) {
+        fs.writeFileSync(target, broken);
         git(root, "add", ".");
+        git(root, "commit", "-m", "broken base");
       }
-      expect(main(root, ["--base", "HEAD", ...(staged ? ["--staged"] : [])])).toBe(0);
-      expect(errors).not.toHaveBeenCalled();
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      fs.writeFileSync(target, invalidHead ? broken : source(lines));
+      expect(main(root, ["--base", "HEAD"])).toBe(result);
+      if (result === 0) {
+        expect(errors).not.toHaveBeenCalled();
+      } else {
+        expect(errors).toHaveBeenCalledWith(expect.stringContaining("Cannot measure src/file.ts:"));
+      }
     },
   );
 
-  it.each([
-    { label: "a malformed candidate", before: source(2), after: source(1) + source(1) },
-    { label: "unmeasurable inherited debt", before: source(2) + source(1), after: source(4) },
-  ])("rejects $label", ({ before, after }) => {
-    const root = fixture();
-    const target = path.join(root, "src/file.ts");
-    fs.writeFileSync(target, before);
+  it("measures inherited debt only for head files that exceed their cap", () => {
+    const root = fixture(5);
+    const repaired = path.join(root, "src/repaired.ts");
+    fs.writeFileSync(repaired, "const duplicate = 1;\nconst duplicate = 2;\n");
     git(root, "add", ".");
-    git(root, "commit", "-m", "baseline");
-    fs.writeFileSync(target, after);
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(main(root, ["--base", "HEAD"])).toBe(1);
-    expect(errors).toHaveBeenCalledWith(expect.stringContaining("Cannot measure src/file.ts:"));
+    git(root, "commit", "-m", "broken sibling");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fs.writeFileSync(path.join(root, "src/file.ts"), source(4));
+    fs.writeFileSync(repaired, source(2));
+    expect(main(root, ["--base", "HEAD"])).toBe(0);
   });
 
   it.each(["oxlint", "eslint"])("counts %s-suppressed debt without changing the source", (tool) => {

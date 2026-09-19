@@ -344,6 +344,8 @@ export function dispatchAgentRunFromGateway(
         params.cronCreatorAuthority.callerOrigin,
         params.cronCreatorAuthority.managementEntitlement,
         params.cronCreatorAuthority.isCurrent,
+        undefined,
+        params.cronCreatorAuthority.requesterOwner,
       )
     : undefined;
   if (cronCreatorAuthorityCapability) {

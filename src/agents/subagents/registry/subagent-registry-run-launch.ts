@@ -173,9 +173,6 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
           captureQueuedSubagentTaskOwner(taskParams, assertCurrent),
         bindReservation: bindRegistrationReservation,
         activate: activateRegistrationLifecycle,
-        settleFailedLaunch: (error) => {
-          this.settleFailedQueuedSubagentLaunch(entry.runId, error);
-        },
         ...options,
       });
     }

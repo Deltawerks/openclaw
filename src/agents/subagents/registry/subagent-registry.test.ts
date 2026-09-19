@@ -55,16 +55,15 @@ import { findTaskByRunIdForStatus } from "../../../tasks/task-status-access.js";
 import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../../agent-run-terminal-outcome.js";
 import {
   createSessionStore,
-  createSubagentRunParams,
+  createSubagentRegistryHarness,
   createSubagentRunRecord,
   expectRecordFields,
-  findRecordCallArg,
   mockGatewayMethods,
   mockCallArg as getMockCallArg,
   waitForFast,
 } from "../../subagent-test-fixtures.test-helpers.js";
 import type {
-  SubagentRunParamsOverrides,
+  SubagentRegistryHarness,
   SubagentRunRecordOverrides,
 } from "../../subagent-test-fixtures.test-helpers.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
@@ -76,6 +75,7 @@ import {
 } from "./subagent-lifecycle-events.js";
 import { countPendingDescendantRuns } from "./subagent-registry-read.js";
 import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
+import { findRecordCallArg } from "./subagent-registry.mock-call.test-support.js";
 import { saveSubagentRegistryChangesToSqlite } from "./subagent-registry.store.sqlite.js";
 import type {
   ContextEngineSubagentEndedParams,
@@ -297,11 +297,6 @@ vi.mock("../../internal-session-effects.js", () => ({
 }));
 
 describe("subagent registry seam flow", () => {
-  type RegistryModule = typeof import("./subagent-registry.test-helpers.js");
-  type RegistryHarness = Omit<RegistryModule, "addSubagentRunForTests" | "registerSubagentRun"> & {
-    addSubagentRunForTests(entry: SubagentRunRecordOverrides): void;
-    registerSubagentRun(params: SubagentRunParamsOverrides): void;
-  };
   type RunRecordFixtureOverrides = Pick<SubagentRunRecordOverrides, "runId"> &
     Partial<Omit<SubagentRunRecordOverrides, "runId">>;
   type KilledRunOverrides = Pick<SubagentRunRecordOverrides, "runId"> &
@@ -429,7 +424,7 @@ describe("subagent registry seam flow", () => {
       ...deliveryOverrides,
     },
   });
-  let mod: RegistryHarness;
+  let mod: SubagentRegistryHarness;
   const recoveryRuntime: GatewayRecoveryRuntime = {
     dispatchSessionMethod: vi.fn(),
     dispatchAgent: mocks.dispatchRecoveryAgent as GatewayRecoveryRuntime["dispatchAgent"],
@@ -482,24 +477,7 @@ describe("subagent registry seam flow", () => {
 
   beforeAll(async () => {
     const registry = await import("./subagent-registry.test-helpers.js");
-    mod = {
-      ...registry,
-      addSubagentRunForTests: (entry) =>
-        registry.addSubagentRunForTests(createSubagentRunRecord(entry)),
-      registerSubagentRun: (params) => {
-        const registration = createSubagentRunParams(params);
-        if (registration.taskRowOwnership !== "required") {
-          return registry.registerSubagentRun({
-            ...registration,
-            taskRowOwnership: registration.taskRowOwnership,
-          });
-        }
-        if (registration.queued) {
-          throw new Error("Required queued registration belongs in awaited fixtures");
-        }
-        return registry.registerSubagentRun({ ...registration, queued: false });
-      },
-    };
+    mod = createSubagentRegistryHarness(registry);
   });
 
   beforeEach(() => {
@@ -2347,6 +2325,7 @@ describe("subagent registry seam flow", () => {
       runId: "run-settle-retry",
       childSessionKey: "agent:main:subagent:settle-retry",
       task: "retry requester settle wake",
+      completion: { required: true, resultText: "delivered result", capturedAt: endedAt },
       expectsCompletionMessage: true,
       createdAt: endedAt - 1_000,
       endedAt,
@@ -2354,6 +2333,8 @@ describe("subagent registry seam flow", () => {
       delivery: { status: "delivered" },
       requesterSettleWake: { status: "pending", attemptCount: 0 },
     });
+    const entry = expectDefined(mod.getSubagentRunByRunId("run-settle-retry"), "settle owner");
+    saveSubagentRegistryChangesToSqlite(new Map([[entry.runId, entry]]), [entry.runId]);
     mocks.maybeWakeRequesterAfterAllChildrenSettled.mockRejectedValueOnce(new Error("sqlite busy"));
 
     await mod.testing.sweepOnceForTests();

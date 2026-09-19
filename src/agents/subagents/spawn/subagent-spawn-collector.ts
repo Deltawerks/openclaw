@@ -126,6 +126,24 @@ export function createCollectorLaunchCallbacks(params: {
       ),
     ]);
   let cleanupAttempt: ReturnType<typeof cleanupOnce> | undefined;
+  const publishCleanupCompletion = ([contextRollback, sessionCleanup]: Awaited<
+    ReturnType<typeof cleanupOnce>
+  >) => {
+    const cleanupComplete =
+      contextRollback.status === "fulfilled" &&
+      contextRollback.value &&
+      sessionCleanup.status === "fulfilled" &&
+      sessionCleanup.value.attachmentsRemoved &&
+      sessionCleanup.value.sessionDeleted;
+    if (cleanupComplete && canCleanupCreatedSession?.() !== false) {
+      emitSessionLifecycleEvent({
+        sessionKey: childSessionKey,
+        reason: "delete",
+        parentSessionKey: params.requesterSessionKey,
+      });
+      completeCollectorLaunchCleanup(childRunId);
+    }
+  };
   return {
     start: () => (startAttempt ??= startOnce()),
     onStartFailure: async (error) => {
@@ -161,26 +179,16 @@ export function createCollectorLaunchCallbacks(params: {
         if (dispatchAttempted || !registrationScope) {
           await settleFailure();
         }
+        if (cleanupAttempt) {
+          publishCleanupCompletion(await cleanupAttempt);
+        }
         return true;
       }
-      const [contextRollback, sessionCleanup] = await (cleanupAttempt ??= cleanupOnce());
+      const cleanup = await (cleanupAttempt ??= cleanupOnce());
       if (dispatchAttempted || !registrationScope) {
         await settleFailure();
       }
-      const cleanupComplete =
-        contextRollback.status === "fulfilled" &&
-        contextRollback.value &&
-        sessionCleanup.status === "fulfilled" &&
-        sessionCleanup.value.attachmentsRemoved &&
-        sessionCleanup.value.sessionDeleted;
-      if (cleanupComplete && canCleanupCreatedSession?.() !== false) {
-        emitSessionLifecycleEvent({
-          sessionKey: childSessionKey,
-          reason: "delete",
-          parentSessionKey: params.requesterSessionKey,
-        });
-        completeCollectorLaunchCleanup(childRunId);
-      }
+      publishCleanupCompletion(cleanup);
       return true;
     },
     onRemoved: async (reason) => {

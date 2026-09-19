@@ -650,3 +650,64 @@ it.each(["same-ID successor", "different-ID successor", "Stop"] as const)(
     }
   },
 );
+
+it("settles an acknowledged queued launch failure through its original core task backend", async () => {
+  const { stored, persist, options, manager } = createRegistrationFixture();
+  options.persistAsyncOrThrow = async (_context, publication, ...runIds) => {
+    publication.assertCurrent();
+    persist(...runIds);
+    await Promise.resolve();
+    publication.onCommitted?.();
+  };
+  const runId = "acknowledged-launch-failure";
+  const childSessionKey = "agent:main:subagent:acknowledged-launch-failure";
+  let scope: SubagentRegistrationScope | undefined;
+  await manager.registerSubagentRun(
+    {
+      runId,
+      childSessionKey,
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterAgentId: "main",
+      task: "registered work awaiting its FIFO slot",
+      cleanup: "keep",
+      collect: true,
+      groupId: "acknowledged-launch-group",
+      queued: true,
+      taskRowOwnership: "required",
+      queuedLaunch: {
+        request: { sessionKey: childSessionKey },
+        timeoutMs: 100,
+        schedulerGroupKey: "acknowledged-launch-group",
+        maxConcurrent: 1,
+      },
+    },
+    {
+      retainOwnership: (value) => {
+        scope = value;
+      },
+    },
+  );
+  const original = expectDefined(findTaskByRunId(runId), "acknowledged original task");
+  expect(original.status).toBe("queued");
+  expect(stored.get(runId)?.queuedLaunch).toBeDefined();
+  const replacementFinalize = vi.fn(() => []);
+  setDetachedTaskLifecycleRuntime({
+    ...getDetachedTaskLifecycleRuntime(),
+    finalizeTaskRunByRunId: replacementFinalize,
+  });
+  await expectDefined(scope, "retained registration").settleFailedLaunch("launch refused");
+  expect(replacementFinalize).not.toHaveBeenCalled();
+  const terminal = expectDefined(getTaskById(original.taskId), "original task after settlement");
+  expect(terminal).toMatchObject({
+    taskId: original.taskId,
+    status: "failed",
+    error: "launch refused",
+    deliveryStatus: "not_applicable",
+  });
+  expect(stored.get(runId)).toMatchObject({
+    execution: { status: "terminal", endedAt: terminal.endedAt },
+    collectorCompletion: { status: "failed" },
+  });
+  expect(stored.get(runId)?.queuedLaunch).toBeUndefined();
+});

@@ -262,7 +262,7 @@ export function syncFlowFromTaskAfterTaskMutationAsync(
   );
 }
 
-export function restoreTaskRegistryOnce() {
+function restoreTaskRegistryOnce() {
   const databasePath = resolveOpenClawStateSqlitePath();
   const admission = captureOpenClawStateDatabaseReadAdmission(databasePath);
   const state = getTaskRegistryRestoreState(admission);

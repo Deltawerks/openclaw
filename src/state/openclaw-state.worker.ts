@@ -1,3 +1,5 @@
+import { SHARED_AUTH_STORE_STATE_KEY } from "../agents/auth-profiles/path-resolve.js";
+import { inspectAuthProfileJsonCellReadOnly } from "../agents/auth-profiles/sqlite.js";
 import {
   readNativeHookRelayBridgeSnapshotFromDatabase,
   listNativeHookRelayBridgeSnapshotsInDatabase,
@@ -6,6 +8,7 @@ import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-re
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
+import { readWorkshopMigrationRecordsInDatabase } from "../commands/doctor-skill-workshop-read.kernel.js";
 import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
@@ -13,12 +16,22 @@ import {
 import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
 import { executeCronStoreSaveCommand } from "../cron/store/save.worker.js";
 import {
+  acquireFleetCellOperationInDatabase,
+  assertFleetCellOperationInDatabase,
+  deleteFleetCellInDatabase,
+  heartbeatFleetCellOperationInDatabase,
+  releaseFleetCellOperationInDatabase,
+  reserveFleetCellInDatabase,
+  updateFleetCellImageInDatabase,
+} from "../fleet/registry.kernel.js";
+import {
   readManagedImageRecordInDatabase,
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
+import { readDeviceAuthTokensFromDatabase } from "../infra/device-auth-store.kernel.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -62,20 +75,25 @@ import {
   listProjectRegistryInDatabase,
   removeProjectRegistryInDatabase,
   resolveProjectCloneRefreshOwnerInDatabase,
+  resolveProjectRegistryInDatabase,
   resolveRecordedProjectRootInDatabase,
 } from "../projects/project-registry.kernel.js";
 import {
   pruneSessionStateEventsInDatabase,
   recordSessionStateEventInDatabase,
 } from "../sessions/session-state-events.kernel.js";
+import { listWatchedSessionUpstreamLinksInDatabase } from "../sessions/session-upstream-links.kernel.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
+import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
+import { executeTranscriptRead } from "../transcripts/store-worker-read.js";
 import {
   listAgentProvenanceInDatabase,
-  readAgentProvenanceInDatabase,
+  readAgentProvenanceBatchInDatabase,
 } from "./agent-provenance.kernel.js";
 import { ensureAgentProvenanceSchema } from "./agent-provenance.schema.js";
 import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
+import { readConfigMachineState } from "./config-machine-state.js";
 import {
   openClawStateDatabaseCache,
   retainOpenClawStateDatabase,
@@ -97,6 +115,7 @@ import type {
   OpenClawStateWorkerOperations,
   OpenClawStateWorkerInspectionOperations,
 } from "./openclaw-state-worker-contract.js";
+import { readUserModelAuthProfile } from "./user-model-accounts.js";
 import { executeUserPreferenceCommand } from "./user-preferences.worker.js";
 
 const log = createSubsystemLogger("state/worker");
@@ -152,6 +171,30 @@ function createSharedStateWorkerBackend(
     execute(command) {
       if (closed) {
         throw new Error("Shared-state worker is closed");
+      }
+      if (
+        command.type === "authProfiles.read" ||
+        command.type === "authProfiles.sharedOwnership" ||
+        command.type === "authProfiles.personal"
+      ) {
+        const read = () => {
+          const options = {
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+          };
+          if (command.type === "authProfiles.sharedOwnership") {
+            return readConfigMachineState(SHARED_AUTH_STORE_STATE_KEY, options);
+          }
+          if (command.type === "authProfiles.personal") {
+            return readUserModelAuthProfile(command.input.profileId, options);
+          }
+          const target = { kind: "shared-state" as const, ...options };
+          return {
+            store: inspectAuthProfileJsonCellReadOnly(target, "store"),
+            state: inspectAuthProfileJsonCellReadOnly(target, "state"),
+          };
+        };
+        return command.input.artifactPreserving ? withArtifactPreservingStateReads(read) : read();
       }
       if (command.type === "promotions.markNotified" || command.type === "promotions.recordClaim") {
         return executePromotionCommand(
@@ -221,6 +264,12 @@ function createSharedStateWorkerBackend(
             env: getSqliteWorkerStateContext().environment,
           },
           open,
+        );
+      }
+      if (command.type === "doctor.workshopMigrationRecords.read") {
+        return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+          ({ db }) => readWorkshopMigrationRecordsInDatabase(db, command.input.includeEvents),
+          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
         );
       }
       if (command.type === "modelCatalog.remote.read") {
@@ -302,6 +351,32 @@ function createSharedStateWorkerBackend(
         );
       }
       const database = open();
+      if (command.type === "deviceAuth.list") {
+        return readDeviceAuthTokensFromDatabase(database.db, command.input);
+      }
+      switch (command.type) {
+        case "transcripts.sessionEntries":
+        case "transcripts.matches":
+        case "transcripts.session":
+        case "transcripts.entry":
+        case "transcripts.latest":
+        case "transcripts.notes":
+        case "transcripts.libraryEntry":
+        case "transcripts.recentStopped":
+        case "transcripts.summaryRevision":
+        case "transcripts.utterances":
+        case "transcripts.summary": {
+          ensureMeetingTranscriptsSchema({
+            database,
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+            readOnly: command.input.readOnly,
+          });
+          return executeTranscriptRead(database.db, command);
+        }
+        default:
+          break;
+      }
       if (command.type === "managedImages.read") {
         return readManagedImageRecordInDatabase(database.db, command.input.attachmentId);
       }
@@ -335,6 +410,9 @@ function createSharedStateWorkerBackend(
           env: getSqliteWorkerStateContext().environment,
         });
       }
+      if (command.type === "sessionUpstream.listWatched") {
+        return listWatchedSessionUpstreamLinksInDatabase(database.db);
+      }
       if (command.type === "cron.loadMutable") {
         return loadMutableCronStoreInWorker(database, command.input.storeKey);
       }
@@ -366,10 +444,54 @@ function createSharedStateWorkerBackend(
         path: context.databasePath,
         env: getSqliteWorkerStateContext().environment,
       };
-      if (command.type === "agentProvenance.read" || command.type === "agentProvenance.list") {
+      if (
+        command.type === "fleet.cell.reserve" ||
+        command.type === "fleet.cell.updateImage" ||
+        command.type === "fleet.cell.delete" ||
+        command.type === "fleet.operation.acquire" ||
+        command.type === "fleet.operation.heartbeat" ||
+        command.type === "fleet.operation.release"
+      ) {
+        return runOpenClawStateWriteTransaction(({ db }) => {
+          switch (command.type) {
+            case "fleet.cell.reserve":
+              assertFleetCellOperationInDatabase(
+                db,
+                command.input.tenantId,
+                command.input.operationOwner,
+              );
+              return reserveFleetCellInDatabase(db, command.input);
+            case "fleet.cell.updateImage":
+              assertFleetCellOperationInDatabase(
+                db,
+                command.input.tenantId,
+                command.input.operationOwner,
+              );
+              return updateFleetCellImageInDatabase(
+                db,
+                command.input.tenantId,
+                command.input.image,
+              );
+            case "fleet.cell.delete":
+              assertFleetCellOperationInDatabase(
+                db,
+                command.input.tenantId,
+                command.input.operationOwner,
+              );
+              return deleteFleetCellInDatabase(db, command.input.tenantId);
+            case "fleet.operation.acquire":
+              return acquireFleetCellOperationInDatabase(db, command.input);
+            case "fleet.operation.heartbeat":
+              return heartbeatFleetCellOperationInDatabase(db, command.input);
+            case "fleet.operation.release":
+              return releaseFleetCellOperationInDatabase(db, command.input);
+          }
+        }, writeOptions);
+      }
+      if (command.type === "agentProvenance.readBatch" || command.type === "agentProvenance.list") {
         ensureAgentProvenanceSchema(writeOptions);
-        return command.type === "agentProvenance.read"
-          ? readAgentProvenanceInDatabase(database.db, command.input.agentId)
+        return command.type === "agentProvenance.readBatch"
+          ? readAgentProvenanceBatchInDatabase(database.db, command.input.agentIds)
           : listAgentProvenanceInDatabase(database.db);
       }
       if (command.type === "telemetry.persistSuccess") {
@@ -441,6 +563,10 @@ function createSharedStateWorkerBackend(
       if (command.type === "projects.list") {
         ensureProjectRegistrySchema(writeOptions);
         return listProjectRegistryInDatabase(database.db);
+      }
+      if (command.type === "projects.resolve") {
+        ensureProjectRegistrySchema(writeOptions);
+        return resolveProjectRegistryInDatabase(database.db, command.input.id);
       }
       if (command.type === "projects.insert") {
         ensureProjectRegistrySchema(writeOptions);

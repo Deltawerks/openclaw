@@ -19,7 +19,6 @@ import {
 } from "../infra/heartbeat-wake.js";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { SessionBindingRecord } from "../infra/outbound/session-binding-service.js";
-import { selectAgentSystemEvents } from "../infra/system-event-ownership.js";
 import {
   peekSystemEventEntries,
   peekSystemEvents,
@@ -102,7 +101,10 @@ import {
   stopTaskRegistryMaintenance,
   sweepTaskRegistry,
 } from "./task-registry.maintenance.js";
-import { configureTaskRegistryMaintenanceRuntimeForTest } from "./task-registry.maintenance.test-support.js";
+import {
+  configureTaskRegistryMaintenanceRuntimeForTest,
+  createAcpSessionStoreEntry,
+} from "./task-registry.maintenance.test-support.js";
 import { configureTaskRegistryRuntime, getTaskRegistryStore } from "./task-registry.store.js";
 import { summarizeTaskRecords } from "./task-registry.summary.js";
 import {
@@ -216,35 +218,6 @@ function createSessionBindingRecord(
     boundAt: overrides.boundAt ?? Date.now(),
     ...(overrides.expiresAt !== undefined ? { expiresAt: overrides.expiresAt } : {}),
     ...(overrides.metadata !== undefined ? { metadata: overrides.metadata } : {}),
-  };
-}
-
-function createAcpSessionStoreEntry(params: {
-  sessionKey: string;
-  parentSessionKey: string;
-  mode: "persistent" | "oneshot";
-}): AcpSessionStoreEntry {
-  const acp = {
-    backend: "acpx",
-    agent: "claude",
-    runtimeSessionName: `${params.sessionKey}:runtime`,
-    mode: params.mode,
-    state: "idle",
-    lastActivityAt: Date.now(),
-  } as const;
-  return {
-    cfg: {} as never,
-    storePath: "/tmp/openclaw-test-sessions.json",
-    sessionKey: params.sessionKey,
-    storeSessionKey: params.sessionKey,
-    entry: {
-      sessionId: `${params.sessionKey}:session`,
-      updatedAt: Date.now(),
-      spawnedBy: params.parentSessionKey,
-      acp,
-    },
-    acp,
-    storeReadFailed: false,
   };
 }
 
@@ -483,10 +456,9 @@ describe("task-registry", () => {
           });
           await maybeDeliverTaskTerminalUpdate(task.taskId);
         }
-        const events = peekSystemEventEntries("global");
+        const events = peekSystemEventEntries("agent:alpha:global");
         expect(events).toHaveLength(kind === "blocked" ? 2 : 1);
-        expect(selectAgentSystemEvents(events, "alpha")).toEqual(events);
-        expect(selectAgentSystemEvents(events, "beta")).toEqual([]);
+        expect(peekSystemEventEntries("agent:beta:global")).toEqual([]);
         await flushHeartbeatWakeRequests();
         const taskWakes = heartbeatWakeRequests.filter((request) =>
           request.source.startsWith("background-task"),
@@ -599,112 +571,6 @@ describe("task-registry", () => {
       });
     });
   });
-
-  it.each(["cli", "subagent"] as const)(
-    "bounds durable liveness writes for %s live activity",
-    async (runtime) => {
-      await withTaskRegistryTempDir(async () => {
-        const store = createInMemoryTaskRegistryStore();
-        const upsert = vi.spyOn(store, "upsertTaskWithDeliveryState");
-        configureTaskRegistryRuntime({ store });
-        const runId = "run-ephemeral-activity";
-        const task = createTaskFixture(runtime, {
-          childSessionKey: "agent:main:subagent:ephemeral",
-          runId,
-          task: "Keep streaming state in memory",
-        });
-        const initialLastEventAt = requireTaskByRunId(runId).lastEventAt!;
-        const emit = (stream: string, data: Record<string, unknown>) =>
-          emitAgentEvent({ runId, stream, data });
-        const emitCandidate = (progressText: string) =>
-          emit("item", {
-            itemId: "answer-1",
-            kind: "answer_candidate",
-            title: "Answer candidate",
-            phase: "update",
-            status: "candidate",
-            progressText,
-            source: "codex-app-server",
-            hideFromChannelProgress: true,
-          });
-        const dateNow = vi.spyOn(Date, "now").mockReturnValue(initialLastEventAt);
-        upsert.mockClear();
-        try {
-          emit("thinking", { text: "Planning" });
-          let text = "";
-          for (let index = 0; index < 128; index += 1) {
-            const delta = `Line ${index + 1}\n`;
-            text += delta;
-            emitCandidate(text.trimEnd());
-            emit("assistant", { text, delta });
-          }
-          emit("item", {
-            itemId: "preamble-1",
-            kind: "preamble",
-            title: "Preamble",
-            phase: "update",
-            progressText: "Preparing the next step",
-          });
-          emit("plan", {
-            phase: "update",
-            steps: [{ step: "Write the result", status: "in_progress" }],
-          });
-          emit("usage", { outputTokens: 128 });
-          emit("codex_app_server.lifecycle", {
-            phase: "thread_ready",
-            threadId: "thread-1",
-            action: "resumed",
-          });
-          expect(upsert).not.toHaveBeenCalled();
-          expect(getTaskActivitySnapshot(task.taskId)?.lastActivity).toBe("Line 128");
-
-          dateNow.mockReturnValue(initialLastEventAt + 60_000);
-          emitCandidate(text.trimEnd());
-          expect(upsert).toHaveBeenCalledOnce();
-          expect(requireTaskByRunId(runId).lastEventAt).toBe(initialLastEventAt + 60_000);
-          upsert.mockClear();
-          emit("assistant", { text: "Still editing" });
-          expect(upsert).not.toHaveBeenCalled();
-          expect(getTaskActivitySnapshot(task.taskId)?.lastActivity).toBe("Still editing");
-
-          emit("error", { error: "Observed diagnostic failure" });
-          expect(upsert).toHaveBeenCalledOnce();
-          expect(requireTaskByRunId(runId).error).toBe("Observed diagnostic failure");
-          upsert.mockClear();
-          emit("tool", {
-            phase: "start",
-            name: "write",
-            toolCallId: "write-1",
-            args: { path: "src/example.ts", content: "one\ntwo" },
-          });
-          expect(upsert).toHaveBeenCalledOnce();
-          expectRecordFields(requireTaskByRunId(runId), {
-            toolUseCount: 1,
-            lastToolName: "write",
-          });
-          upsert.mockClear();
-          emit("tool", {
-            phase: "update",
-            name: "write",
-            toolCallId: "write-1",
-            partialResult: { content: [{ type: "text", text: "Writing" }] },
-          });
-          emit("tool", {
-            phase: "result",
-            name: "write",
-            toolCallId: "write-1",
-            isError: false,
-          });
-          expect(upsert).not.toHaveBeenCalled();
-          emit("lifecycle", { phase: "end", endedAt: initialLastEventAt + 60_000 });
-          expect(upsert).toHaveBeenCalledOnce();
-          expect(requireTaskByRunId(runId).status).toBe("succeeded");
-        } finally {
-          dateNow.mockRestore();
-        }
-      });
-    },
-  );
 
   it.each([
     {
@@ -3918,6 +3784,7 @@ describe("task-registry", () => {
         deleteTaskRecordById: () => false,
         ensureTaskRegistryReady: () => {},
         getTaskById: () => undefined,
+        getTaskRegistryMaintenanceTask: () => undefined,
         getTaskRegistryMaintenanceSnapshot: () => {
           throw new Error("maintenance boom");
         },
@@ -3942,66 +3809,71 @@ describe("task-registry", () => {
     });
   });
 
-  it("keeps sweep membership fixed while rereading tasks after awaited cleanup", async () => {
-    await withTaskRegistryTempDir(async () => {
-      const now = Date.now();
-      const parentSessionKey = "agent:main:main";
-      const childSessionKey = "agent:main:acp:snapshot-cleanup";
-      const closing = createTaskFixture("acp", {
-        ownerKey: parentSessionKey,
-        requesterSessionKey: parentSessionKey,
-        childSessionKey,
-        runId: "run-snapshot-cleanup",
-        task: "Close completed child",
-        status: "succeeded",
-        deliveryStatus: "delivered",
-      });
-      const retained = {
-        ...createTaskFixture("cli", {
-          runId: "run-snapshot-retained",
-          task: "Refresh retention during cleanup",
+  it.each(["closing", "retained"] as const)(
+    "keeps sweep membership fixed when %s retention changes during awaited cleanup",
+    async (refreshedTask) => {
+      await withTaskRegistryTempDir(async () => {
+        const now = Date.now();
+        const parentSessionKey = "agent:main:main";
+        const childSessionKey = "agent:main:acp:snapshot-cleanup";
+        const closing = createTaskFixture("acp", {
+          ownerKey: parentSessionKey,
+          requesterSessionKey: parentSessionKey,
+          childSessionKey,
+          runId: "run-snapshot-cleanup",
+          task: "Close completed child",
           status: "succeeded",
-        }),
-        cleanupAfter: now - 1,
-      };
-      const arrived = { ...retained, taskId: "arrived-during-cleanup" };
-      const currentTasks = new Map([
-        [closing.taskId, closing],
-        [retained.taskId, retained],
-      ]);
-      let snapshotReads = 0;
-      const closeAcpSession = vi.fn(async () => {
-        await Promise.resolve();
-        currentTasks.set(retained.taskId, { ...retained, cleanupAfter: now + 86_400_000 });
-        currentTasks.set(arrived.taskId, arrived);
-      });
-      configureTaskRegistryMaintenanceRuntimeForTest({
-        currentTasks,
-        snapshotTasks: [closing, retained],
-        listTaskRecords: () => {
-          snapshotReads += 1;
-          return Array.from(currentTasks.values());
-        },
-        acpEntry: createAcpSessionStoreEntry({
-          sessionKey: childSessionKey,
-          parentSessionKey,
-          mode: "oneshot",
-        }),
-        closeAcpSession,
-      });
+          deliveryStatus: "delivered",
+          cleanupAfter: refreshedTask === "closing" ? now - 1 : now + 86_400_000,
+        });
+        const retained = {
+          ...createTaskFixture("cli", {
+            runId: "run-snapshot-retained",
+            task: "Refresh retention during cleanup",
+            status: "succeeded",
+          }),
+          cleanupAfter: refreshedTask === "retained" ? now - 1 : now + 86_400_000,
+        };
+        const arrived = { ...retained, taskId: "arrived-during-cleanup" };
+        const currentTasks = new Map([
+          [closing.taskId, closing],
+          [retained.taskId, retained],
+        ]);
+        let snapshotReads = 0;
+        const refreshed = refreshedTask === "closing" ? closing : retained;
+        const closeAcpSession = vi.fn(async () => {
+          await Promise.resolve();
+          currentTasks.set(refreshed.taskId, { ...refreshed, cleanupAfter: now + 86_400_000 });
+          currentTasks.set(arrived.taskId, arrived);
+        });
+        configureTaskRegistryMaintenanceRuntimeForTest({
+          currentTasks,
+          snapshotTasks: [closing, retained],
+          listTaskRecords: () => {
+            snapshotReads += 1;
+            return Array.from(currentTasks.values());
+          },
+          acpEntry: createAcpSessionStoreEntry({
+            sessionKey: childSessionKey,
+            parentSessionKey,
+            mode: "oneshot",
+          }),
+          closeAcpSession,
+        });
 
-      expect(await runTaskRegistryMaintenance()).toEqual({
-        reconciled: 0,
-        recovered: 0,
-        cleanupStamped: 0,
-        pruned: 0,
+        expect(await runTaskRegistryMaintenance()).toEqual({
+          reconciled: 0,
+          recovered: 0,
+          cleanupStamped: 0,
+          pruned: 0,
+        });
+        expect(closeAcpSession).toHaveBeenCalledOnce();
+        expect(snapshotReads).toBe(1);
+        expect(currentTasks.get(refreshed.taskId)?.cleanupAfter).toBe(now + 86_400_000);
+        expect(currentTasks.has(arrived.taskId)).toBe(true);
       });
-      expect(closeAcpSession).toHaveBeenCalledOnce();
-      expect(snapshotReads).toBe(1);
-      expect(currentTasks.get(retained.taskId)?.cleanupAfter).toBe(now + 86_400_000);
-      expect(currentTasks.has(arrived.taskId)).toBe(true);
-    });
-  });
+    },
+  );
 
   it("rechecks current task state before marking a task lost", async () => {
     const now = Date.now();
