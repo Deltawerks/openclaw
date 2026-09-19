@@ -26,7 +26,7 @@ export function completeWorkerTask<Input, Output>(
       completion.releaseAdmission(task);
     }
     let completionError = error;
-    let cleanupError: Error | undefined;
+    const cleanupErrors: Error[] = [];
     try {
       // Retiring completion follows native exit. Queued inputs were never delivered.
       if (!task.inputConsumed) {
@@ -37,7 +37,18 @@ export function completeWorkerTask<Input, Output>(
       task.exchange = undefined;
       release?.();
     } catch (releaseError) {
-      cleanupError = toErrorObject(releaseError, "worker input release failed");
+      const cleanupError = toErrorObject(releaseError, "worker input release failed");
+      cleanupErrors.push(cleanupError);
+      completionError ??= cleanupError;
+    }
+    try {
+      if (!task.executionNotified) {
+        task.executionNotified = true;
+        task.options.onExecutionSettled?.({ retired: task.slot?.retired === true });
+      }
+    } catch (settlementError) {
+      const cleanupError = toErrorObject(settlementError, "worker settlement receipt failed");
+      cleanupErrors.push(cleanupError);
       completionError ??= cleanupError;
     }
     const permit = task.computePermit;
@@ -57,8 +68,13 @@ export function completeWorkerTask<Input, Output>(
       });
     }
     if (task.owner) {
+      const cleanupError = cleanupErrors[0];
       if (cleanupError) {
-        throw cleanupError;
+        throw cleanupErrors.length === 1
+          ? cleanupError
+          : new AggregateError(cleanupErrors, "Worker task cleanup failed", {
+              cause: cleanupError,
+            });
       }
     } else if (completionError) {
       task.reject(completionError);

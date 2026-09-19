@@ -87,18 +87,30 @@ afterEach(async () => {
 describe("owned worker tasks", () => {
   it("holds a completed reply until acceptance and never retires its successor on late close", async () => {
     const pool = createPool();
-    const first = pool.runTask("first", {});
+    const order: string[] = [];
+    const executionSettled = vi.fn(({ retired }: { retired: boolean }) => {
+      order.push(`settled:${retired}`);
+    });
+    const options = Object.freeze({ onExecutionSettled: executionSettled });
+    const first = pool.runTask("first", options);
     const worker = workerFor("first");
-    const prepareNext = vi.fn(() => "next");
-    const next = pool.runTask(prepareNext, {});
+    const prepareNext = vi.fn(() => {
+      order.push("successor");
+      return "next";
+    });
+    const next = pool.runTask(prepareNext, options);
+    void next.result.catch(() => {});
 
     reply(worker, "first", "accepted reply");
     await expect(first.result).resolves.toBe("accepted reply");
+    expect(executionSettled).not.toHaveBeenCalled();
     expect(prepareNext).not.toHaveBeenCalled();
     expect(worker.postMessage).toHaveBeenCalledOnce();
     expect(pool.getSnapshot().pendingTasks).toBe(2);
 
     await first.close();
+    expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
+    expect(order).toEqual(["settled:false", "successor"]);
     expect(prepareNext).toHaveBeenCalledOnce();
     expect(workerFor("next")).toBe(worker);
     await first.close({ retire: true });
@@ -107,20 +119,26 @@ describe("owned worker tasks", () => {
     reply(worker, "next");
     await expect(next.result).resolves.toBe("next");
     await next.close();
+    expect(executionSettled).toHaveBeenCalledTimes(2);
+    expect(order).toEqual(["settled:false", "successor", "settled:false"]);
+    expect(options.onExecutionSettled).toBe(executionSettled);
     expect(pool.getSnapshot().pendingTasks).toBe(0);
   });
 
   it("cancels a queued task without preparing its input or stopping the occupied worker", async () => {
     const pool = createPool();
     const active = pool.runTask("active", {});
+    void active.result.catch(() => {});
     const worker = workerFor("active");
     const controller = new AbortController();
     const reason = new Error("queued owner closed");
     const prepare = vi.fn(() => "must not dispatch");
     const consumed = vi.fn();
+    const executionSettled = vi.fn();
     const queued = pool.runTask(prepare, {
       signal: controller.signal,
       onInputConsumed: consumed,
+      onExecutionSettled: executionSettled,
     });
     const rejected = expect(queued.result).rejects.toBe(reason);
     controller.abort(reason);
@@ -129,6 +147,7 @@ describe("owned worker tasks", () => {
 
     expect(prepare).not.toHaveBeenCalled();
     expect(consumed).toHaveBeenCalledOnce();
+    expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
     expect(worker.terminate).not.toHaveBeenCalled();
     expect(worker.postMessage).toHaveBeenCalledOnce();
     reply(worker, "active");
@@ -143,12 +162,18 @@ describe("owned worker tasks", () => {
     const controller = new AbortController();
     const reason = new Error("preparation owner closed");
     const consumed = vi.fn();
+    const executionSettled = vi.fn();
     const task = pool.runTask(
       async () => {
         preparing.resolve();
         return await prepared.promise;
       },
-      { inputBytes: 8, signal: controller.signal, onInputConsumed: consumed },
+      {
+        inputBytes: 8,
+        signal: controller.signal,
+        onInputConsumed: consumed,
+        onExecutionSettled: executionSettled,
+      },
     );
     await preparing.promise;
     const rejected = expect(task.result).rejects.toBe(reason);
@@ -163,12 +188,14 @@ describe("owned worker tasks", () => {
       expect(consumed).not.toHaveBeenCalled();
       expect(pool.getSnapshot().pendingTasks).toBe(1);
       expect(workers).toHaveLength(0);
+      expect(executionSettled).not.toHaveBeenCalled();
     } finally {
       prepared.resolve("must not dispatch");
       await closing;
     }
     expect(closed).toBe(true);
     expect(consumed).toHaveBeenCalledOnce();
+    expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
     expect(pool.getSnapshot().pendingTasks).toBe(0);
     expect(workers).toHaveLength(0);
   });
@@ -232,7 +259,12 @@ describe("owned worker tasks", () => {
         onRetirementFailure: () => retirementFailed.resolve(),
       });
       const consumed = vi.fn();
-      const failed = pool.runTask("failed", { inputBytes: 8, onInputConsumed: consumed });
+      const executionSettled = vi.fn();
+      const failed = pool.runTask("failed", {
+        inputBytes: 8,
+        onInputConsumed: consumed,
+        onExecutionSettled: executionSettled,
+      });
       const sibling = pool.runTask("sibling", { inputBytes: 1 });
       const worker = workerFor("failed");
       const siblingWorker = workerFor("sibling");
@@ -256,6 +288,7 @@ describe("owned worker tasks", () => {
       await nextTurn();
       expect(worker.terminate).toHaveBeenCalledOnce();
       expect(consumed).not.toHaveBeenCalled();
+      expect(executionSettled).not.toHaveBeenCalled();
       expect(pool.getSnapshot().pendingTasks).toBe(2);
       expect(siblingWorker.terminate).not.toHaveBeenCalled();
       await expect(failed.result).rejects.toBe(primary);
@@ -265,6 +298,7 @@ describe("owned worker tasks", () => {
       await nextTurn();
       expect(worker.terminate).toHaveBeenCalledOnce();
       expect(consumed).not.toHaveBeenCalled();
+      expect(executionSettled).not.toHaveBeenCalled();
       expect(pool.getSnapshot().pendingTasks).toBe(2);
       expect(siblingWorker.terminate).not.toHaveBeenCalled();
       await expect(failed.result).rejects.toBe(primary);
@@ -281,6 +315,7 @@ describe("owned worker tasks", () => {
       try {
         await native.entered;
         expect(consumed).not.toHaveBeenCalled();
+        expect(executionSettled).not.toHaveBeenCalled();
         const next = pool.runTask("sibling successor", { inputBytes: 2 });
         expect(workerFor("sibling successor")).toBe(siblingWorker);
         expect(workers).toHaveLength(2);
@@ -294,18 +329,31 @@ describe("owned worker tasks", () => {
       }
       expect(worker.terminate).toHaveBeenCalledTimes(2);
       expect(consumed).toHaveBeenCalledOnce();
+      expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
       expect(pool.getSnapshot().pendingTasks).toBe(0);
       await expect(failed.result).rejects.toBe(primary);
       await failed.close({ retire: true });
+      expect(executionSettled).toHaveBeenCalledOnce();
       expect(worker.terminate).toHaveBeenCalledTimes(2);
     },
   );
 
-  it.each(["task-close", "pool-close"] as const)(
-    "reports automatic input-cleanup failure after native retirement to %s first",
-    async (firstObserver) => {
+  it.each([
+    { firstObserver: "task-close", settlementFails: false },
+    { firstObserver: "pool-close", settlementFails: false },
+    { firstObserver: "task-close", settlementFails: true },
+    { firstObserver: "pool-close", settlementFails: true },
+  ] as const)(
+    "reports automatic cleanup failure to $firstObserver first (settlement fails: $settlementFails)",
+    async ({ firstObserver, settlementFails }) => {
       const primary = new Error("original task failure");
       const cleanup = new Error("input release callback failed");
+      const settlementFailure = new Error("execution settlement callback failed");
+      const executionSettled = vi.fn(() => {
+        if (settlementFails) {
+          throw settlementFailure;
+        }
+      });
       const completionEntered = createDeferredCore();
       const pool = createPool({
         maxPendingBytes: 8,
@@ -317,7 +365,11 @@ describe("owned worker tasks", () => {
         completionEntered.resolve();
         throw cleanup;
       });
-      const task = pool.runTask("failed", { inputBytes: 8, onInputConsumed: consumed });
+      const task = pool.runTask("failed", {
+        inputBytes: 8,
+        onInputConsumed: consumed,
+        onExecutionSettled: executionSettled,
+      });
       const worker = workerFor("failed");
       const rejected = expect(task.result).rejects.toBe(primary);
       reply(worker, "failed");
@@ -332,9 +384,23 @@ describe("owned worker tasks", () => {
       await expect(excess.result).rejects.toMatchObject({ code: "overloaded" });
       await excess.close();
 
-      await expect(firstObserver === "task-close" ? task.close() : pool.close()).rejects.toBe(
-        cleanup,
+      const failure = await (firstObserver === "task-close" ? task.close() : pool.close()).then(
+        () => undefined,
+        (error: unknown) => error,
       );
+      if (settlementFails) {
+        expect(failure).toBeInstanceOf(AggregateError);
+        if (!(failure instanceof AggregateError)) {
+          throw new Error("Owned close lost independent cleanup errors");
+        }
+        expect(failure.errors).toHaveLength(2);
+        expect(failure.errors[0]).toBe(cleanup);
+        expect(failure.errors[1]).toBe(settlementFailure);
+        expect(failure.cause).toBe(cleanup);
+      } else {
+        expect(failure).toBe(cleanup);
+      }
+      expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
       await expect(task.result).rejects.toBe(primary);
       await task.close();
       await Promise.all([task.close({ retire: true }), pool.close()]);
@@ -470,17 +536,56 @@ describe("owned worker tasks", () => {
 
   it("retains a successful reply when its explicitly requested retirement fails", async () => {
     const pool = createPool();
-    const task = pool.runTask("completed", {});
+    const executionSettled = vi.fn();
+    const task = pool.runTask("completed", { onExecutionSettled: executionSettled });
     const worker = workerFor("completed");
     reply(worker, "completed", "domain outcome");
     await expect(task.result).resolves.toBe("domain outcome");
+    expect(executionSettled).not.toHaveBeenCalled();
     const cleanup = new Error("stop failed after reply");
     worker.terminate.mockRejectedValueOnce(cleanup);
     await expect(task.close({ retire: true })).rejects.toBe(cleanup);
+    expect(executionSettled).not.toHaveBeenCalled();
     expect(pool.getSnapshot().pendingTasks).toBe(1);
-    await task.close();
+    const native = holdExit(worker);
+    const closing = task.close();
+    try {
+      await native.entered;
+      expect(executionSettled).not.toHaveBeenCalled();
+    } finally {
+      native.release();
+      await closing;
+    }
+    expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: true });
+    await task.close({ retire: true });
+    expect(executionSettled).toHaveBeenCalledOnce();
     expect(worker.terminate).toHaveBeenCalledTimes(2);
     expect(pool.getSnapshot().pendingTasks).toBe(0);
+    await expect(task.result).resolves.toBe("domain outcome");
+  });
+
+  it("reports a throwing settlement callback through close without replacing its successful result", async () => {
+    const pool = createPool();
+    const failure = new Error("settlement observer failed");
+    const executionSettled = vi.fn(() => {
+      throw failure;
+    });
+    const task = pool.runTask("completed", { onExecutionSettled: executionSettled });
+    const worker = workerFor("completed");
+    reply(worker, "completed", "domain outcome");
+    await expect(task.result).resolves.toBe("domain outcome");
+    expect(executionSettled).not.toHaveBeenCalled();
+    await expect(task.close()).rejects.toBe(failure);
+    expect(executionSettled).toHaveBeenCalledExactlyOnceWith({ retired: false });
+    expect(pool.getSnapshot().pendingTasks).toBe(0);
+    const next = pool.runTask("successor", {});
+    expect(workerFor("successor")).toBe(worker);
+    reply(worker, "successor");
+    await next.result;
+    await next.close();
+    await task.close({ retire: true });
+    expect(executionSettled).toHaveBeenCalledOnce();
+    expect(worker.terminate).not.toHaveBeenCalled();
     await expect(task.result).resolves.toBe("domain outcome");
   });
 

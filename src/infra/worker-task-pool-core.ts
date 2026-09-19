@@ -170,6 +170,7 @@ class WorkerTaskPoolCore<Input, Output> {
       runInContext: AsyncLocalStorage.snapshot(),
       controller: new AbortController(),
       inputConsumed: false,
+      executionNotified: false,
       exchangeSequence: 0,
       input,
       options: { ...options },

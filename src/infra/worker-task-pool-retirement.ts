@@ -43,6 +43,7 @@ export function createWorkerTaskPoolRetirement<Input, Output>({
           }
           await slot.worker.terminate();
         }
+        slot.retired = true;
       })
       .catch((error: unknown) => {
         try {
