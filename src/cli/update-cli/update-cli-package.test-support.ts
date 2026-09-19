@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { expect, vi, type Mock } from "vitest";
 import { writePackageDistInventory } from "../../../scripts/lib/package-dist-inventory.ts";
 import type { runCommandWithTimeout as RunCommandWithTimeout } from "../../process/exec.js";
@@ -384,5 +385,37 @@ export function createUpdateCliPackageFixtures({
     mockNpmGlobalRoot,
     mockPackageReplacementFailure,
     mockGatewayInstallFailure,
+  };
+}
+
+/** Stage the package/fresh-process entrypoint responses without depending on a built repository. */
+export function createCurrentProcessFreshDoctorFixture(
+  resolveGatewayInstallEntrypoint: typeof import("../../daemon/gateway-entrypoint.js").resolveGatewayInstallEntrypoint,
+  freshEntrypoint: string,
+) {
+  return (
+    params: {
+      postCoreResumeAttempt?: boolean;
+      packageRoot?: string;
+      candidateAdmission?: boolean;
+    } = {},
+  ) => {
+    // Package Doctor precedes the fresh-process decision; it must have a real entrypoint.
+    if (params.packageRoot) {
+      vi.mocked(resolveGatewayInstallEntrypoint).mockReset();
+      if (params.candidateAdmission) {
+        // Native capability admission resolves the staged candidate before package Doctor.
+        vi.mocked(resolveGatewayInstallEntrypoint).mockImplementationOnce(async (root) =>
+          path.join(expectDefined(root, "capability candidate root"), "dist", "index.js"),
+        );
+      }
+      vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
+        path.join(params.packageRoot, "dist", "index.js"),
+      );
+    }
+    if (params.postCoreResumeAttempt !== false) {
+      vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(undefined);
+    }
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(freshEntrypoint);
   };
 }

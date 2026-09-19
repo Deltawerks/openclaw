@@ -54,6 +54,8 @@ describe("tsgo core test shards", () => {
       }),
     ).toEqual([]);
     for (const [file, owner] of [
+      ["src/gateway/server-methods/update-chat-permission.test.ts", "gateway-methods"],
+      ["src/gateway/talk/client-authority.test.ts", "gateway-other"],
       ["src/commands/doctor-session-worktree-workspace.test.ts", "commands-doctor"],
       ["src/commands/doctor/repair-sequencing.test.ts", "commands-doctor"],
       ["src/commands/oauth-tls-preflight.doctor.test.ts", "commands-doctor"],

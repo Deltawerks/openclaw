@@ -25,7 +25,10 @@ import * as shared from "./shared.js";
 import * as databaseContext from "./update-command-database-context.js";
 import * as execution from "./update-command-execution.js";
 import * as executorOwner from "./update-command-executor.js";
-import { captureFreshManagedServiceAdmission } from "./update-command-fresh-preview.test-support.js";
+import {
+  captureFreshManagedServiceAdmission,
+  freshManagedServiceRuntimeCases,
+} from "./update-command-fresh-preview.test-support.js";
 import { installFreshUpdateFixture, targetMetadata } from "./update-command-fresh.test-support.js";
 import * as initialization from "./update-command-initialization.js";
 import * as packageUpdate from "./update-command-package.js";
@@ -547,15 +550,11 @@ describe("update command admission with fresh state", () => {
     },
   );
 
-  it.each([
-    { owned: true, writable: true, restart: true, expectedFallback: "/current/node" },
-    { owned: false, writable: false, restart: true, expectedFallback: undefined },
-    { owned: true, writable: true, restart: false, expectedFallback: undefined },
-    { owned: true, writable: false, restart: true, expectedFallback: undefined },
-  ])(
-    "limits fresh-state Node fallback to the service it will refresh (owned=$owned, writable=$writable, restart=$restart)",
-    async ({ owned, writable, restart, expectedFallback }) => {
-      fixture.managedServiceNodeRunner = "/service/node";
+  it.each(freshManagedServiceRuntimeCases)(
+    "limits fresh-state Node recovery ($name)",
+    async (testCase) => {
+      const { owned, writable, restart, discovered, expectedFallback, expectedRecovery } = testCase;
+      fixture.managedServiceNodeRunner = discovered ? "/service/node" : undefined;
       vi.spyOn(shared, "resolveNodeRunner").mockReturnValue("/current/node");
       vi.mocked(databaseContext.inspectUpdateDatabaseContexts).mockImplementation(() =>
         captureFreshManagedServiceAdmission({ root: fixture.root, owned, writable, restart }),
@@ -570,9 +569,9 @@ describe("update command admission with fresh state", () => {
 
       expect(runtimePreflight).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
-          nodeRunner: "/service/node",
+          nodeRunner: discovered ? "/service/node" : undefined,
           fallbackNodeRunner: expectedFallback,
-          runtimeRecovery: !owned || (restart && writable) ? expect.any(Object) : undefined,
+          runtimeRecovery: expectedRecovery ? expect.any(Object) : undefined,
         }),
       );
       expect(defaultRuntime.writeJson).toHaveBeenCalledWith(

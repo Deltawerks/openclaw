@@ -72,6 +72,7 @@ import {
 } from "./update-cli/update-cli-config.test-support.js";
 import {
   createUpdateCliPackageFixtures,
+  createCurrentProcessFreshDoctorFixture,
   writeJsonFixture,
   writeOpenClawPackageFixture,
   writeNpmPackageInstall,
@@ -719,6 +720,7 @@ const { fetchNpmPackageTargetStatus } = await import("../infra/update-check-pack
 const { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } =
   await import("../infra/update-control-plane-sentinel.js");
 const { runExec, runUtf8CommandWithTimeout } = await import("../process/exec.js");
+const doctorChild = await import("./update-cli/update-command-doctor-child.js");
 const runCommandWithTimeout: typeof import("../process/exec.js").runCommandWithTimeout =
   commandTransport.run;
 const { runDaemonRestart, runDaemonInstall } = await import("./daemon-cli.js");
@@ -1257,31 +1259,10 @@ describe("update-cli", () => {
 
   const FRESH_POST_UPDATE_ENTRYPOINT = "/tmp/openclaw-updated-entry.mjs";
 
-  const mockCurrentProcessFreshDoctor = (
-    params: {
-      postCoreResumeAttempt?: boolean;
-      packageRoot?: string;
-      candidateAdmission?: boolean;
-    } = {},
-  ) => {
-    // Package Doctor precedes the fresh-process decision; it must have a real entrypoint.
-    if (params.packageRoot) {
-      vi.mocked(resolveGatewayInstallEntrypoint).mockReset();
-      if (params.candidateAdmission) {
-        // Native capability admission resolves the staged candidate before package Doctor.
-        vi.mocked(resolveGatewayInstallEntrypoint).mockImplementationOnce(async (root) =>
-          path.join(expectDefined(root, "capability candidate root"), "dist", "index.js"),
-        );
-      }
-      vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
-        path.join(params.packageRoot, "dist", "index.js"),
-      );
-    }
-    if (params.postCoreResumeAttempt !== false) {
-      vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(undefined);
-    }
-    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(FRESH_POST_UPDATE_ENTRYPOINT);
-  };
+  const mockCurrentProcessFreshDoctor = createCurrentProcessFreshDoctorFixture(
+    resolveGatewayInstallEntrypoint,
+    FRESH_POST_UPDATE_ENTRYPOINT,
+  );
 
   const expectFreshPostUpdateDoctor = (params: {
     yes: boolean;
@@ -3782,6 +3763,8 @@ describe("update-cli", () => {
   });
 
   it("runs updated plugin migrations for a plugin-only current-process update", async () => {
+    // This path exercises delegated Doctor ownership, independent of repository build artifacts.
+    vi.spyOn(doctorChild, "inspectUpdateDoctorChildSupport").mockResolvedValue(true);
     mockGitUpdateAfterMutation(makeOkUpdateResult({ after: { version: VERSION } }));
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
       "/tmp/openclaw-updated-entry.mjs",
@@ -3821,6 +3804,8 @@ describe("update-cli", () => {
   });
 
   it("runs the final fresh doctor for convergence-only current-process changes", async () => {
+    // This path exercises delegated Doctor ownership, independent of repository build artifacts.
+    vi.spyOn(doctorChild, "inspectUpdateDoctorChildSupport").mockResolvedValue(true);
     mockGitUpdateAfterMutation();
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(FRESH_POST_UPDATE_ENTRYPOINT);
     runPostCorePluginConvergenceSpy.mockResolvedValueOnce(
@@ -10923,6 +10908,8 @@ describe("update-cli", () => {
   });
 
   it("keeps the core stopped for plugin Doctor and never restarts after Doctor fails", async () => {
+    // This path exercises delegated Doctor ownership, independent of repository build artifacts.
+    vi.spyOn(doctorChild, "inspectUpdateDoctorChildSupport").mockResolvedValue(true);
     const serviceEntrypoint = path.join(process.cwd(), "dist", "index.js");
     mockRunningManagedGateway(["node", serviceEntrypoint, "gateway", "run"]);
     mockGitUpdateAfterMutation();

@@ -29,3 +29,61 @@ export async function captureFreshManagedServiceAdmission(params: {
     managedEnv: undefined,
   };
 }
+
+// Discovery-known service runners stay protected when schema inspection has no service context.
+export const freshManagedServiceRuntimeCases = [
+  {
+    name: "owned writable service",
+    discovered: true,
+    owned: true,
+    writable: true,
+    restart: true,
+    expectedFallback: "/current/node",
+    expectedRecovery: true,
+  },
+  {
+    name: "discovered service without inspected ownership",
+    discovered: true,
+    owned: false,
+    writable: false,
+    restart: true,
+    expectedFallback: undefined,
+    expectedRecovery: false,
+  },
+  {
+    name: "owned service with no restart",
+    discovered: true,
+    owned: true,
+    writable: true,
+    restart: false,
+    expectedFallback: undefined,
+    expectedRecovery: false,
+  },
+  {
+    name: "owned non-rewritable service",
+    discovered: true,
+    owned: true,
+    writable: false,
+    restart: true,
+    expectedFallback: undefined,
+    expectedRecovery: false,
+  },
+  {
+    name: "no discovered service",
+    discovered: false,
+    owned: false,
+    writable: false,
+    restart: true,
+    expectedFallback: undefined,
+    expectedRecovery: true,
+  },
+  {
+    name: "no discovered service with no restart",
+    discovered: false,
+    owned: false,
+    writable: false,
+    restart: false,
+    expectedFallback: undefined,
+    expectedRecovery: true,
+  },
+] as const;
