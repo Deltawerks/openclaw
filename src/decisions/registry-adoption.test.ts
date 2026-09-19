@@ -12,21 +12,21 @@ import {
 import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { setPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js";
-import { JudgmentProviderHost } from "./provider-host.js";
-import { adoptRuntimeJudgmentProviders } from "./registry-adoption.js";
+import { DecisionProviderHost } from "./provider-host.js";
+import { adoptRuntimeDecisionProviders } from "./registry-adoption.js";
 import {
-  evaluateJudgmentInRegistry,
-  inspectJudgmentProviders,
-  prepareJudgmentProviderReload,
+  evaluateDecisionInRegistry,
+  inspectDecisionProviders,
+  prepareDecisionProviderReload,
 } from "./runtime.js";
-import type { JudgmentProviderV1, ProviderJudgmentOutcome } from "./types.js";
+import type { DecisionProviderV1, ProviderDecisionOutcome } from "./types.js";
 
 const config = {
-  judgments: { provider: "fixture" },
+  agents: { defaults: { decisionModel: "fixture/synthetic" } },
   plugins: { entries: { owner: { enabled: true, config: { model: "synthetic" } } } },
 };
 const batch = { state: "synthetic", questions: { check: { type: "boolean" as const } } };
-const answer: ProviderJudgmentOutcome = {
+const answer: ProviderDecisionOutcome = {
   status: "ok",
   result: { model: "synthetic", answers: { check: { type: "boolean", probabilityTrue: 1 } } },
 };
@@ -37,7 +37,7 @@ const options = () => ({
   signal: new AbortController().signal,
 });
 
-function fixture(evaluate: JudgmentProviderV1["evaluate"] = async () => answer) {
+function fixture(evaluate: DecisionProviderV1["evaluate"] = async () => answer) {
   const builder = createTestPluginRegistry();
   const record = createPluginRecord({
     id: "owner",
@@ -45,12 +45,12 @@ function fixture(evaluate: JudgmentProviderV1["evaluate"] = async () => answer) 
     origin: "global",
     enabled: true,
     configSchema: false,
-    contracts: { judgmentProviders: ["fixture"] },
+    contracts: { decisionProviders: ["fixture"] },
   });
   const api = builder.createApi(record, { config });
   runPluginRegisterSyncInRegistry(
     (registration) =>
-      registration.registerJudgmentProvider({ id: "fixture", contractVersion: 1, evaluate }),
+      registration.registerDecisionProvider({ id: "fixture", contractVersion: 1, evaluate }),
     api,
     builder.registry,
     record.id,
@@ -73,41 +73,41 @@ function fixture(evaluate: JudgmentProviderV1["evaluate"] = async () => answer) 
   const localRecord = { ...record };
   const duplicate = vi.fn(async () => answer);
   target.plugins.push(localRecord);
-  target.judgmentProviders.push({
+  target.decisionProviders.push({
     pluginId: record.id,
-    host: new JudgmentProviderHost(
+    host: new DecisionProviderHost(
       { id: "fixture", contractVersion: 1, evaluate: duplicate },
       localRecord,
     ),
   });
   const view = bindPluginRegistryResourceOwner(
-    adoptRuntimeJudgmentProviders(target, builder.registry, config),
+    adoptRuntimeDecisionProviders(target, builder.registry, config),
     target,
   );
-  const run = () => evaluateJudgmentInRegistry(batch, options(), view, config);
+  const run = () => evaluateDecisionInRegistry(batch, options(), view, config);
   return { root: builder.registry, target, view, record, duplicate, run };
 }
 
 afterEach(() => resetPluginRuntimeStateForTest());
 
-describe("prepared judgment provider ownership", () => {
+describe("prepared decision provider ownership", () => {
   it("shares Gateway counters, circuit state and instance custody across prepared views", async () => {
-    const evaluate = vi.fn(async (): Promise<ProviderJudgmentOutcome> => ({
+    const evaluate = vi.fn(async (): Promise<ProviderDecisionOutcome> => ({
       status: "unavailable",
       reason: "transport",
     }));
     const { root, target, view, record, duplicate, run } = fixture(evaluate);
-    expect(view.judgmentProviders[0]).toBe(root.judgmentProviders[0]);
-    expect(target.judgmentProviders[0]).not.toBe(root.judgmentProviders[0]);
+    expect(view.decisionProviders[0]).toBe(root.decisionProviders[0]);
+    expect(target.decisionProviders[0]).not.toBe(root.decisionProviders[0]);
     expect(collectRegistryInvocationInstances(view).has(getPluginInstance(record)!)).toBe(true);
     await run();
-    await evaluateJudgmentInRegistry(batch, options(), root, config);
+    await evaluateDecisionInRegistry(batch, options(), root, config);
     await run();
-    expect(await evaluateJudgmentInRegistry(batch, options(), root, config)).toEqual({
+    expect(await evaluateDecisionInRegistry(batch, options(), root, config)).toEqual({
       status: "unavailable",
       reason: "circuit-open",
     });
-    expect(inspectJudgmentProviders(config, root)[0]?.reasons.transport).toBe(3);
+    expect(inspectDecisionProviders(config, root)[0]?.reasons.transport).toBe(3);
     expect(evaluate).toHaveBeenCalledTimes(3);
     expect(duplicate).not.toHaveBeenCalled();
   });
@@ -128,10 +128,10 @@ describe("prepared judgment provider ownership", () => {
     markPluginRegistryRetired(target);
     await expect(pending).rejects.toBeDefined();
     expect(settled).toBe(true);
-    await expect(evaluateJudgmentInRegistry(batch, options(), view, config)).rejects.toThrow(
+    await expect(evaluateDecisionInRegistry(batch, options(), view, config)).rejects.toThrow(
       "consumer authority closed",
     );
-    expect(inspectJudgmentProviders(config, root)[0]).toMatchObject({
+    expect(inspectDecisionProviders(config, root)[0]).toMatchObject({
       callable: true,
       activeRequests: 0,
     });
@@ -148,19 +148,19 @@ describe("prepared judgment provider ownership", () => {
     const pending = [
       run(),
       run(),
-      evaluateJudgmentInRegistry(batch, options(), root, config),
+      evaluateDecisionInRegistry(batch, options(), root, config),
       run(),
     ];
-    expect(await evaluateJudgmentInRegistry(batch, options(), root, config)).toEqual({
+    expect(await evaluateDecisionInRegistry(batch, options(), root, config)).toEqual({
       status: "unavailable",
       reason: "overloaded",
     });
-    const pause = prepareJudgmentProviderReload(root, new Set([record.id]));
+    const pause = prepareDecisionProviderReload(root, new Set([record.id]));
     expect(await Promise.all(pending)).toEqual(
       Array.from({ length: 4 }, () => ({ status: "unavailable", reason: "retiring" })),
     );
     await pause.rollback(new AbortController().signal);
-    expect(inspectJudgmentProviders(config, root)[0]).toMatchObject({
+    expect(inspectDecisionProviders(config, root)[0]).toMatchObject({
       callable: true,
       activeRequests: 0,
     });
@@ -169,15 +169,15 @@ describe("prepared judgment provider ownership", () => {
   it("never adopts across a shadowed source, changed config, or retired owner", () => {
     const { root, target } = fixture();
     expect(
-      adoptRuntimeJudgmentProviders(target, root, {
+      adoptRuntimeDecisionProviders(target, root, {
         ...config,
         plugins: { entries: { owner: { config: { model: "other" } } } },
       }),
     ).toBe(target);
     target.plugins[0]!.source = "/workspace/shadow.ts";
-    expect(adoptRuntimeJudgmentProviders(target, root, config)).toBe(target);
+    expect(adoptRuntimeDecisionProviders(target, root, config)).toBe(target);
     target.plugins[0]!.source = root.plugins[0]!.source;
     markPluginRegistryRetired(root);
-    expect(adoptRuntimeJudgmentProviders(target, root, config)).toBe(target);
+    expect(adoptRuntimeDecisionProviders(target, root, config)).toBe(target);
   });
 });

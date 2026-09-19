@@ -5,7 +5,7 @@ const MANIFEST_CONTRACT_KEYS = [
   "agentToolResultMiddleware",
   "trustedToolPolicies",
   "externalAuthProviders",
-  "judgmentProviders",
+  "decisionProviders",
   "embeddingProviders",
   "speechProviders",
   "realtimeTranscriptionProviders",

@@ -1527,9 +1527,9 @@
       "types": "./dist/plugin-sdk/secret-input-runtime.d.ts",
       "default": "./dist/plugin-sdk/secret-input-runtime.js"
     },
-    "./plugin-sdk/judgments": {
-      "types": "./dist/plugin-sdk/judgments.d.ts",
-      "default": "./dist/plugin-sdk/judgments.js"
+    "./plugin-sdk/decisions": {
+      "types": "./dist/plugin-sdk/decisions.d.ts",
+      "default": "./dist/plugin-sdk/decisions.js"
     },
     "./plugin-sdk/secret-ref-readonly": {
       "types": "./dist/plugin-sdk/secret-ref-readonly.d.ts",

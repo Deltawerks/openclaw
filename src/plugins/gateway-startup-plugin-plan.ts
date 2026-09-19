@@ -1,4 +1,5 @@
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import { getConfiguredDecisionProviderIds } from "../agents/decision-model-setting.js";
 // Plans deterministic Gateway startup plugin activation from prepared registry metadata.
 import { collectConfiguredAgentHarnessRuntimes } from "../agents/harness-runtimes.js";
 import {
@@ -111,6 +112,9 @@ export function resolveGatewayStartupPluginPlanFromRegistry(params: {
   const configuredVoiceProviderIds = collectConfiguredVoiceProviderIds(activationSourceConfig);
   const configuredMemoryEmbeddingProviderIds =
     collectConfiguredMemoryEmbeddingProviderIds(activationSourceConfig);
+  const configuredDecisionProviderIds = new Set(
+    getConfiguredDecisionProviderIds(activationSourceConfig),
+  );
   const configuredWorkerProviderIds = new Set([
     ...collectConfiguredWorkerProviderIds(activationSourceConfig),
     ...normalizeWorkerProviderIds(params.workerProviderIds ?? []),
@@ -188,6 +192,7 @@ export function resolveGatewayStartupPluginPlanFromRegistry(params: {
         configuredGenerationProviderIds,
         configuredVoiceProviderIds,
         configuredMemoryEmbeddingProviderIds,
+        configuredDecisionProviderIds,
         platform: params.platform,
       })
     ) {

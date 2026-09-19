@@ -114,25 +114,34 @@ cap. The provider must return one embedding per input chunk in the same order as
 `batch.chunks`; omit the flag when the provider expects file-local batches or
 cannot preserve input ordering across a larger source-wide job.
 
-## Typed judgments (contract version 1)
+## Decision models (contract version 1)
 
-`api.registerJudgmentProvider({ id, contractVersion: 1, isReady, evaluate })` registers
+`api.registerDecisionProvider({ id, contractVersion: 1, isReady, evaluate })` registers
 an optional decision provider, separate from conversational model providers and
-agent tools. Declare the ID in manifest `contracts.judgmentProviders`; duplicate
+agent tools. Declare the ID in manifest `contracts.decisionProviders`; duplicate
 IDs are rejected. Registration and optional `isReady()` must be local, synchronous,
-and network-free. Import types from `openclaw/plugin-sdk/judgments`.
+and network-free. Import types from `openclaw/plugin-sdk/decisions`.
 
-Consumers call `api.runtime.judgments.evaluate(batch, { purpose, rubricVersion,
+Consumers call `api.runtime.decisions.evaluate(batch, { agentId?, purpose, rubricVersion,
 timeoutMs, signal })`. State and rubric entries are finite JSON. Choices preserve
-all offered labels and probabilities; ordered scores are fractional expected
+all offered labels and probabilities; the chosen label is the provider's decision
+and need not equal the largest rounded probability. Consumers choose whether to
+use that label or an explicit distribution policy. Ordered scores are fractional estimated
 zero-based positions, with index-aligned probabilities; Boolean answers carry
-`probabilityTrue`. The host validates the entire batch atomically (numerical
-tolerance 0.001). Provider confidence is a provider-specific metric, not calibrated
+`probabilityTrue`. The host validates the entire batch atomically: exact answer
+keys, finite probabilities in [0, 1], positive distribution mass, and scores within
+the submitted rubric. Reported probabilities may be rounded and need not sum
+exactly to one; scores need not equal the expectation of that rounded distribution.
+The host preserves those values. Consumers that require normalized weights must
+apply their own explicit policy. Provider confidence is a provider-specific metric, not calibrated
 correctness. Results include model, optional token usage, and local rubric and
 runtime-generation provenance.
 
-Absent `judgments.provider` means off. Selecting a provider makes it available to
-supported consumers. Consumers own their feature activation and evidence selection;
+Set `agents.defaults.decisionModel` to an explicit `provider/model` reference.
+Unset or empty means off. `agents.entries.<id>.decisionModel` overrides the global
+default; an empty agent value disables decisions for that agent. There is no
+automatic conversational-model fallback. Selection makes the provider available
+to supported consumers. Consumers own their feature activation and evidence selection;
 provider configuration alone does not schedule background work. Evidence sent to the
 selected provider may incur its normal usage charges. Plugin disablement wins;
 installing a tool or credential alone does not select a provider. Vendor adapters
@@ -140,15 +149,16 @@ own transport and model-specific translation; no vendor is a core dependency.
 
 ### Calling from a third-party plugin
 
-Like `api.runtime.llm.complete`, `api.runtime.judgments.evaluate` lets a plugin
+Like `api.runtime.llm.complete`, `api.runtime.decisions.evaluate` lets a plugin
 consume a host-configured provider without handling its credentials. The consumer
 does not need the provider's SDK, API key, SecretRef, or a provider registration.
-Only the provider plugin registers `contracts.judgmentProviders` and owns its
+Only the provider plugin registers `contracts.decisionProviders` and owns its
 vendor transport and prepared credential input. This does not make conversational
-model credentials interchangeable with judgment-provider credentials.
+model credentials interchangeable with decision-provider credentials.
 
 The operator must enable and configure the provider plugin and select
-`judgments.provider`. Third-party plugins own their feature's activation, evidence
+`agents.defaults.decisionModel` (or an agent override). Third-party plugins own their
+feature's activation, evidence
 selection, and permission to send that evidence. Having credentials alone must not activate
 background collection or spending.
 
@@ -156,7 +166,7 @@ Call from a live plugin tool, hook, or other owned operation, carrying its
 cancellation signal:
 
 ```ts
-const outcome = await api.runtime.judgments.evaluate(
+const outcome = await api.runtime.decisions.evaluate(
   {
     state: { message: "Can you help me with this?", directlyAddressed: true },
     questions: {
@@ -167,6 +177,7 @@ const outcome = await api.runtime.judgments.evaluate(
     },
   },
   {
+    agentId, // The agent that owns this operation; omit only for global-default selection.
     purpose: "example-plugin.response-eligibility",
     rubricVersion: "1",
     timeoutMs: 1500,
@@ -180,6 +191,10 @@ provenance. It is evidence for the consumer's decision, not permission to send a
 message or perform another effect. An `unavailable` outcome carries a reason for
 the consumer's existing fallback. Do not catch cancellation or closed-authority
 errors and turn them into fallback work.
+
+The provider receives the selected `model` and optional `agentId` in its evaluation
+context. Concurrent agent/model selections share provider health without retiring
+each other. A changed selection fences the affected request before returning it.
 
 Consumers share the selected provider's host-owned concurrency, circuit, and
 credential-refresh lifecycle; each plugin does not create its own provider client.
@@ -206,7 +221,12 @@ it never resolves a cold reference or consults ambient environment credentials.
 Refresh with `secrets.reload`; capability failure does not retain an old key.
 
 `plugins.inspect` reports configuration, credential readiness, current callability,
-last success, usage, latency, and bounded unavailable/consumer outcome counts.
-After deciding, consumers call `api.runtime.judgments.recordOutcome("accepted" |
-"fallback" | "no-change")`; no evidence is retained in these counters. Counts are
+last success, usage, latency, and bounded unavailable counts. Counts are
 instance-local diagnostics, not durable audit records or write authority.
+
+For discovery, declare static `decisionModels` entries in the provider manifest
+with `provider`, `id`, and `name`. Each provider must be owned by
+`contracts.decisionProviders`. The Control UI Decision picker reads this metadata
+through a separate `models.list.decisionModels` projection; no provider runtime
+or credential probe runs to populate the picker. These entries never enter the
+chat, primary, fallback, or utility model catalogs.

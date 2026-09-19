@@ -465,8 +465,7 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
   } satisfies PluginRuntime["channel"]["inbound"];
   const base: PluginRuntime = {
     version: "1.0.0-test",
-    judgments: {
-      recordOutcome: vi.fn(async () => {}),
+    decisions: {
       evaluate: vi.fn(async () => ({
         status: "unavailable" as const,
         reason: "disabled" as const,

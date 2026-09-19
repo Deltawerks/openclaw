@@ -124,7 +124,7 @@ export function collectRegistryInvocationInstances(
       instances.add(instance);
     }
   }
-  for (const { host } of registry.judgmentProviders) {
+  for (const { host } of registry.decisionProviders) {
     const instance = getPluginInstance(host.record);
     if (instance) {
       instances.add(instance);

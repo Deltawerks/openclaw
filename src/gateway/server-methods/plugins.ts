@@ -143,12 +143,12 @@ export const pluginsHandlers: GatewayRequestHandlers = {
         config: context.getRuntimeConfig(),
         pluginId: params.pluginId,
       });
-      const { inspectJudgmentProviders } = await import("../../judgments/runtime.js");
+      const { inspectDecisionProviders } = await import("../../decisions/runtime.js");
       respond(
         true,
         {
           ...inspected,
-          judgments: inspectJudgmentProviders(context.getRuntimeConfig()).filter(
+          decisions: inspectDecisionProviders(context.getRuntimeConfig()).filter(
             (entry) => entry.pluginId === params.pluginId,
           ),
         },

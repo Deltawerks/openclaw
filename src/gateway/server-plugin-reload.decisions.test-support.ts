@@ -1,49 +1,55 @@
 import { expect } from "vitest";
-import { evaluateJudgmentInRegistry } from "../judgments/runtime.js";
+import { evaluateDecisionInRegistry } from "../decisions/runtime.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { createPluginReloadRecoveryFixture } from "./server-plugin-reload.recovery.test-support.js";
 
-export async function verifyJudgmentSelectorRetirement(
+export async function verifyDecisionSelectionIsolation(
   createRecoveryFixture: (
     options: Parameters<typeof createPluginReloadRecoveryFixture>[1],
   ) => ReturnType<typeof createPluginReloadRecoveryFixture>,
 ) {
   const entered = createDeferredCore();
+  const release = createDeferredCore();
   let callbackSignal: AbortSignal | undefined;
-  let settled = false;
   const fixture = await createRecoveryFixture({
-    config: { judgments: { provider: "selector-probe" } },
+    config: {
+      agents: {
+        defaults: { decisionModel: "selector-probe/default" },
+        entries: { watcher: { decisionModel: "selector-probe/watcher" } },
+      },
+    },
     abortOnCandidateStart: false,
     register(api, owner, record) {
       if (owner !== "first") {
         return;
       }
-      record.contracts = { judgmentProviders: ["selector-probe"] };
-      api.registerJudgmentProvider({
+      record.contracts = { decisionProviders: ["selector-probe"] };
+      api.registerDecisionProvider({
         id: "selector-probe",
         contractVersion: 1,
-        async evaluate(_batch, { signal }) {
+        async evaluate(_batch, { signal, model }) {
           callbackSignal = signal;
           entered.resolve();
-          try {
-            await new Promise<void>((resolve) => {
-              signal.addEventListener("abort", () => resolve(), { once: true });
-            });
-            signal.throwIfAborted();
-            throw new Error("unreachable");
-          } finally {
-            settled = true;
-          }
+          await release.promise;
+          signal.throwIfAborted();
+          return {
+            status: "ok",
+            result: {
+              model,
+              answers: { check: { type: "boolean", probabilityTrue: 1 } },
+            },
+          };
         },
       });
     },
   });
   const previous = fixture.previousRegistry.plugins.find((record) => record.id === "first")!;
-  const pending = evaluateJudgmentInRegistry(
+  const pending = evaluateDecisionInRegistry(
     { state: {}, questions: { check: { type: "boolean", instructions: "Synthetic probe" } } },
     {
       purpose: "test.selector",
+      agentId: "watcher",
       rubricVersion: "fixture-v1",
       timeoutMs: 5000,
       signal: new AbortController().signal,
@@ -55,29 +61,31 @@ export async function verifyJudgmentSelectorRetirement(
   fixture.runtime.runtimeState.gatewayLifetimeSidecars.publish({
     stop: async () => {},
     preparePluginReload: () => {
-      // This callback runs before the existing sidecar/memory drain stage.
-      expect(callbackSignal?.aborted).toBe(true);
+      expect(callbackSignal?.aborted).toBe(false);
       return {
-        drain: async () => {
-          await pending;
-          expect(settled).toBe(true);
-        },
+        drain: async () => {},
         resume() {},
       };
     },
   });
-  const next = { ...fixture.getConfig(), judgments: undefined };
-  await fixture.reload(next, [], ["judgments.provider"]);
-  expect(await pending).toMatchObject({ status: "unavailable", reason: "retiring" });
-  expect(settled).toBe(true);
-  expect(() => getPluginInstance(previous)?.run(() => "stale")).toThrow("reloaded or disabled");
-  expect(fixture.registryOwner.registry.plugins.find((record) => record.id === "first")).not.toBe(
-    previous,
-  );
+  const next = structuredClone(fixture.getConfig());
+  next.agents!.defaults!.decisionModel = "";
+  try {
+    await fixture.reload(next, [], ["agents.defaults.decisionModel"]);
+    expect(callbackSignal?.aborted).toBe(false);
+    expect(fixture.registryOwner.registry.plugins.find((record) => record.id === "first")).toBe(
+      previous,
+    );
+  } finally {
+    release.resolve();
+  }
+  expect(await pending).toMatchObject({ status: "ok", result: { model: "watcher" } });
+  expect(getPluginInstance(previous)?.run(() => "current")).toBe("current");
+  expect(fixture.firstStop).not.toHaveBeenCalled();
   expect(fixture.siblingStop).not.toHaveBeenCalled();
 }
 
-export async function verifyJudgmentEarlyReloadRecovery(
+export async function verifyDecisionEarlyReloadRecovery(
   createRecoveryFixture: (
     options: Parameters<typeof createPluginReloadRecoveryFixture>[1],
   ) => ReturnType<typeof createPluginReloadRecoveryFixture>,
@@ -88,14 +96,14 @@ export async function verifyJudgmentEarlyReloadRecovery(
   let settled = false;
   const failure = new Error(`synthetic ${boundary} failure`);
   const fixture = await createRecoveryFixture({
-    config: { judgments: { provider: "recovery-probe" } },
+    config: { agents: { defaults: { decisionModel: "recovery-probe/synthetic" } } },
     abortOnCandidateStart: false,
     register(api, owner, record) {
       if (owner !== "first") {
         return;
       }
-      record.contracts = { judgmentProviders: ["recovery-probe"] };
-      api.registerJudgmentProvider({
+      record.contracts = { decisionProviders: ["recovery-probe"] };
+      api.registerDecisionProvider({
         id: "recovery-probe",
         contractVersion: 1,
         async evaluate(batch, { signal }) {
@@ -123,7 +131,7 @@ export async function verifyJudgmentEarlyReloadRecovery(
     },
   });
   const run = (state: string) =>
-    evaluateJudgmentInRegistry(
+    evaluateDecisionInRegistry(
       { state, questions: { check: { type: "boolean" } } },
       {
         purpose: "test.recovery",
@@ -178,7 +186,7 @@ export async function verifyJudgmentEarlyReloadRecovery(
     expect(recovered.provenance.runtimeGeneration).not.toBe(initial.provenance.runtimeGeneration);
   }
   expect(
-    fixture.registryOwner.registry.judgmentProviders[0]!.host.inspect(fixture.getConfig()),
+    fixture.registryOwner.registry.decisionProviders[0]!.host.inspect(fixture.getConfig()),
   ).toMatchObject({ callable: true, activeRequests: 0 });
   expect(fixture.firstStop).not.toHaveBeenCalled();
   expect(fixture.siblingStop).not.toHaveBeenCalled();

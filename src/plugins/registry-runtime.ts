@@ -169,7 +169,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       return cached;
     }
     const currentRegistry = () => getPluginRecordRegistry(registry, record);
-    const currentJudgmentRegistry = () => {
+    const currentDecisionRegistry = () => {
       const owner = currentRegistry();
       const invocationView = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
       // An admitted prepared view may borrow a Gateway provider. Keep that exact
@@ -347,22 +347,16 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         if (prop === "channel") {
           return resolveRecordChannelRuntime(record, true);
         }
-        if (prop === "judgments") {
+        if (prop === "decisions") {
           return {
-            recordOutcome: async (outcome) => {
-              assertRuntimeCurrent();
-              const { recordJudgmentOutcome } = await import("../judgments/runtime.js");
-              assertRuntimeCurrent();
-              await recordJudgmentOutcome(outcome, currentJudgmentRegistry());
-            },
             evaluate: async (batch, options) => {
               assertRuntimeCurrent();
-              const { evaluateJudgmentInRegistry } = await import("../judgments/runtime.js");
+              const { evaluateDecisionInRegistry } = await import("../decisions/runtime.js");
               assertRuntimeCurrent();
-              const result = await evaluateJudgmentInRegistry(
+              const result = await evaluateDecisionInRegistry(
                 batch,
                 options,
-                currentJudgmentRegistry(),
+                currentDecisionRegistry(),
                 getRuntimeConfig(),
                 record.id,
               );
@@ -370,7 +364,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               options.signal.throwIfAborted();
               return result;
             },
-          } satisfies PluginRuntime["judgments"];
+          } satisfies PluginRuntime["decisions"];
         }
         if (prop === "llm") {
           const llm = getRuntimeProperty();

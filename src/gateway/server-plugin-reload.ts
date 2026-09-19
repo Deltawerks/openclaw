@@ -3,9 +3,9 @@ import { isCoreCanvasHostEnabled } from "../canvas/config.js";
 import { withCoreCanvasNodeCapability } from "../canvas/constants.js";
 import { validateConfiguredBindings } from "../channels/plugins/configured-binding-registry.js";
 import { getRuntimeConfig } from "../config/io.js";
+import { prepareDecisionProviderReload } from "../decisions/runtime.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { prepareJudgmentProviderReload } from "../judgments/runtime.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { prepareGatewayPluginMetadataSnapshotPublication } from "../plugins/current-plugin-metadata-snapshot.js";
 import type { PluginHookGatewayCronService } from "../plugins/hook-gateway.types.js";
@@ -116,7 +116,7 @@ export async function reloadGatewayPlugins(
   let restored = false;
   let candidateServices: PluginServicesHandle | undefined;
   let loaded: ReturnType<typeof prepareGatewayPluginLoad> | undefined;
-  let judgmentReplacement: ReturnType<typeof prepareJudgmentProviderReload> | undefined;
+  let decisionReplacement: ReturnType<typeof prepareDecisionProviderReload> | undefined;
   let memoryReplacement: ReturnType<typeof prepareMemoryRuntimeReload> | undefined;
   const changedPluginIds = new Set(replacePluginIds);
   let resourceHandoffIds = new Set<string>();
@@ -247,7 +247,7 @@ export async function reloadGatewayPlugins(
     phase = "drain";
     replacement.setReloadStatus({ phase: "reloading", pluginIds: [...changedPluginIds] });
     channels.pause();
-    judgmentReplacement = prepareJudgmentProviderReload(previousRegistry, changedPluginIds);
+    decisionReplacement = prepareDecisionProviderReload(previousRegistry, changedPluginIds);
     for (const sidecar of runtimeState.gatewayLifetimeSidecars.snapshot()) {
       const prepared = sidecar.preparePluginReload?.({
         previousRegistry,
@@ -628,7 +628,7 @@ export async function reloadGatewayPlugins(
           }
           if (recoveryErrors.length === 0) {
             if (!previousStopStarted) {
-              await judgmentReplacement?.rollback(restartDrainSignal);
+              await decisionReplacement?.rollback(restartDrainSignal);
             }
             channels.release("rollback");
             await startReplacedChannels(restoredRegistry, recoveryErrors);

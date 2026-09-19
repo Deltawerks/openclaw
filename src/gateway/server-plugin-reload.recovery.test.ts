@@ -44,9 +44,9 @@ import {
   verifySharedGatewayCacheOwnership,
 } from "./server-plugin-reload.cache.test-support.js";
 import {
-  verifyJudgmentSelectorRetirement,
-  verifyJudgmentEarlyReloadRecovery,
-} from "./server-plugin-reload.judgments.test-support.js";
+  verifyDecisionSelectionIsolation,
+  verifyDecisionEarlyReloadRecovery,
+} from "./server-plugin-reload.decisions.test-support.js";
 import {
   verifyManagedCandidateRetirement,
   verifyExpandedReplacementTargets,
@@ -314,8 +314,8 @@ it.each(["prepare", "committed"] as const)(
   (boundary) => verifyMalformedReloadFailureReceipt(createRecoveryFixture, boundary),
 );
 
-it("retires a retained judgment provider before sidecar drains when its selector is disabled", () =>
-  verifyJudgmentSelectorRetirement(createRecoveryFixture));
+it("keeps another agent's decision request live across a default selection change", () =>
+  verifyDecisionSelectionIsolation(createRecoveryFixture));
 
 it.each(["held-close", "failed-close"] as const)(
   "drains retained memory before Gateway provider replacement (%s)",
@@ -1022,6 +1022,6 @@ it.for(["replace", "remove", "disable"] as const)(
 );
 
 it.each(["prepare", "drain", "discovery"] as const)(
-  "recovers judgment admission after early %s failure",
-  (boundary) => verifyJudgmentEarlyReloadRecovery(createRecoveryFixture, boundary),
+  "recovers decision admission after early %s failure",
+  (boundary) => verifyDecisionEarlyReloadRecovery(createRecoveryFixture, boundary),
 );

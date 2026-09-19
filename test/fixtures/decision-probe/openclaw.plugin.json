@@ -1,8 +1,8 @@
 {
-  "id": "judgment-probe",
-  "name": "Synthetic judgment proof",
+  "id": "decision-probe",
+  "name": "Synthetic decision proof",
   "activation": {"onStartup": true},
-  "contracts": {"judgmentProviders": ["synthetic"]},
+  "contracts": {"decisionProviders": ["synthetic"]},
   "configContracts": {"secretInputs": {"paths": [{"path": "apiKey", "expected": "string", "ownerKind": "capability"}]}},
   "configSchema": {"type":"object","properties":{"apiKey":{},"generation":{"type":"integer"}},"additionalProperties":false}
 }

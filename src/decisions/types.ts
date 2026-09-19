@@ -1,4 +1,4 @@
-/** Experimental typed judgment contract, version 1. */
+/** Typed decision contract, version 1. */
 export type JsonValue =
   | null
   | boolean
@@ -7,50 +7,52 @@ export type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 
-export type JudgmentEntry =
+export type DecisionEntry =
   | string
   | null
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 
-export type JudgmentQuestion =
+export type DecisionQuestion =
   | {
       readonly type: "choice";
-      readonly instructions?: JudgmentEntry;
-      readonly criteria: Readonly<Record<string, JudgmentEntry>>;
+      readonly instructions?: DecisionEntry;
+      readonly criteria: Readonly<Record<string, DecisionEntry>>;
     }
   | {
       readonly type: "score";
-      readonly instructions?: JudgmentEntry;
-      readonly criteria: readonly JudgmentEntry[];
+      readonly instructions?: DecisionEntry;
+      readonly criteria: readonly DecisionEntry[];
     }
   | {
       readonly type: "boolean";
-      readonly instructions?: JudgmentEntry;
+      readonly instructions?: DecisionEntry;
       readonly criteria?: {
-        readonly true?: JudgmentEntry;
-        readonly false?: JudgmentEntry;
+        readonly true?: DecisionEntry;
+        readonly false?: DecisionEntry;
       } | null;
     };
 
-export type JudgmentBatch = {
-  readonly state: JudgmentEntry;
-  readonly questions: Readonly<Record<string, JudgmentQuestion>>;
+export type DecisionBatch = {
+  readonly state: DecisionEntry;
+  readonly questions: Readonly<Record<string, DecisionQuestion>>;
 };
 
-export type JudgmentAnswer =
+export type DecisionAnswer =
   | {
       readonly type: "choice";
+      /** Provider-reported label; not required to be the rounded distribution's argmax. */
       readonly choice: string;
+      /** Provider-reported estimates in [0, 1]; rounding may make their sum differ from one. */
       readonly probabilities: Readonly<Record<string, number>>;
       /** Provider-specific distribution metric, not correctness probability. */
       readonly confidence?: number;
     }
   | {
       readonly type: "score";
-      /** Fractional expected zero-based position in the submitted rubric. */
+      /** Provider's fractional zero-based rubric estimate, bounded by its first and last positions. */
       readonly score: number;
-      /** Index-aligned probabilities; same length/order as input criteria. */
+      /** Index-aligned estimates in [0, 1]; may be rounded independently of the score. */
       readonly probabilities: readonly number[];
       readonly confidence?: number;
     }
@@ -59,10 +61,10 @@ export type JudgmentAnswer =
       readonly probabilityTrue: number;
     };
 
-export type JudgmentBatchResult = {
+export type DecisionBatchResult = {
   /** Resolved vendor model identity, not a host conversational-model record. */
   readonly model: string;
-  readonly answers: Readonly<Record<string, JudgmentAnswer>>;
+  readonly answers: Readonly<Record<string, DecisionAnswer>>;
   readonly usage?: {
     readonly inputTokens?: number;
     readonly outputTokens?: number;
@@ -86,8 +88,8 @@ export type UnavailableReason =
   | "circuit-open"
   | "deadline";
 
-export type ProviderJudgmentOutcome =
-  | { readonly status: "ok"; readonly result: JudgmentBatchResult }
+export type ProviderDecisionOutcome =
+  | { readonly status: "ok"; readonly result: DecisionBatchResult }
   | {
       readonly status: "unavailable";
       readonly reason: ProviderFailureReason;
@@ -95,10 +97,10 @@ export type ProviderJudgmentOutcome =
       readonly retryAfterMs?: number;
     };
 
-export type JudgmentOutcome =
+export type DecisionOutcome =
   | {
       readonly status: "ok";
-      readonly result: JudgmentBatchResult;
+      readonly result: DecisionBatchResult;
       readonly provenance: {
         readonly providerId: string;
         readonly rubricVersion: string;
@@ -108,38 +110,41 @@ export type JudgmentOutcome =
     }
   | { readonly status: "unavailable"; readonly reason: UnavailableReason };
 
-export interface JudgmentProviderV1 {
+export interface DecisionProviderV1 {
   readonly id: string;
   readonly contractVersion: 1;
   /** Prepared local credential availability only; must not perform I/O. */
   isReady?(): boolean;
   evaluate(
-    batch: JudgmentBatch,
+    batch: DecisionBatch,
     context: {
+      /** Explicit model selected by the host's decisionModel role. */
+      readonly model: string;
+      readonly agentId?: string;
       /** Composed by host from caller, per-call deadline, and retirement. */
       readonly signal: AbortSignal;
       /** Deadline on the same process-local performance.now() time base. */
       readonly deadlineMonotonicMs: number;
     },
-  ): Promise<ProviderJudgmentOutcome>;
+  ): Promise<ProviderDecisionOutcome>;
 }
 
 /**
  * Supplied by the host, bound to its consumer's live authority/lifecycle.
  * Not a constructible global service or an unbound registry lookup.
  */
-export interface JudgmentRuntimeV1 {
-  /** Bounded, evidence-free consumer diagnostics; never authorizes an effect. */
-  recordOutcome(outcome: "accepted" | "fallback" | "no-change"): Promise<void>;
+export interface DecisionRuntimeV1 {
   evaluate(
-    batch: JudgmentBatch,
+    batch: DecisionBatch,
     options: {
+      /** Omit for the default role; agent-owned work supplies its owner agent. */
+      readonly agentId?: string;
       readonly purpose: string;
       readonly rubricVersion: string;
       readonly timeoutMs: number;
       readonly signal: AbortSignal;
     },
-  ): Promise<JudgmentOutcome>;
+  ): Promise<DecisionOutcome>;
 }
 
 // Caller cancellation, closed host authority, and programmer/contract errors

@@ -1,14 +1,13 @@
-import type { JudgmentBatch, JudgmentBatchResult } from "./types.js";
+import type { DecisionBatch, DecisionBatchResult } from "./types.js";
 
-const TOLERANCE = 0.001;
 const MAX_BYTES = 1_048_576;
 const MAX_NODES = 20_000;
 
 /** A caller contract defect is not a provider outage. Never include evidence in errors. */
-export class JudgmentContractError extends Error {
+export class DecisionContractError extends Error {
   constructor() {
-    super("Invalid judgment contract; check the version 1 input and evaluation options.");
-    this.name = "JudgmentContractError";
+    super("Invalid decision contract; check the version 1 input and evaluation options.");
+    this.name = "DecisionContractError";
   }
 }
 
@@ -70,11 +69,12 @@ function finiteJsonUnchecked(value: unknown): "valid" | "oversized" | "invalid" 
     }
     ancestors.add(entry);
     for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(entry))) {
-      if (!Object.hasOwn(descriptor, "value")) {
-        return false;
-      }
       if (Array.isArray(entry) && key === "length") {
         continue;
+      }
+      // Hidden data would disappear from the admitted structured clone.
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
+        return false;
       }
       const item: unknown = descriptor.value;
       bytes += Buffer.byteLength(key);
@@ -106,46 +106,46 @@ function finiteJson(value: unknown): "valid" | "oversized" | "invalid" {
   }
 }
 
-function judgmentEntry(value: unknown): boolean {
+function decisionEntry(value: unknown): boolean {
   return value === null || typeof value === "string" || Array.isArray(value) || record(value);
 }
 
 /** Returns false only for locally unsupported resource size, never silently truncates. */
-export function validateJudgmentBatch(batch: JudgmentBatch): boolean {
+export function validateDecisionBatch(batch: DecisionBatch): boolean {
   const shape = finiteJson(batch);
   if (shape === "invalid") {
-    throw new JudgmentContractError();
+    throw new DecisionContractError();
   }
   if (shape === "oversized") {
     return false;
   }
-  if (!record(batch) || !judgmentEntry(batch.state) || !record(batch.questions)) {
-    throw new JudgmentContractError();
+  if (!record(batch) || !decisionEntry(batch.state) || !record(batch.questions)) {
+    throw new DecisionContractError();
   }
   const questions = Object.entries(batch.questions);
   if (!questions.length) {
-    throw new JudgmentContractError();
+    throw new DecisionContractError();
   }
   if (questions.length > 256) {
     return false;
   }
   for (const [id, q] of questions) {
-    if (!id || !record(q) || (q.instructions !== undefined && !judgmentEntry(q.instructions))) {
-      throw new JudgmentContractError();
+    if (!id || !record(q) || (q.instructions !== undefined && !decisionEntry(q.instructions))) {
+      throw new DecisionContractError();
     }
     if (q.type === "choice") {
       if (
         !record(q.criteria) ||
         Object.keys(q.criteria).length < 2 ||
         !Object.entries(q.criteria).every(
-          ([label, description]) => label.length > 0 && judgmentEntry(description),
+          ([label, description]) => label.length > 0 && decisionEntry(description),
         )
       ) {
-        throw new JudgmentContractError();
+        throw new DecisionContractError();
       }
     } else if (q.type === "score") {
-      if (!Array.isArray(q.criteria) || q.criteria.length < 2 || !q.criteria.every(judgmentEntry)) {
-        throw new JudgmentContractError();
+      if (!Array.isArray(q.criteria) || q.criteria.length < 2 || !q.criteria.every(decisionEntry)) {
+        throw new DecisionContractError();
       }
     } else if (q.type === "boolean") {
       if (
@@ -153,13 +153,13 @@ export function validateJudgmentBatch(batch: JudgmentBatch): boolean {
         q.criteria !== null &&
         (!record(q.criteria) ||
           !Object.entries(q.criteria).every(
-            ([key, value]) => (key === "true" || key === "false") && judgmentEntry(value),
+            ([key, value]) => (key === "true" || key === "false") && decisionEntry(value),
           ))
       ) {
-        throw new JudgmentContractError();
+        throw new DecisionContractError();
       }
     } else {
-      throw new JudgmentContractError();
+      throw new DecisionContractError();
     }
   }
   return true;
@@ -169,9 +169,7 @@ function probability(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 function distribution(values: unknown[]): values is number[] {
-  return (
-    values.every(probability) && Math.abs(values.reduce((sum, p) => sum + p, 0) - 1) <= TOLERANCE
-  );
+  return values.every(probability) && values.some((value) => value > 0);
 }
 function exactKeys(left: object, right: object): boolean {
   const keys = Object.keys(left);
@@ -181,10 +179,10 @@ function exactKeys(left: object, right: object): boolean {
 }
 
 /** Validate all answers before returning any; provider data never grants partial acceptance. */
-export function validateJudgmentResult(
-  batch: JudgmentBatch,
+export function validateDecisionResult(
+  batch: DecisionBatch,
   value: unknown,
-): value is JudgmentBatchResult {
+): value is DecisionBatchResult {
   if (
     finiteJson(value) !== "valid" ||
     !record(value) ||
@@ -237,10 +235,6 @@ export function validateJudgmentResult(
       if (!distribution(values)) {
         return false;
       }
-      const chosen = answer.probabilities[answer.choice];
-      if (typeof chosen !== "number" || chosen + TOLERANCE < Math.max(...values)) {
-        return false;
-      }
     } else {
       if (
         !Array.isArray(answer.probabilities) ||
@@ -251,13 +245,6 @@ export function validateJudgmentResult(
         answer.score < 0 ||
         answer.score > question.criteria.length - 1
       ) {
-        return false;
-      }
-      const expected = answer.probabilities.reduce(
-        (sum: number, p: number, i: number) => sum + p * i,
-        0,
-      );
-      if (Math.abs(expected - answer.score) > TOLERANCE) {
         return false;
       }
     }

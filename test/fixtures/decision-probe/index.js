@@ -2,12 +2,12 @@
 import { createHash } from "node:crypto";
 import { getPreparedPluginSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
 export default {
-  id: "judgment-probe",
+  id: "decision-probe",
   register(api) {
     let started = 0;
     let settled = 0;
-    const credential = () => getPreparedPluginSecretInput("judgment-probe", "apiKey");
-    api.registerJudgmentProvider({
+    const credential = () => getPreparedPluginSecretInput("decision-probe", "apiKey");
+    api.registerDecisionProvider({
       id: "synthetic",
       contractVersion: 1,
       isReady: () => Boolean(credential().value),
@@ -45,14 +45,14 @@ export default {
       },
     });
     api.registerGatewayMethod(
-      "judgment.probe",
+      "decision.probe",
       async ({ params, respond }) => {
         if (params.stats) {
           respond(true, { started, settled, revision: credential().revision });
           return;
         }
         try {
-          const result = await api.runtime.judgments.evaluate(
+          const result = await api.runtime.decisions.evaluate(
             {
               state: { mode: params.mode ?? "ok" },
               questions: { check: { type: "boolean", instructions: "Synthetic contract probe" } },

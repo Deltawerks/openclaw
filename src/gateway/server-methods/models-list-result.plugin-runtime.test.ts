@@ -44,6 +44,69 @@ function preparedMetadataSnapshot() {
 }
 
 describe("models.list plugin metadata handoff", () => {
+  it.each([
+    { name: "available", plugins: {}, expected: true },
+    { name: "globally disabled", plugins: { enabled: false }, expected: false },
+    {
+      name: "plugin disabled",
+      plugins: { entries: { decisions: { enabled: false } } },
+      expected: false,
+    },
+    { name: "denied", plugins: { deny: ["decisions"] }, expected: false },
+  ])(
+    "projects decision models without a chat catalog or provider runtime: $name",
+    async ({ plugins, expected }) => {
+      const cfg: OpenClawConfig = { agents: { entries: { main: {} } }, plugins };
+      const snapshot: ModelCatalogSnapshot = { entries: [], routeVariants: [] };
+      const metadataSnapshot = createPluginMetadataSnapshotFixture({
+        plugins: [
+          {
+            id: "decisions",
+            contracts: { decisionProviders: ["fixture"] },
+            decisionModels: [{ provider: "fixture", id: "fast", name: "Fast decisions" }],
+          },
+        ],
+      });
+      const projector = createGatewayAgentModelCatalogProjector({
+        cfg,
+        agentId: "main",
+        snapshot,
+        metadataSnapshot,
+        preparedAuthStore: { version: 1, profiles: {} },
+      });
+      const loadGatewayModelCatalogSnapshot = vi.fn(() => {
+        throw new Error("Unexpected runtime discovery");
+      });
+      const context = {
+        getRuntimeConfig: () => cfg,
+        loadGatewayModelCatalogSnapshot,
+        logGateway: { debug: vi.fn() },
+      } as unknown as GatewayRequestContext;
+      const result = await buildModelsListResult({
+        source: { kind: "gateway", context },
+        agentId: "main",
+        params: { view: "configured" },
+        preloadedCatalog: { agentId: "main", config: cfg, snapshot },
+        preloadedOnly: true,
+        catalogProjector: projector,
+      });
+      expect(result.models).toEqual([]);
+      expect(result.decisionModels ?? []).toEqual(
+        expected
+          ? [
+              {
+                provider: "fixture",
+                id: "fast",
+                name: "Fast decisions",
+                pluginId: "decisions",
+              },
+            ]
+          : [],
+      );
+      expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
+    },
+  );
+
   it("reuses one Gateway-owned metadata snapshot across startup projection and browse", async () => {
     await withOpenClawTestState(
       {

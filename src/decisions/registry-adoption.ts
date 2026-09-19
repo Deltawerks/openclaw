@@ -6,7 +6,7 @@ import type { PluginRegistry } from "../plugins/registry-types.js";
 import { getPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js";
 
 /** Prepared Gateway views borrow the exact provider owner, not another circuit or admission pool. */
-export function adoptRuntimeJudgmentProviders(
+export function adoptRuntimeDecisionProviders(
   target: PluginRegistry,
   runtime: PluginRegistry,
   config: OpenClawConfig,
@@ -17,8 +17,8 @@ export function adoptRuntimeJudgmentProviders(
   }
   let changed = false;
   const sourceConfig = projectConfigOntoRuntimeSourceSnapshot(config);
-  const judgmentProviders = target.judgmentProviders.map((entry) => {
-    const owner = runtime.judgmentProviders.find(
+  const decisionProviders = target.decisionProviders.map((entry) => {
+    const owner = runtime.decisionProviders.find(
       (candidate) =>
         candidate.pluginId === entry.pluginId &&
         candidate.host.provider.id === entry.host.provider.id,
@@ -41,5 +41,5 @@ export function adoptRuntimeJudgmentProviders(
     changed = true;
     return owner;
   });
-  return changed ? { ...target, judgmentProviders } : target;
+  return changed ? { ...target, decisionProviders } : target;
 }

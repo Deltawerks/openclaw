@@ -100,10 +100,8 @@ export function resolvePluginReloadReplacementIds(
   const replacePluginIds = new Set(requestedIds);
   for (const record of previousRegistry.plugins) {
     if (
-      // End the capability generation even if onStartup would retain its plugin.
       changedPaths.some(
         (key) =>
-          (record.contracts?.judgmentProviders?.length && /^judgments(?:\.|$)/.test(key)) ||
           key === `plugins.entries.${record.id}` ||
           key.startsWith(`plugins.entries.${record.id}.`) ||
           key === `plugins.installs.${record.id}` ||

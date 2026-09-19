@@ -1,20 +1,26 @@
 import { randomUUID } from "node:crypto";
-import { getRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
+import { isDeepStrictEqual } from "node:util";
+import {
+  getConfiguredDecisionProviderIds,
+  resolveDecisionModelSetting,
+} from "../agents/decision-model-setting.js";
+import { createRuntimeConfigReader } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PluginEntryConfig } from "../config/types.plugins.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import type { PluginRecord, PluginRegistry } from "../plugins/registry-types.js";
 import { getActiveSecretsRuntimeSnapshotRevisionState } from "../secrets/runtime-state.js";
 import type {
-  JudgmentBatch,
-  JudgmentOutcome,
-  JudgmentProviderV1,
-  JudgmentRuntimeV1,
+  DecisionBatch,
+  DecisionOutcome,
+  DecisionProviderV1,
+  DecisionRuntimeV1,
   ProviderFailureReason,
   UnavailableReason,
 } from "./types.js";
-import { JudgmentContractError, validateJudgmentResult } from "./validation.js";
+import { DecisionContractError, validateDecisionResult } from "./validation.js";
 
-type Options = Parameters<JudgmentRuntimeV1["evaluate"]>[1];
+type Options = Parameters<DecisionRuntimeV1["evaluate"]>[1];
 const FAILURE_REASONS = new Set<ProviderFailureReason>([
   "credentials-unavailable",
   "authentication",
@@ -27,17 +33,16 @@ const MAX_CONCURRENT = 4;
 const COOLDOWN_MS = 10_000;
 const MAX_RETRY_AFTER_MS = 60_000;
 
-class JudgmentConsumerClosedError extends Error {
+class DecisionConsumerClosedError extends Error {
   constructor() {
-    super("Judgment consumer authority closed.");
+    super("Decision consumer authority closed.");
   }
 }
 
 type Health = {
   id: string;
   secretRevision: number;
-  config: OpenClawConfig["plugins"];
-  selection: OpenClawConfig["judgments"];
+  config: PluginEntryConfig | undefined;
   failures: number;
   openUntil: number;
   authFailed: boolean;
@@ -46,7 +51,7 @@ type Health = {
 };
 
 /** Instance-owned admission and health. No callback escapes its native owner. */
-export class JudgmentProviderHost {
+export class DecisionProviderHost {
   private retired = false;
   private reloadPause?: object;
   private health?: Health;
@@ -55,30 +60,28 @@ export class JudgmentProviderHost {
     { consumerId?: string; done: Promise<void> }
   >();
   private readonly reasons: Partial<Record<UnavailableReason, number>> = {};
-  private readonly consumerOutcomes = { accepted: 0, fallback: 0, "no-change": 0 };
   private successCount = 0;
   private totalLatencyMs = 0;
   private inputTokens = 0;
   private outputTokens = 0;
 
   constructor(
-    readonly provider: JudgmentProviderV1,
+    readonly provider: DecisionProviderV1,
     readonly record: PluginRecord,
   ) {}
 
   private generation(config: OpenClawConfig): Health {
     const secretRevision = getActiveSecretsRuntimeSnapshotRevisionState();
+    const providerConfig = config.plugins?.entries?.[this.record.id];
     if (
       !this.health ||
       this.health.secretRevision !== secretRevision ||
-      this.health.config !== config.plugins ||
-      this.health.selection !== config.judgments
+      !isDeepStrictEqual(this.health.config, providerConfig)
     ) {
       this.health = {
         id: randomUUID(),
         secretRevision,
-        config: config.plugins,
-        selection: config.judgments,
+        config: providerConfig,
         failures: 0,
         openUntil: 0,
         authFailed: false,
@@ -88,16 +91,7 @@ export class JudgmentProviderHost {
     return this.health;
   }
 
-  recordOutcome(outcome: "accepted" | "fallback" | "no-change"): void {
-    if (!Object.hasOwn(this.consumerOutcomes, outcome)) {
-      throw new JudgmentContractError();
-    }
-    if (!this.retired && !this.reloadPause) {
-      this.consumerOutcomes[outcome]++;
-    }
-  }
-
-  unavailable(reason: UnavailableReason): JudgmentOutcome {
+  unavailable(reason: UnavailableReason): DecisionOutcome {
     this.reasons[reason] = (this.reasons[reason] ?? 0) + 1;
     return { status: "unavailable", reason };
   }
@@ -111,8 +105,8 @@ export class JudgmentProviderHost {
       // must reject rather than receive the provider-only fallback classification.
       controller.abort(
         request.consumerId !== undefined && changedConsumerIds.has(request.consumerId)
-          ? new JudgmentConsumerClosedError()
-          : "judgment-provider-retired",
+          ? new DecisionConsumerClosedError()
+          : "decision-provider-retired",
       );
     }
     const assertResumable = () => {
@@ -125,7 +119,7 @@ export class JudgmentProviderHost {
         instance.owner?.revoked ||
         instance.lifecycle.signal.aborted
       ) {
-        throw new Error("Judgment reload admission cannot safely resume.");
+        throw new Error("Decision reload admission cannot safely resume.");
       }
     };
     return {
@@ -146,14 +140,14 @@ export class JudgmentProviderHost {
   retire(): void {
     this.retired = true;
     for (const controller of this.pending.keys()) {
-      controller.abort("judgment-provider-retired");
+      controller.abort("decision-provider-retired");
     }
   }
 
   cancelConsumer(pluginId: string): void {
     for (const [controller, request] of this.pending) {
       if (request.consumerId === pluginId) {
-        controller.abort(new JudgmentConsumerClosedError());
+        controller.abort(new DecisionConsumerClosedError());
       }
     }
   }
@@ -167,18 +161,18 @@ export class JudgmentProviderHost {
     try {
       const available = this.provider.isReady?.() ?? true;
       if (typeof available !== "boolean") {
-        throw new JudgmentContractError();
+        throw new DecisionContractError();
       }
       return available;
     } catch {
-      throw new JudgmentContractError();
+      throw new DecisionContractError();
     }
   }
 
   inspect(config: OpenClawConfig) {
     const health = this.generation(config);
     const instance = getPluginInstance(this.record);
-    const configured = config.judgments?.provider === this.provider.id;
+    const configured = getConfiguredDecisionProviderIds(config).includes(this.provider.id);
     const enabled =
       config.plugins?.enabled !== false &&
       config.plugins?.entries?.[this.record.id]?.enabled !== false;
@@ -201,7 +195,6 @@ export class JudgmentProviderHost {
       recentSuccessAt: health.lastSuccessAt,
       activeRequests: this.pending.size,
       successCount: this.successCount,
-      consumerOutcomes: { ...this.consumerOutcomes },
       totalLatencyMs: this.totalLatencyMs,
       usage: { inputTokens: this.inputTokens, outputTokens: this.outputTokens },
       reasons: { ...this.reasons },
@@ -209,25 +202,26 @@ export class JudgmentProviderHost {
   }
 
   async evaluate(
-    batch: JudgmentBatch,
+    batch: DecisionBatch,
     options: Options,
+    model: string,
     config: OpenClawConfig,
     registry: PluginRegistry,
     consumerId?: string,
-  ): Promise<JudgmentOutcome> {
+  ): Promise<DecisionOutcome> {
     options.signal.throwIfAborted();
-    let submitted: JudgmentBatch;
+    let submitted: DecisionBatch;
     try {
       submitted = structuredClone(batch);
     } catch {
-      throw new JudgmentContractError();
+      throw new DecisionContractError();
     }
     const instance = getPluginInstance(this.record);
     if (this.retired || this.reloadPause || !instance?.acceptingCalls || instance.owner?.revoked) {
       return this.unavailable("retiring");
     }
     const health = this.generation(config);
-    const configBound = getRuntimeConfigSnapshot() === config;
+    const readConfig = createRuntimeConfigReader(config);
     if (!instance.runInRegistry(registry, () => this.ready())) {
       return this.unavailable("credentials-unavailable");
     }
@@ -246,32 +240,35 @@ export class JudgmentProviderHost {
     const started = performance.now();
     const budget = Math.min(options.timeoutMs, 5_000);
     const deadlineMonotonicMs = started + budget;
-    const timer = setTimeout(() => controller.abort("judgment-deadline"), budget);
+    const timer = setTimeout(() => controller.abort("decision-deadline"), budget);
     let settle!: () => void;
     const done = new Promise<void>((resolve) => {
       settle = resolve;
     });
     this.pending.set(controller, { consumerId, done });
-    const interrupted = (): JudgmentOutcome | undefined => {
+    const interrupted = (): DecisionOutcome | undefined => {
       options.signal.throwIfAborted();
-      if (controller.signal.reason instanceof JudgmentConsumerClosedError) {
+      if (controller.signal.reason instanceof DecisionConsumerClosedError) {
         throw controller.signal.reason;
       }
-      if (this.retired || controller.signal.reason === "judgment-provider-retired") {
+      if (this.retired || controller.signal.reason === "decision-provider-retired") {
         return this.unavailable("retiring");
       }
       if (
-        controller.signal.reason === "judgment-deadline" ||
+        controller.signal.reason === "decision-deadline" ||
         performance.now() >= deadlineMonotonicMs
       ) {
         return this.unavailable("deadline");
       }
+      const currentConfig = readConfig();
+      const selection = resolveDecisionModelSetting(currentConfig, options.agentId);
       if (
         getActiveSecretsRuntimeSnapshotRevisionState() !== health.secretRevision ||
         this.health !== health ||
-        (configBound &&
-          (getRuntimeConfigSnapshot()?.plugins !== config.plugins ||
-            getRuntimeConfigSnapshot()?.judgments !== config.judgments))
+        currentConfig.plugins?.enabled === false ||
+        !isDeepStrictEqual(currentConfig.plugins?.entries?.[this.record.id], health.config) ||
+        selection?.provider !== this.provider.id ||
+        selection.model !== model
       ) {
         return this.unavailable("retiring");
       }
@@ -283,7 +280,12 @@ export class JudgmentProviderHost {
       let outcome;
       try {
         outcome = await instance.runInRegistry(registry, () =>
-          this.provider.evaluate(structuredClone(submitted), { signal, deadlineMonotonicMs }),
+          this.provider.evaluate(structuredClone(submitted), {
+            model,
+            ...(options.agentId ? { agentId: options.agentId } : {}),
+            signal,
+            deadlineMonotonicMs,
+          }),
         );
       } catch {
         const stopped = interrupted();
@@ -293,7 +295,7 @@ export class JudgmentProviderHost {
           }
           return stopped;
         }
-        throw new JudgmentContractError();
+        throw new DecisionContractError();
       }
       const stopped = interrupted();
       if (stopped) {
@@ -303,7 +305,7 @@ export class JudgmentProviderHost {
         return stopped;
       }
       if (outcome?.status === "ok") {
-        if (!validateJudgmentResult(submitted, outcome.result)) {
+        if (!validateDecisionResult(submitted, outcome.result)) {
           this.fail(health, "invalid-response");
           return this.unavailable("invalid-response");
         }
@@ -324,20 +326,20 @@ export class JudgmentProviderHost {
         };
       }
       if (outcome?.status !== "unavailable" || !FAILURE_REASONS.has(outcome.reason)) {
-        throw new JudgmentContractError();
+        throw new DecisionContractError();
       }
       this.fail(health, outcome.reason, outcome.retryAfterMs);
       return this.unavailable(outcome.reason);
     } catch (error) {
       options.signal.throwIfAborted();
-      if (controller.signal.reason instanceof JudgmentConsumerClosedError) {
+      if (controller.signal.reason instanceof DecisionConsumerClosedError) {
         throw controller.signal.reason;
       }
-      if (error instanceof JudgmentContractError) {
+      if (error instanceof DecisionContractError) {
         throw error;
       }
       // A malformed provider envelope must not leak getter/implementation diagnostics.
-      throw new JudgmentContractError();
+      throw new DecisionContractError();
     } finally {
       clearTimeout(timer);
       this.pending.delete(controller);
