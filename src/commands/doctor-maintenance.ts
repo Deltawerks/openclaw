@@ -4,13 +4,16 @@ import { formatCliCommand } from "../cli/command-format.js";
 import type { PreManagedServiceStop } from "../cli/update-cli/update-command-service-maintenance.js";
 import { isDefaultInstallIdentity, resolveConfigPath, resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { acquireWithWait } from "../infra/acquire-with-wait.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { assertLegacyGatewayStoppedForMaintenance } from "../infra/gateway-lock-legacy.js";
 import { readActiveGatewayLockIdentity } from "../infra/gateway-lock.js";
 import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
+import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
 import {
   acquireGatewayMaintenanceCoordinator,
   acquireStateDatabaseCoordinator,
+  StateDatabaseCoordinatorContentionError,
 } from "../infra/state-database-coordinator.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
 import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
@@ -107,6 +110,7 @@ export async function beginDoctorMaintenance(params: {
   // Repair discovery can execute plugins and open writable state. Establish
   // ownership for every explicit repair before running those inspections.
   let stopped: PreManagedServiceStop | undefined;
+  let stopDeadline: number | undefined;
   let serviceMaintenance:
     | typeof import("../cli/update-cli/update-command-service-maintenance.js")
     | undefined;
@@ -139,10 +143,30 @@ export async function beginDoctorMaintenance(params: {
       return;
     }
     const owner = acquireGatewayMaintenanceCoordinator({ databasePath, busyTimeoutMs: 0 });
-    coordinators.push(owner);
+    let stateOwner;
+    try {
+      stateOwner = acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 });
+    } catch (error) {
+      owner.release();
+      throw error;
+    }
+    coordinators.push(owner, stateOwner);
     resources = createOpenClawDatabaseMaintenanceScope(owner.createSchemaFenceDelegate);
-    coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
   };
+  const acquireStoppedMaintenanceResources = () =>
+    acquireWithWait({
+      acquire: () => {
+        assertUpdateAdmissionCurrent?.();
+        acquireMaintenanceResources();
+      },
+      shouldRetry: (error) =>
+        stopped?.stopped === true &&
+        error instanceof StateDatabaseCoordinatorContentionError &&
+        error.family === "gateway-lifecycle",
+      deadlineMs: stopDeadline ?? performance.now(),
+      pollIntervalMs: 250,
+      maxPollIntervalMs: 2_000,
+    });
   const releaseState = async () => {
     if (cleanupFailure) {
       throw cleanupFailure.error;
@@ -405,6 +429,7 @@ export async function beginDoctorMaintenance(params: {
           if (parentActivation === undefined || staleReplacement) {
             inspection.serviceUpdateVerdict.refreshDefinition = false;
             try {
+              stopDeadline = performance.now() + GATEWAY_SERVICE_STOP_TIMEOUT_MS;
               stopped = await maybeStopManagedServiceBeforeMutableUpdate({
                 updateInstallKind: "package",
                 root: params.root,
@@ -454,7 +479,7 @@ export async function beginDoctorMaintenance(params: {
       // Hold the reentrant lifecycle coordinators, not an in-tree Gateway lock:
       // individual migrations acquire their own in-tree locks under this scope.
       // Gateway ownership lasts until that process stops, not for a short transaction.
-      acquireMaintenanceResources();
+      await acquireStoppedMaintenanceResources();
       const { assertNoOpenClawAgentDatabaseLeasesReadOnly, OpenClawAgentDatabaseLeaseActiveError } =
         await import("../state/openclaw-agent-db-lease.js");
       try {
@@ -486,6 +511,19 @@ export async function beginDoctorMaintenance(params: {
     try {
       // Discovery has not run yet; restore a service parked before admission failed.
       if (stopped?.stopped) {
+        // A native stop can fail after bootout too. Use the same remaining stop
+        // budget before restoration, even when admission was never reached.
+        try {
+          await acquireStoppedMaintenanceResources();
+        } catch (ownershipError) {
+          const warning =
+            ownershipError instanceof StateDatabaseCoordinatorContentionError &&
+            ownershipError.family === "gateway-lifecycle"
+              ? `Warning: The stopped Gateway still owns gateway-lifecycle after the service stop deadline. Shared-state repair is unsafe while that writer remains active. Restoring its service; run ${formatCliCommand("openclaw gateway status --deep", env)}, then retry ${formatCliCommand("openclaw doctor --fix", env)} after shutdown completes.`
+              : `Warning: Doctor could not reacquire maintenance ownership: ${String(ownershipError)} Restoring its service without repairing shared state.`;
+          warnings.push(warning);
+          params.runtime.log(warning);
+        }
         const { readConfigFileSnapshot } = await import("../config/config.js");
         await finish((await readConfigFileSnapshot({ skipPluginValidation: true })).config);
       } else {
