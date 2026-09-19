@@ -3,7 +3,6 @@
 ### Fixes
 
 - Codex: restore background memory narratives and isolated text completions on agent-scoped local runtimes with administrator-managed hooks, preserving managed hooks and existing native-account/proxy routing while keeping ordinary hooks and model tools isolated. (#151658)
-- Agents: preserve identical consecutive fenced stream chunks as distinct source occurrences so repeated code is neither dropped nor replayed in the final answer. (#152502)
 
 ### Changes
 
