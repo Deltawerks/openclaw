@@ -5,7 +5,6 @@ import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createDeferredCore } from "../shared/deferred.js";
-import { runBestEffortCleanup } from "./non-fatal-cleanup.js";
 import { resolveRuntimeWorkerThreadExecArgv } from "./runtime-worker-url.js";
 import { createCpuTrackedWorker } from "./worker-cpu.js";
 import {
@@ -14,10 +13,8 @@ import {
   getWorkerComputeCapacity,
 } from "./worker-task-capacity.js";
 import {
-  cancelWorkerNativeSections,
   createWorkerNativeSectionState,
   releaseWorkerNativeSectionsOnExit,
-  waitForWorkerNativeSections,
 } from "./worker-task-native-sections.js";
 import { completeWorkerTask, type WorkerTaskCompletion } from "./worker-task-pool-completion.js";
 import {
@@ -26,6 +23,10 @@ import {
   joinOwnedWorkerTasks,
   type OwnedWorkerTaskSettlement,
 } from "./worker-task-pool-owned.js";
+import {
+  createWorkerTaskPoolRetirement,
+  type WorkerTaskPoolRetirement,
+} from "./worker-task-pool-retirement.js";
 import type {
   OwnedWorkerTask,
   WorkerTaskPoolDispatch,
@@ -62,7 +63,7 @@ class WorkerTaskPoolCore<Input, Output> {
         this.activeTasks--;
       }
     },
-    retire: (slot) => this.retire(slot),
+    retire: (slot) => this.retirement.retire(slot),
     release: (task, slot) => {
       if (!this.ownedTasks.delete(task)) {
         return;
@@ -84,7 +85,7 @@ class WorkerTaskPoolCore<Input, Output> {
       pendingBytes: this.pendingBytes,
     }),
   };
-  private readonly artifactCleanups = new Set<Promise<void>>();
+  private readonly retirement: WorkerTaskPoolRetirement<Input, Output>;
   private readonly queue: Task<Input, Output>[] = [];
   private readonly maxWorkers: number;
   private readonly maxPendingTasks: number;
@@ -124,6 +125,13 @@ class WorkerTaskPoolCore<Input, Output> {
       }
     }
     this.computeCapacity = options.sharedCompute ? getWorkerComputeCapacity() : undefined;
+    this.retirement = createWorkerTaskPoolRetirement({
+      slots: this.slots,
+      options,
+      clearIdleTimer: (timer) => this.clearTimeoutFn(timer),
+      runInContext: runInWorkerPoolContext,
+      dispatch: () => this.dispatch(),
+    });
   }
 
   run(input: WorkerTaskInput<Input>, options: WorkerTaskOptions<Input>): Promise<Output> {
@@ -222,6 +230,10 @@ class WorkerTaskPoolCore<Input, Output> {
     };
   }
 
+  retryFailedRetirements(): Promise<void> {
+    return this.retirement.retryFailedRetirements();
+  }
+
   /** Pause dispatch, settle current work and join native exit before restarting the queue. */
   rotate(): Promise<void> {
     if (this.rotation) {
@@ -234,8 +246,8 @@ class WorkerTaskPoolCore<Input, Output> {
     const slots = [...this.slots];
     const tasks = slots.flatMap((slot) => (slot.task ? [slot.task] : []));
     void Promise.allSettled(tasks.map((task) => task.promise))
-      .then(() => Promise.all(slots.map((slot) => this.retire(slot))))
-      .then(() => Promise.all(this.artifactCleanups))
+      .then(() => Promise.all(slots.map((slot) => this.retirement.retire(slot))))
+      .then(() => this.retirement.joinArtifacts())
       .then(
         () => {
           this.rotation = undefined;
@@ -271,9 +283,9 @@ class WorkerTaskPoolCore<Input, Output> {
     const owned = tasks.map((task) => joinOwnedWorkerTask(task, this.ownedSettlement, true));
     // A failed owned stop must be observed before that task permits its next retry.
     const unowned = [...this.slots].filter((slot) => !ownedSlots.has(slot));
-    const closures = [...owned, ...unowned.map((slot) => this.retire(slot))];
+    const closures = [...owned, ...unowned.map((slot) => this.retirement.retire(slot))];
     return (tasks.length ? joinOwnedWorkerTasks(closures) : Promise.all(closures))
-      .then(() => Promise.all(this.artifactCleanups))
+      .then(() => this.retirement.joinArtifacts())
       .then(() => undefined);
   }
 
@@ -614,7 +626,7 @@ class WorkerTaskPoolCore<Input, Output> {
     } else if (slot.task) {
       this.finish(slot.task, error, undefined, true);
     } else {
-      void this.retire(slot).catch(() => undefined);
+      void this.retirement.retire(slot).catch(() => undefined);
     }
   }
 
@@ -649,7 +661,7 @@ class WorkerTaskPoolCore<Input, Output> {
       if (retire) {
         // Keep input and capacity custody until execution stops, even if rejection is early.
         (slot.completions ??= []).push(complete);
-        void this.retire(slot).catch((failure: unknown) => {
+        void this.retirement.retire(slot).catch((failure: unknown) => {
           task.reject(
             error
               ? new AggregateError(
@@ -685,70 +697,10 @@ class WorkerTaskPoolCore<Input, Output> {
     const idleMs = this.options.idleTimeoutMs ?? 60_000;
     if (idleMs > 0) {
       slot.idleTimer = runInWorkerPoolContext(() =>
-        this.setTimeoutFn(() => void this.retire(slot).catch(() => undefined), idleMs),
+        this.setTimeoutFn(() => void this.retirement.retire(slot).catch(() => undefined), idleMs),
       );
       slot.idleTimer.unref();
     }
-  }
-
-  private retire(slot: Slot<Input, Output>): Promise<void> {
-    this.clearTimeoutFn(slot.idleTimer);
-    cancelWorkerNativeSections(slot.nativeSections);
-    // Retain error listeners until exit: termination can race a worker startup error.
-    // Constructor observers can retire this slot before its Worker is assigned.
-    return (slot.retiring ??= Promise.resolve()
-      .then(async () => {
-        if (slot.worker) {
-          // Node can abort if termination interrupts zlib between allocation and initialization.
-          // Keep custody until the current bounded native operation settles, including on timeout.
-          const settlement = waitForWorkerNativeSections(slot.nativeSections);
-          if (settlement) {
-            await settlement;
-          }
-          await slot.worker.terminate();
-        }
-      })
-      .catch((error: unknown) => {
-        try {
-          void Promise.resolve(this.options.onRetirementFailure?.(error)).catch(() => undefined);
-        } catch {
-          // Observer failures cannot replace the termination failure or its retained custody.
-        }
-        throw error;
-      })
-      .then(() => {
-        const directory = slot.temporaryDirectory;
-        if (directory) {
-          runInWorkerPoolContext(() => {
-            const cleanup = runBestEffortCleanup({
-              cleanup: async () => {
-                const { removeTemporaryArtifacts } = await import("./temp-artifact-cleanup.js");
-                await removeTemporaryArtifacts(directory, "Worker task");
-              },
-              onError: (error) =>
-                process.emitWarning(
-                  `Worker task cleanup could not load for ${directory}: ${String(error)}`,
-                ),
-            });
-            // Release execution capacity at exit; terminal close still joins disposable files.
-            this.artifactCleanups.add(cleanup);
-            void cleanup.then(() => this.artifactCleanups.delete(cleanup));
-          });
-        }
-        slot.worker?.removeAllListeners();
-        this.slots.delete(slot);
-        for (const complete of slot.completions ?? []) {
-          complete();
-        }
-        slot.completions = undefined;
-        this.dispatch();
-      })
-      .catch((error: unknown) => {
-        // Keep native custody and queued input charges until a later close/rotation joins exit.
-        slot.retirementFailed = true;
-        slot.retiring = undefined;
-        throw error;
-      }));
   }
 }
 

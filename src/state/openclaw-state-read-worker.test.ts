@@ -170,6 +170,7 @@ it("reads externally created state after an absent read without allocating a wor
   const task = queueTask();
   task.result.resolve(emptyReply);
   expect(await executeExistingOpenClawStateRead(options, command)).toEqual(emptyReply);
+  expect(mock.selectSqlite).toHaveBeenCalledOnce();
   expect(task.close).toHaveBeenCalledExactlyOnceWith(undefined);
   expect(mock.closePool).not.toHaveBeenCalled();
 });

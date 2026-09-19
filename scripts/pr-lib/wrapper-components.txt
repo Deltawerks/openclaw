@@ -649,6 +649,7 @@ src/infra/shell-wrapper-resolution.ts
 src/infra/sqlite-audit-record-store.async.ts
 src/infra/sqlite-audit-record-store.ts
 src/infra/sqlite-audit-record.kernel.ts
+src/infra/sqlite-backup.ts
 src/infra/sqlite-busy-timeout.ts
 src/infra/sqlite-coordinator.ts
 src/infra/sqlite-error-diagnostics.ts
@@ -696,6 +697,7 @@ src/infra/sqlite-worker-broker.ts
 src/infra/sqlite-worker-client.ts
 src/infra/sqlite-worker-contract.ts
 src/infra/sqlite-worker-identity.ts
+src/infra/sqlite-worker-lifecycle-preparation.ts
 src/infra/sqlite-worker-operation-admission.ts
 src/infra/sqlite-worker-store.ts
 src/infra/sqlite-worker-transfer.ts
@@ -742,6 +744,7 @@ src/infra/worker-task-native-sections.ts
 src/infra/worker-task-pool-completion.ts
 src/infra/worker-task-pool-core.ts
 src/infra/worker-task-pool-owned.ts
+src/infra/worker-task-pool-retirement.ts
 src/infra/worker-task-pool.ts
 src/infra/worker-task-server.ts
 src/infra/worker-transfer-bytes.ts

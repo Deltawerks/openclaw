@@ -34,6 +34,10 @@ export class WorkerTaskPool<Input, Output> {
     return this.core.getSnapshot();
   }
 
+  retryFailedRetirements(): Promise<void> {
+    return this.core.retryFailedRetirements();
+  }
+
   rotate(): Promise<void> {
     return this.core.rotate();
   }
