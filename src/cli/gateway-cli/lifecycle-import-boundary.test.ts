@@ -102,14 +102,14 @@ describe("gateway lifecycle hub import boundaries", () => {
       });
       const { runGatewayLoop } = await import("./run-loop.js");
       await withIsolatedSignals(async ({ captureSignal }) => {
-        const originalOn = process.on;
+        const originalOn = process.on.bind(process);
         const installed: string[] = [];
         vi.spyOn(process, "on").mockImplementation((event, listener) => {
           if (event === "SIGTERM" || event === "SIGINT" || event === "SIGUSR1") {
             expect(primed, `lifecycle import must finish before installing ${event}`).toBe(true);
             installed.push(event);
           }
-          return originalOn.call(process, event, listener);
+          return originalOn(event, listener);
         });
         const fixtureStopped = new Error("fixture stopped");
         const startupSettled = createDeferredCore();
