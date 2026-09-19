@@ -647,7 +647,7 @@ const enSettings = {
       computerControlHint:
         "Starts enabled. After this Mac is paired and macOS access is granted, the paired Gateway can move the pointer, click, and type without per-action confirmation. High risk.",
       computerControlProvider: "Computer Control provider",
-      unattendedDesktop: "Unattended desktop hosting",
+      unattendedDesktop: "Keep computer awake",
       unattendedDesktopHint:
         "Keep this Mac awake between jobs while it is connected and hosting. Manual lock and logout are still respected; OpenClaw never unlocks the Mac.",
       desktopAvailability: "Desktop availability",
@@ -986,7 +986,6 @@ const enSettings = {
       accent: "Accent color",
       accentHint: "Choose an accent color for buttons, highlights, and other controls.",
       customAccent: "Custom color",
-      usingInheritedAccent: "Using inherited accent",
       usingAccent: "Using {value}",
       accents: {
         default: "Theme default",
@@ -1025,6 +1024,9 @@ const enSettings = {
         "Optional CSS width for the centered transcript, such as 960px, 82%, or min(1280px, 82%).",
       messageWidthInvalid:
         "Enter a CSS width such as 960px, 82%, min(1280px, 82%), or calc(100% - 2rem).",
+      showTaskProgress: "Show task progress cards",
+      showTaskProgressHint:
+        "Show task progress in the chat composer. Hiding it does not stop the agent or clear saved progress. Dashboard widgets and session previews are unchanged.",
       collapseTaskProgress: "Collapse task progress by default",
       collapseTaskProgressHint:
         "Start task progress collapsed. It can expand when the response finishes if you are at the end of the chat. A manual close keeps it collapsed for that session.",
