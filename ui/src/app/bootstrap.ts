@@ -64,6 +64,7 @@ import type { ApplicationNavigationOptions, ApplicationContext } from "./context
 import { createScopeUpgradeCapability } from "./device-scope-upgrade.ts";
 import { startGatewayPageActivation } from "./gateway-page-activation.ts";
 import { createApplicationGateway } from "./gateway-store.ts";
+import { startLinkReaderRouting } from "./link-reader-routing.ts";
 import { createNativeChatDrafts } from "./native-bridge.ts";
 import { startNativeLinkRouting } from "./native-link-routing.ts";
 import { createApplicationOverlays } from "./overlays.ts";
@@ -196,6 +197,7 @@ export function bootstrapApplication(): ApplicationRuntime {
   );
   const liveActivity = createLiveActivity(gateway);
   const connectionBootstrap = createConnectionBootstrapCoordinator();
+  const chatSubmissions = createChatSubmissions();
   const router = createApplicationRouter();
   const bootRecord = readBootRecord(gatewayCredentialScope(settings.gatewayUrl), (method) => {
     if (startup.pendingBootstrapToken || startup.password) {
@@ -291,6 +293,7 @@ export function bootstrapApplication(): ApplicationRuntime {
   const channels = createChannelCapability(gateway);
   const stopForegroundBootstrap = subscribeForegroundChatBootstrap({
     router,
+    chatSubmissions,
     gateway,
     agents,
     agentSelection,
@@ -332,6 +335,7 @@ export function bootstrapApplication(): ApplicationRuntime {
       sessionRefFromPath(applicationLocation.pathname, basePath)?.namespace === "chat",
   );
   const nativeChatDrafts = createNativeChatDrafts();
+  const linkReaderRouting = startLinkReaderRouting(() => gateway.snapshot);
   const nativeLinkRouting = startNativeLinkRouting({
     signal: startupLifecycle.signal,
     canPresentBrowserPanel: () => {
@@ -359,7 +363,6 @@ export function bootstrapApplication(): ApplicationRuntime {
   let nativeDeviceSettings: ApplicationContext["nativeDeviceSettings"] = null;
   let nativeNotifications: ApplicationContext["nativeNotifications"] = null;
   const webPush = createWebPushCapability(gateway, { connectionBootstrap });
-  const chatSubmissions = createChatSubmissions();
   const placementStartup = createApplicationPlacementStartup({
     gateway,
     sessions,
@@ -700,6 +703,7 @@ export function bootstrapApplication(): ApplicationRuntime {
       overlays.dispose();
       theme.dispose();
       nativeChatDrafts.dispose();
+      linkReaderRouting.dispose();
       nativeLinkRouting.dispose();
       webPush.dispose();
       chatSubmissions.clear();

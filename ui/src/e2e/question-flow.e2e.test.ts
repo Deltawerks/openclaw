@@ -147,11 +147,6 @@ async function openQuestionPage(viewport = { height: 900, width: 1440 }, hasTouc
     sessionKey: mainSessionKey,
   });
   await page.goto(controlUiSessionUrl(suite.server.baseUrl, questionSessionKey));
-  // Chat and sidebar each own a projection; both must bind to the advertised
-  // real client before a lost-broadcast test can prove cross-surface delivery.
-  await expect
-    .poll(async () => (await gateway.getRequests("question.list")).length)
-    .toBeGreaterThanOrEqual(2);
   const startup = await gateway.waitForRequest("chat.startup");
   expect(startup.params).toEqual(expect.objectContaining({ sessionKey: questionSessionKey }));
   const compactMobileViewport =
@@ -161,6 +156,8 @@ async function openQuestionPage(viewport = { height: 900, width: 1440 }, hasTouc
     .locator(`[data-session-key="${questionSessionKey}"]`)
     .first()
     .waitFor({ state: compactMobileViewport ? "attached" : "visible" });
+  // The mounted chat and sidebar share one authoritative question hydration.
+  await expect.poll(async () => (await gateway.getRequests("question.list")).length).toBe(1);
   return { gateway, page };
 }
 
@@ -446,6 +443,10 @@ suite.define(() => {
           const inputBox = input.getBoundingClientRect();
           return {
             composerBorder: getComputedStyle(input).borderTopWidth,
+            composerTopCorners: [
+              getComputedStyle(input).borderTopLeftRadius,
+              getComputedStyle(input).borderTopRightRadius,
+            ],
             joined: Math.abs(panelBox.bottom - inputBox.top) <= 1,
             panelBorder: getComputedStyle(collapsedPanel).borderTopWidth,
             rowHeight: Math.round(panelBox.height),
@@ -459,6 +460,7 @@ suite.define(() => {
         }),
       ).toEqual({
         composerBorder: "0px",
+        composerTopCorners: ["0px", "0px"],
         joined: true,
         panelBorder: "0px",
         rowHeight: 48,
@@ -593,7 +595,11 @@ suite.define(() => {
     await expect
       .poll(() => composer.evaluate((element) => document.activeElement === element))
       .toBe(true);
+    await summary.scrollIntoViewIfNeeded();
     await screenshot(page, "02-question-answered.png");
+    expect(
+      await summary.getByText(request.questions[0]!.question, { exact: true }).isVisible(),
+    ).toBe(true);
   });
 
   it("masks a store-bound secret and resolves it with edited hosts without echoing the value", async () => {
@@ -736,6 +742,46 @@ suite.define(() => {
     await screenshot(page, "13-secret-store-ask-answered.png");
   });
 
+  it("retains a typed answer when navigating between pending questions", async () => {
+    const { gateway, page } = await openQuestionPage();
+    const first = questionRecord("question-a-format", [
+      {
+        questionId: "format",
+        header: "Format",
+        question: "Which format should I use?",
+        options: [{ label: "Compact" }, { label: "Detailed" }],
+        isOther: true,
+      },
+    ]);
+    const second = questionRecord("question-b-audience", [
+      {
+        questionId: "audience",
+        header: "Audience",
+        question: "Who should read it?",
+        options: [{ label: "Engineers" }, { label: "Everyone" }],
+        isOther: true,
+      },
+    ]);
+    await emitRequested(gateway, first);
+    await emitRequested(gateway, second);
+    const panel = page.locator("openclaw-chat-question-panel");
+    await panel.getByRole("textbox", { name: "Your own answer for Format" }).fill("Compact");
+    await panel.getByRole("button", { name: "Next", exact: true }).click();
+    await panel.getByText("Who should read it?", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Previous", exact: true }).click();
+    await panel.getByText("Which format should I use?", { exact: true }).waitFor();
+    try {
+      expect(
+        await panel.getByRole("textbox", { name: "Your own answer for Format" }).inputValue(),
+      ).toBe("Compact");
+      expect(await panel.getByRole("radio", { name: /Compact/ }).getAttribute("aria-checked")).toBe(
+        "false",
+      );
+    } finally {
+      await screenshot(page, "14-retained-custom-answer.png");
+    }
+  });
+
   it("keeps multi-select on one step and submits labels as an array", async () => {
     const { gateway, page } = await openQuestionPage();
     const request = questionRecord("question-release-checks", [
@@ -827,8 +873,9 @@ suite.define(() => {
       const panes = page.locator("openclaw-chat-pane.chat-split-view__pane");
       await expect.poll(() => panes.count()).toBe(2);
       await expect
-        .poll(async () => (await gateway.getRequests("question.list")).length)
-        .toBeGreaterThanOrEqual(3);
+        .poll(() => panes.locator(".agent-chat__composer-combobox textarea").count())
+        .toBe(2);
+      expect(await gateway.getRequests("question.list")).toHaveLength(1);
 
       const request = questionRecord(`question-split-${status}-${closeSubmittingPane}`, [
         {
