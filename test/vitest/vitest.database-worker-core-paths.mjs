@@ -54,6 +54,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/tasks/task-registry.restore-ownership.test.ts",
   "src/agents/agent-harness-completion-delivery.test.ts",
   "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
+  "src/agents/subagents/registry/subagent-control.recovery.test.ts",
+  "src/agents/subagents/registry/subagent-control.retirement.test.ts",
   "src/agents/subagents/registry/subagent-registry-recovery-acceptance.test.ts",
   "src/agents/subagents/registry/subagent-registry-task-replacement.test.ts",
   "src/agents/subagents/spawn/subagent-spawn.authority.test.ts",
