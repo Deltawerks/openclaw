@@ -4,7 +4,7 @@ import {
   deleteConfigMachineState,
   updateConfigMachineState,
 } from "./config-machine-state-write.js";
-import { readConfigMachineStateWithMetadataInDatabase } from "./config-machine-state.js";
+import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
 import {
   OnboardingRecommendationMatchesSchema,
   type OnboardingRecommendationsRecord,
@@ -20,10 +20,9 @@ export function readOnboardingRecommendationsInDatabase(
   db: DatabaseSync,
   configKey: string,
 ): OnboardingRecommendationsRecord | null {
-  const record = readConfigMachineStateWithMetadataInDatabase<OnboardingRecommendationsRecord>(
-    db,
-    configKey,
-  )?.value;
+  const row = readConfigMachineStateRowInDatabase(db, configKey);
+  // SAFETY: The mutation kernels below own this persisted record shape; matches are validated next.
+  const record = row ? (JSON.parse(row.value_json) as OnboardingRecommendationsRecord) : null;
   return record
     ? { ...record, matches: OnboardingRecommendationMatchesSchema.parse(record.matches) }
     : null;

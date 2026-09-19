@@ -95,6 +95,7 @@ import {
 import { ensureAgentProvenanceSchema } from "./agent-provenance.schema.js";
 import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
 import { readConfigMachineState } from "./config-machine-state.js";
+import { isOnboardingRecommendationWriteCommand } from "./onboarding-recommendations.contract.js";
 import { executeOnboardingRecommendationCommand } from "./onboarding-recommendations.kernel.js";
 import {
   openClawStateDatabaseCache,
@@ -353,13 +354,7 @@ function createSharedStateWorkerBackend(
         assertOpenClawStateDatabaseOwner(nativeDatabase.db, { pathname: nativeDatabase.path });
         return nativeDatabase.walMaintenance.inspectIdle?.() ?? "retire";
       }
-      if (
-        command.type === "onboardingRecommendations.writeOffer" ||
-        command.type === "onboardingRecommendations.acknowledge" ||
-        command.type === "onboardingRecommendations.updatePending" ||
-        command.type === "onboardingRecommendations.clearPending" ||
-        command.type === "onboardingRecommendations.clear"
-      ) {
+      if (isOnboardingRecommendationWriteCommand(command)) {
         return executeOnboardingRecommendationCommand(command, {
           database: open(),
           path: context.databasePath,

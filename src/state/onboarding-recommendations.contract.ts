@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { sha256Hex } from "../infra/crypto-digest.js";
+import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 
 const OnboardingRecommendationMatchSchema = z.object({
   appLabel: z.string(),
@@ -127,3 +128,19 @@ export type OnboardingRecommendationWriteOperations = {
     output: boolean;
   };
 };
+
+export function isOnboardingRecommendationWriteCommand(command: {
+  type: string;
+  input: unknown;
+}): command is SqliteWorkerCommand<OnboardingRecommendationWriteOperations> {
+  switch (command.type) {
+    case "onboardingRecommendations.writeOffer":
+    case "onboardingRecommendations.acknowledge":
+    case "onboardingRecommendations.updatePending":
+    case "onboardingRecommendations.clearPending":
+    case "onboardingRecommendations.clear":
+      return true;
+    default:
+      return false;
+  }
+}
