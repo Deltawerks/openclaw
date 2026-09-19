@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseByPathAsync,
@@ -175,6 +176,68 @@ describe("canonical shared-state worker admission", () => {
           .prepare("SELECT name FROM sqlite_schema WHERE name = ?")
           .get("idx_flow_runs_owner_key"),
       ).toEqual({ name: "idx_flow_runs_owner_key" });
+    },
+  );
+
+  it.each(["Web Push", "GitHub publication"] as const)(
+    "keeps metadata inspection and the first %s operation in the same actor",
+    async (operation) => {
+      const captured = context();
+      const value = { generation: "prepared-metadata", plugins: [] };
+      writeConfigMachineState("plugins.installedIndex", value, {
+        path: captured.admission.databasePath,
+        env: captured.environment,
+      });
+      await closeOpenClawStateDatabaseAsync();
+      const reopened = captureOpenClawStateWorkerContext({
+        path: captured.admission.databasePath,
+        env: captured.environment,
+      });
+      const messages = vi.spyOn(Worker.prototype, "postMessage");
+      await runOpenClawStateWorkerOperation(
+        reopened,
+        async (scope) => {
+          expect(
+            await scope.execute({
+              type: "plugins.metadata.read",
+              input: { selector: "installed-index", artifactPreservingReadOnly: true },
+            }),
+          ).toEqual({ value_json: JSON.stringify(value) });
+          const metadataWorker = messages.mock.contexts[0];
+          expect(metadataWorker).toBeInstanceOf(Worker);
+          messages.mockClear();
+          if (operation === "Web Push") {
+            expect(
+              await scope.execute({
+                type: "webPush.listTerminalWebPushApprovalDeliveryIds",
+                input: {},
+              }),
+            ).toEqual({ approvalIds: [], nextAfterApprovalId: null, throughApprovalId: null });
+          } else {
+            expect(
+              await scope.execute({
+                type: "githubRepository.personalPending",
+                input: {
+                  ownerProfileId: "profile-first-use",
+                  sessionKey: "agent:main:github-first-use",
+                  agentId: "main",
+                },
+              }),
+            ).toBeUndefined();
+          }
+          expect(messages.mock.contexts.length).toBeGreaterThan(0);
+          expect(messages.mock.contexts.every((worker) => worker === metadataWorker)).toBe(true);
+          expect(
+            await scope.execute({
+              type: "plugins.metadata.read",
+              input: { selector: "installed-index", artifactPreservingReadOnly: true },
+            }),
+          ).toEqual({ value_json: JSON.stringify(value) });
+        },
+        { existingOnly: true },
+      );
+      await closeOpenClawStateDatabaseAsync();
+      messages.mockRestore();
     },
   );
 
