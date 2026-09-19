@@ -399,6 +399,7 @@ export async function maybeStopManagedServiceBeforeMutableUpdate(params: {
   jsonMode: boolean;
   phase?: "inspect" | "prepare";
   expectedService?: Pick<PreManagedServiceStop, "serviceEnv" | "serviceUpdateVerdict">;
+  onStopped?: (state: PreManagedServiceStop) => void;
   timeoutMs?: number;
 }): Promise<PreManagedServiceStop> {
   const uninspected = { stopped: false, inspected: false, runtimeInspected: false, running: false };
@@ -556,6 +557,8 @@ export async function maybeStopManagedServiceBeforeMutableUpdate(params: {
     await service.stop({
       env: currentState.env,
       stdout: serviceControlStdoutForMode(params.jsonMode),
+      // Native stop can unload the service before post-stop validation fails.
+      onMutation: () => params.onStopped?.({ ...inspected, stopped: true }),
     });
     if (windowsTaskAutoStartRecovery) {
       await abortWindowsTaskUpdateIfInterrupted(windowsTaskAutoStartRecovery);
