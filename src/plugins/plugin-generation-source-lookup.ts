@@ -1,14 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { isPathInside as isPathInsideLexical } from "../infra/path-safety.js";
-import { isPathInside } from "./path-safety.js";
+import { isPathInside, relativePluginPathInsideRootSync } from "./path-safety.js";
 import { createPluginSourceCapture } from "./plugin-package-metadata-capture.js";
 
 function canonicalSource(rootDir: string, sourceRoot: string, source: string): string {
   const lexical = path.resolve(source);
-  return isPathInsideLexical(path.resolve(rootDir), lexical)
-    ? path.join(sourceRoot, path.relative(path.resolve(rootDir), lexical))
-    : lexical;
+  const relative = relativePluginPathInsideRootSync(rootDir, lexical);
+  return relative === undefined ? lexical : path.join(sourceRoot, relative);
 }
 
 function getCapturedSource(

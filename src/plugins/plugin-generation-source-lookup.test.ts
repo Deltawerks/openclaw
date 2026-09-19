@@ -22,12 +22,13 @@ describe("plugin generation source lookup", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const assertModuleAvailable = vi.fn();
 
+    const aliasedSource = path.join(alias, "index.js");
     const lookup = createPluginGenerationSourceLookup({
       rootDir: alias,
       sourceRoot: alias,
       capturedRoot: alias,
       boundaryRoot: alias,
-      capturedPaths: new Map([[source, source]]),
+      capturedPaths: new Map([[aliasedSource, source]]),
       hardlinkedSources: new Set(),
       assertModuleAvailable,
     });

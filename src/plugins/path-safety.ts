@@ -62,6 +62,18 @@ export function isPathInside(rootPath: string, targetPath: string): boolean {
   );
 }
 
+/** Returns a target's relative path after proving a Windows alias names the same root. */
+export function relativePluginPathInsideRootSync(
+  rootPath: string,
+  targetPath: string,
+): string | undefined {
+  if (isPathInsideLexical(rootPath, targetPath)) {
+    return path.relative(path.resolve(rootPath), path.resolve(targetPath));
+  }
+  const physical = resolvePhysicalPathInsideRootSync(rootPath, targetPath);
+  return physical ? path.relative(physical.rootPath, physical.targetPath) : undefined;
+}
+
 function createIdentityBoundRootFileFs(
   rootPath: string,
   expected: PhysicalPathInsideRoot["rootIdentity"],
