@@ -123,6 +123,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/official-external-plugin-catalog-snapshot-store.worker.test.ts",
   "src/plugins/official-external-plugin-catalog.test.ts",
   "src/infra/device-pairing.test.ts",
+  "src/infra/outbound/delivery-queue-platform-lease.worker.test.ts",
   "src/infra/sqlite-worker-existing-schema.test.ts",
   "src/state/openclaw-state-read.existing-schema.test.ts",
   "src/infra/session-cost-usage-metadata.test.ts",
