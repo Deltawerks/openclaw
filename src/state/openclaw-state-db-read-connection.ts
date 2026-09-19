@@ -116,8 +116,28 @@ export function openOpenClawStateReadConnection(
         ? openTrackedStateDatabase(pathname, options)
         : openNodeSqliteDatabase(location, options);
   } catch (error) {
-    releaseToken?.();
-    snapshot?.cleanup();
+    const errors = [error];
+    try {
+      releaseToken?.();
+    } catch (cleanupError) {
+      errors.push(cleanupError);
+    }
+    try {
+      if (snapshot && !snapshot.cleanup()) {
+        errors.push(
+          new SnapshotCleanupIncompleteError("Shared-state snapshot cleanup is incomplete."),
+        );
+      }
+    } catch (cleanupError) {
+      errors.push(cleanupError);
+    }
+    if (errors.length > 1) {
+      throw createSqliteLifecycleAggregateError(
+        errors,
+        "Shared-state reader open and cleanup failed.",
+        error,
+      );
+    }
     throw error;
   }
   let closed = false;

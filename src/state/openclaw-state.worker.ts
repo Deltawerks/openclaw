@@ -44,6 +44,7 @@ import {
   readStableSqliteFileGeneration,
   sameSqliteFileGeneration,
 } from "../infra/sqlite-file-generation.js";
+import { assertNoActiveSqliteReaders } from "../infra/sqlite-reader-lifecycle.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
@@ -638,6 +639,9 @@ function createSharedStateWorkerBackend(
         assertTransactionUsable(nativeDatabase.db);
         if (nativeDatabase.db.isOpen && nativeDatabase.db.isTransaction) {
           throw new Error("Shared-state worker retained an unsettled transaction");
+        }
+        if (nativeDatabase.db.isOpen) {
+          assertNoActiveSqliteReaders(nativeDatabase.db, "Shared-state worker");
         }
       }
     },

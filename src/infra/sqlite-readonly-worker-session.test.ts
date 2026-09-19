@@ -4,6 +4,10 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeSqliteAuthTransferFrame } from "./sqlite-readonly-auth-transfer.js";
 import { createSqliteReadOnlyWorkerSession } from "./sqlite-readonly-worker-session.js";
+import {
+  createScopedSqliteReadOnlyWorker,
+  withSqliteReadOnlyWorkerScope,
+} from "./sqlite-readonly-worker.js";
 import { createSqliteWorkerTransferOwner } from "./sqlite-worker-transfer.js";
 
 type Send = (message: unknown, callback: (error: Error | null) => void) => boolean;
@@ -36,6 +40,7 @@ function createSession() {
   const session = createSqliteReadOnlyWorkerSession({
     env,
     cwd: "/fixture/launch",
+    transport: { kind: "native" },
     argv: ["--fixture-readonly-session"],
     retainLifetime: false,
     retainOnOperationError: true,
@@ -138,6 +143,7 @@ describe("SQLite read-only session operation custody", () => {
     const coordinatorRuntime = { directory: "/fixture/coordinator", keepAlive: false };
     const result = session.run("/fixture/auth.sqlite", {
       mode: "auth-profile-rows",
+      source: "canonical",
       expectedIdentity: "file:fixture-auth",
       env,
       coordinatorRuntime,
@@ -208,4 +214,39 @@ describe("SQLite read-only session operation custody", () => {
     await expect(late).rejects.toThrow("worker is closed");
     expect(child.kill).not.toHaveBeenCalled();
   });
+});
+
+it("keeps a detached staging command budget inside a caller-owned deadline scope", async () => {
+  const timer = vi.spyOn(globalThis, "setTimeout");
+  try {
+    await withSqliteReadOnlyWorkerScope(
+      async () => {
+        const child = new MockChild();
+        mock.spawn.mockReturnValueOnce(child);
+        const session = createScopedSqliteReadOnlyWorker({
+          env: {},
+          cwd: "/fixture",
+          transport: { kind: "native" },
+          retainLifetime: false,
+          retainOnOperationError: true,
+        });
+        sessions.push({ session, child });
+        timer.mockClear();
+        const result = session.run("/fixture/staging", { mode: "staging-create" });
+        const budgeted = timer.mock.calls.some(
+          ([, delay]) => typeof delay === "number" && delay > 0,
+        );
+        child.emit("message", {
+          id: requestId(child),
+          result: { ok: true, location: "/fixture/staged" },
+        });
+        await expect(result).resolves.toBe("/fixture/staged");
+        expect(budgeted).toBe(true);
+        expect(child.kill).not.toHaveBeenCalled();
+      },
+      { signal: new AbortController().signal, deadlineOwnedByCaller: true },
+    );
+  } finally {
+    timer.mockRestore();
+  }
 });
