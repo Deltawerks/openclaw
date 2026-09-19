@@ -22,6 +22,7 @@ import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/con
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import { readSessionIdentityEvidenceInDatabase } from "../config/sessions/session-accessor.sqlite-entry-availability.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync-cache-state.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import * as registryListing from "../state/openclaw-agent-db-registry-listing.js";
 import {
@@ -240,6 +241,41 @@ describe("worker placement session evidence", () => {
       });
     },
   );
+
+  it("keeps required-table loss local to one agent during real placement discovery", async () => {
+    const stateDir = tempDirs.make("openclaw-placement-partial-table-loss-");
+    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+      const cfg: OpenClawConfig = { agents: { list: [{ id: "main" }, { id: "healthy" }] } };
+      setRuntimeConfigSnapshot(cfg, cfg);
+      const broken = localPlacement("broken", "agent:main:broken");
+      const healthy = localPlacement("healthy", "agent:healthy:healthy", "healthy");
+      const absent = localPlacement("absent", "agent:healthy:absent", "healthy");
+      const incognito = localPlacement(
+        "private",
+        "agent:healthy:dashboard:incognito-private",
+        "healthy",
+      );
+      for (const placement of [broken, healthy, incognito]) {
+        await sessionAccessor.upsertSessionEntryCore(placement, {
+          sessionId: placement.sessionId,
+          updatedAt: 1,
+        });
+      }
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      clearNodeSqliteKyselyCacheForDatabase(database.db);
+      database.db.exec("DROP TABLE session_nodes");
+
+      const requested = [broken, healthy, absent, incognito];
+      const resolve = await createWorkerPlacementSessionEvidenceResolver(requested);
+
+      expect(await Promise.all(requested.map(resolve))).toEqual([
+        "unknown",
+        "current",
+        "absent",
+        "current",
+      ]);
+    });
+  });
 
   it("canonicalizes legacy default-main placements before batching", async () => {
     const stateDir = tempDirs.make("openclaw-placement-session-canonical-main-");

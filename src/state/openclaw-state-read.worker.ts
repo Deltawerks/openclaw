@@ -3,6 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
+import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
 import { serveWorkerTasks } from "../infra/worker-task-pool.js";
@@ -18,6 +19,7 @@ import type {
   OpenClawStateReadRequest,
 } from "./openclaw-state-read.types.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
+import { selectProfileDisplayEntries } from "./user-profiles-internal.js";
 
 function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
   if (!isRecord(input) || !isRecord(input.context) || !isRecord(input.command)) {
@@ -41,6 +43,8 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (input.command.type === "admit" ||
       input.command.type === "agentDatabaseRegistry.read" ||
+      (input.command.type === "userProfiles.avatar.reconcile" &&
+        typeof input.command.profileId === "string") ||
       (input.command.type === "audit.run.inspect" &&
         isRecord(input.command.input) &&
         typeof input.command.input.now === "number" &&
@@ -124,6 +128,17 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
                 type: command.type,
                 sourceAdmitted,
                 row: readConfigMachineStateRowInDatabase(db, command.type),
+              };
+            }
+            if (command.type === "userProfiles.avatar.reconcile") {
+              return {
+                ok: true,
+                type: command.type,
+                sourceAdmitted,
+                profile: runSqliteDeferredTransactionSync(
+                  db,
+                  () => selectProfileDisplayEntries(db, [command.profileId])[0]?.[1],
+                ),
               };
             }
             return command.type === "fleet.list"
