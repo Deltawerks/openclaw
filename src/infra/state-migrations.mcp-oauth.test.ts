@@ -5,8 +5,8 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { operatorMcpOAuthIdentity } from "../agents/mcp-oauth-identity.js";
 import { createMcpOAuthClientProvider } from "../agents/mcp-oauth-provider.js";
-import { resolveMcpOAuthStoreKey } from "../agents/mcp-oauth-store.js";
 import { clearMcpOAuthCredentials, resolveMcpOAuthAccessToken } from "../agents/mcp-oauth.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
@@ -297,22 +297,28 @@ describe("legacy MCP OAuth Doctor migration", () => {
     const { env, stateDir } = useStateDir();
     const serverName = "Remote Docs";
     const serverUrl = "https://mcp.example.com/mcp";
-    const storeKey = resolveMcpOAuthStoreKey(serverName, serverUrl);
+    const identity = operatorMcpOAuthIdentity(serverName, serverUrl);
+    const storeKey = identity.storeKey;
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     await expect(
       resolveMcpOAuthAccessToken({
-        serverName,
-        serverUrl,
+        identity,
         authorizationChallenge: true,
         scope: "docs.read",
       }),
     ).rejects.toThrow("Run openclaw mcp login Remote Docs.");
     const provider = createMcpOAuthClientProvider({
-      serverName,
-      serverUrl,
-      onAuthorizationUrl: () => {},
+      identity,
+      allowAuthorizationRedirect: true,
     });
     await provider.saveCodeVerifier("new-login-verifier");
+    expect(JSON.parse(storeRow(env, storeKey)?.store_json ?? "null")).toMatchObject({
+      credentialState: "uninitialized",
+    });
+    expect(JSON.parse(storeRow(env, storeKey)?.store_json ?? "null")).not.toHaveProperty(
+      "codeVerifier",
+    );
+    await provider.redirectToAuthorization(new URL("https://auth.example.com/authorize"));
     const sourcePath = await writeLegacy({
       stateDir,
       fileName: `${storeKey}.json`,
@@ -343,14 +349,15 @@ describe("legacy MCP OAuth Doctor migration", () => {
     const { env, stateDir } = useStateDir();
     const serverName = "Remote Docs";
     const serverUrl = "https://mcp.example.com/mcp";
-    const storeKey = resolveMcpOAuthStoreKey(serverName, serverUrl);
+    const identity = operatorMcpOAuthIdentity(serverName, serverUrl);
+    const storeKey = identity.storeKey;
     const sourcePath = await writeLegacy({
       stateDir,
       fileName: `${storeKey}.json`,
     });
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
 
-    await clearMcpOAuthCredentials({ serverName, serverUrl });
+    await clearMcpOAuthCredentials(identity);
     expect(JSON.parse(storeRow(env, storeKey)?.store_json ?? "null")).toEqual({
       credentialState: "cleared",
     });

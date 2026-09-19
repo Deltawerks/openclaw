@@ -5,18 +5,15 @@ import {
   formatFastModeAutoProgressText,
   resolveAgentRunAbortLifecycleFields,
   resolveFastModeForElapsed,
-  type EmbeddedRunAttemptParams,
+  type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { reportCodexExecutionNotification } from "./attempt-notification-state.js";
 import {
   resolveTerminalDynamicToolBatchAction,
   shouldReleaseTurnAfterTerminalDynamicTool,
 } from "./dynamic-tool-execution.js";
-import type {
-  CodexDynamicToolCallParams,
-  CodexDynamicToolCallResponse,
-  CodexServerNotification,
-} from "./protocol.js";
+import type { CodexDynamicToolRuntimeResponse } from "./dynamic-tool-response-state.js";
+import type { CodexDynamicToolCallParams, CodexServerNotification } from "./protocol.js";
 import { buildCodexLifecycleTerminalMeta } from "./run-attempt-lifecycle-terminal.js";
 import { emitCodexAppServerEvent } from "./run-attempt-lifecycle.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
@@ -38,7 +35,7 @@ export function createCodexAttemptLifecycleController(
   const { state, activeTurnItemIds, pendingOpenClawDynamicToolCompletionIds } = turnRuntime;
   const releaseTurnAfterTerminalDynamicTool = (value: {
     call: CodexDynamicToolCallParams;
-    response: CodexDynamicToolCallResponse;
+    response: CodexDynamicToolRuntimeResponse;
     durationMs: number;
   }) => {
     if (
@@ -73,9 +70,8 @@ export function createCodexAttemptLifecycleController(
     // Interrupt drops accepted pending input. Reject unconsumed steering first so
     // completion delivery can use its fallback path instead of reporting success.
     turnRuntime.steeringQueueRef.current?.cancel();
-    void turnRuntime
-      .interruptTurn(value.call.turnId, { locallyCompleted: true })
-      .then(turnRuntime.completeTurn);
+    void turnRuntime.interruptTurn(value.call.turnId, { locallyCompleted: true });
+    turnRuntime.completeTurn();
   };
   const scheduleTerminalDynamicToolReleaseCheck = () => {
     if (
@@ -118,21 +114,30 @@ export function createCodexAttemptLifecycleController(
   };
   const scheduleTurnReleaseAfterTerminalDynamicTool = (value: {
     call: CodexDynamicToolCallParams;
-    response: CodexDynamicToolCallResponse;
+    response: CodexDynamicToolRuntimeResponse;
     durationMs: number;
   }) => {
     state.pendingTerminalDynamicToolRelease = value;
     scheduleTerminalDynamicToolReleaseCheck();
   };
-  const emitLifecycleStart = () => {
+  const emitLifecycleStart = (model: { provider: string; model: string }) => {
     void emitCodexAppServerEvent(params, {
       stream: "lifecycle",
       data: { phase: "start", startedAt: attemptStartedAt },
     });
+    void emitCodexAppServerEvent(params, {
+      stream: "lifecycle",
+      data: { phase: "model", ...model },
+    });
     state.lifecycleStarted = true;
   };
   const emitLifecycleTerminal = (data: Record<string, unknown> & { phase: "end" | "error" }) => {
-    if (!state.lifecycleStarted || state.lifecycleTerminalEmitted) {
+    if (
+      !state.lifecycleStarted ||
+      state.lifecycleTerminalEmitted ||
+      state.permissionChangeRestart ||
+      params.pluginRuntimeRefreshPending?.()
+    ) {
       return;
     }
     void emitCodexAppServerEvent(params, {

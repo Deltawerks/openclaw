@@ -5,6 +5,8 @@ import type { TSchema } from "typebox";
 
 // Keywords that Cloud Code Assist API rejects (not compliant with their JSON Schema subset)
 export const GEMINI_UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
+  // Serialized optional-property metadata is not part of Google's Schema message.
+  "~optional",
   "patternProperties",
   "additionalProperties",
   "$schema",
@@ -208,10 +210,15 @@ function tryResolveLocalRef(ref: string, defs: SchemaDefs | undefined): unknown 
   return defs.get(name);
 }
 
-function simplifyUnionVariants(params: { obj: Record<string, unknown>; variants: unknown[] }): {
-  variants: unknown[];
-  simplified?: unknown;
-} {
+function simplifyUnionVariants(params: { obj: Record<string, unknown>; variants: unknown[] }):
+  | {
+      kind: "simplified";
+      value: unknown;
+    }
+  | {
+      kind: "variants";
+      value: unknown[];
+    } {
   const { obj, variants } = params;
 
   const { variants: nonNullVariants, stripped } = stripNullVariants(variants);
@@ -223,7 +230,7 @@ function simplifyUnionVariants(params: { obj: Record<string, unknown>; variants:
       enum: flattened.enum,
     };
     copySchemaMeta(obj, result);
-    return { variants: nonNullVariants, simplified: result };
+    return { kind: "simplified", value: result };
   }
 
   if (stripped && nonNullVariants.length === 1) {
@@ -233,12 +240,12 @@ function simplifyUnionVariants(params: { obj: Record<string, unknown>; variants:
         ...(lone as Record<string, unknown>),
       };
       copySchemaMeta(obj, result);
-      return { variants: nonNullVariants, simplified: result };
+      return { kind: "simplified", value: result };
     }
-    return { variants: nonNullVariants, simplified: lone };
+    return { kind: "simplified", value: lone };
   }
 
-  return { variants: stripped ? nonNullVariants : variants };
+  return { kind: "variants", value: stripped ? nonNullVariants : variants };
 }
 
 // Gemini rejects object schemas whose `required` entries do not exist in `properties`.
@@ -330,18 +337,18 @@ function cleanSchemaForGeminiWithDefs(
 
   if (hasAnyOf) {
     const simplified = simplifyUnionVariants({ obj, variants: cleanedAnyOf ?? [] });
-    cleanedAnyOf = simplified.variants;
-    if ("simplified" in simplified) {
-      return simplified.simplified;
+    if (simplified.kind === "simplified") {
+      return simplified.value;
     }
+    cleanedAnyOf = simplified.value;
   }
 
   if (hasOneOf) {
     const simplified = simplifyUnionVariants({ obj, variants: cleanedOneOf ?? [] });
-    cleanedOneOf = simplified.variants;
-    if ("simplified" in simplified) {
-      return simplified.simplified;
+    if (simplified.kind === "simplified") {
+      return simplified.value;
     }
+    cleanedOneOf = simplified.value;
   }
 
   const cleaned: Record<string, unknown> = {};
@@ -484,13 +491,5 @@ function flattenUnionFallback(
 }
 
 export function cleanSchemaForGemini(schema: unknown): TSchema {
-  if (!schema || typeof schema !== "object") {
-    return schema as TSchema;
-  }
-  if (Array.isArray(schema)) {
-    return schema.map(cleanSchemaForGemini) as TSchema;
-  }
-
-  const defs = extendSchemaDefs(undefined, schema as Record<string, unknown>);
-  return cleanSchemaForGeminiWithDefs(schema, defs, undefined) as TSchema;
+  return cleanSchemaForGeminiWithDefs(schema, undefined, undefined) as TSchema;
 }

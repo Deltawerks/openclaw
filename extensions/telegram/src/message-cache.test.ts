@@ -1,14 +1,17 @@
 import type { Message } from "grammy/types";
 import { describe, expect, it } from "vitest";
 import {
+  hasProviderObservedTelegramThreadBinding,
+  resolveProviderObservedTelegramThreadSpec,
+} from "./message-cache-codec.js";
+import {
   resolveTelegramMessageCachePersistentScopeKey,
-  TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_MESSAGES,
+  type PersistedTelegramMessageCacheValue,
 } from "./message-cache-persistence.js";
 import {
   buildTelegramConversationContext,
   buildTelegramReplyChain,
   createTelegramMessageCache,
-  hasProviderObservedTelegramThreadBinding,
 } from "./message-cache.js";
 import { resetTelegramMessageCacheForTest as resetCache } from "./runtime.test-support.js";
 
@@ -17,18 +20,13 @@ type PersistentStore = NonNullable<
 >;
 type Cache = ReturnType<typeof createTelegramMessageCache>;
 type ReplyChain = Awaited<ReturnType<typeof replyChain>>;
-type PersistedValue = {
-  version: 1;
-  sourceMessage: Message;
-  botUserId?: number;
+type PersistedValue = Omit<PersistedTelegramMessageCacheValue, "promptContextProjection"> & {
   promptContextProjection?: unknown;
-  threadBinding?: { kind: "provider-observed-v1"; threadId: string };
-  threadId?: string;
 };
 
 let persistentStoreId = 0;
 
-function createMemoryStore(maxEntries = TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_MESSAGES) {
+function createMemoryStore() {
   const entries = new Map<string, PersistedValue>();
   return {
     bucketKey: `test:${process.pid}:${Date.now()}:${persistentStoreId++}`,
@@ -37,13 +35,6 @@ function createMemoryStore(maxEntries = TELEGRAM_MESSAGE_CACHE_PERSISTENT_MAX_ME
       async register(key, value) {
         entries.delete(key);
         entries.set(key, structuredClone(value));
-        while (entries.size > maxEntries) {
-          const oldest = entries.keys().next().value;
-          if (oldest === undefined) {
-            break;
-          }
-          entries.delete(oldest);
-        }
       },
       async entries() {
         return Array.from(entries, ([key, value]) => ({ key, value: structuredClone(value) }));
@@ -140,6 +131,42 @@ const projection = (transcriptMessageId: string) => ({
 });
 
 describe("telegram message cache", () => {
+  it("persists resolved media with its source message and drops it when the media changes", async () => {
+    const { bucketKey, entries, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    await record(cache, message(9000, "Kesava", { photo: photo("photo-1") }));
+    const downloadedMedia = {
+      id: "saved-photo.png",
+      fileUniqueId: "photo-1-unique",
+      size: 4,
+      savedAt: 1_736_380_700_000,
+      kind: "image" as const,
+      contentType: "image/png",
+      path: "/private/user/photos/holiday.png",
+      fileName: "holiday photo.png",
+    };
+    await cache.recordResolvedMedia({
+      accountId: "default",
+      chatId: 7,
+      messageId: "9000",
+      media: downloadedMedia,
+    });
+
+    expect(onlyEntry(entries)[1].resolvedMedia?.id).toBe("saved-photo.png");
+    expect(onlyEntry(entries)[1].resolvedMedia).not.toHaveProperty("path");
+    expect(onlyEntry(entries)[1].resolvedMedia).not.toHaveProperty("fileName");
+    const reloaded = await reloadGet(bucketKey, store, "9000");
+    expect(reloaded?.resolvedMedia).toMatchObject({
+      id: "saved-photo.png",
+      fileUniqueId: "photo-1-unique",
+      kind: "image",
+    });
+
+    const reloadedCache = cacheFor(bucketKey, store);
+    await record(reloadedCache, message(9000, "Kesava", { photo: photo("photo-2") }));
+    expect((await get(reloadedCache, "9000"))?.resolvedMedia).toBeUndefined();
+  });
+
   it("persists provider-observed topic bindings for messages and same-topic replies", async () => {
     const { bucketKey, entries, store } = createMemoryStore();
     const forum = { id: -1001, type: "supergroup", title: "QA", is_forum: true };
@@ -161,7 +188,11 @@ describe("telegram message cache", () => {
         is_topic_message: true,
         reply_to_message: parent,
       }),
-      { chatId: -1001, threadId: 77, providerObservedThreadId: 77 },
+      {
+        chatId: -1001,
+        threadId: 77,
+        providerObservedThread: { scope: "forum", id: 77 },
+      },
     );
 
     expect(entries.size).toBe(2);
@@ -169,7 +200,8 @@ describe("telegram message cache", () => {
       Array.from(entries.values()).every(
         (value) =>
           value.threadBinding?.kind === "provider-observed-v1" &&
-          value.threadBinding.threadId === "77",
+          value.threadBinding.threadSpec.scope === "forum" &&
+          value.threadBinding.threadSpec.id === 77,
       ),
     ).toBe(true);
 
@@ -178,60 +210,213 @@ describe("telegram message cache", () => {
     for (const messageId of ["901", "902"]) {
       const node = await get(reloaded, messageId, { chatId: -1001 });
       expect(hasProviderObservedTelegramThreadBinding(node, 77)).toBe(true);
+      expect(resolveProviderObservedTelegramThreadSpec(node)).toEqual({ scope: "forum", id: 77 });
     }
   });
 
-  it("hydrates reply chains from persisted cached messages", async () => {
+  it("keeps an authoritative supplied thread ahead of conflicting root message metadata", async () => {
+    const { bucketKey, entries, store } = createMemoryStore();
+    const forum = { id: -1001, type: "supergroup", title: "QA", is_forum: true };
+    const ancestor = message(904, "Lin", {
+      chat: forum,
+      text: "Ancestor without its own thread metadata",
+    });
+    const reply = message(905, "Ada", {
+      chat: forum,
+      text: "Reply with embedded thread metadata",
+      message_thread_id: 88,
+      reply_to_message: ancestor,
+    });
+    const root = message(906, "Grace", {
+      chat: forum,
+      text: "Authoritative root",
+      message_thread_id: 999,
+      reply_to_message: reply,
+    });
+    const cache = cacheFor(bucketKey, store);
+
+    const recorded = await record(cache, root, {
+      chatId: -1001,
+      threadId: 77,
+      providerObservedThread: { scope: "forum", id: 77 },
+    });
+
+    expect(recorded.threadId).toBe("77");
+    expect(resolveProviderObservedTelegramThreadSpec(recorded)).toEqual({
+      scope: "forum",
+      id: 77,
+    });
+    expect((await get(cache, "905", { chatId: -1001 }))?.threadId).toBe("88");
+    expect((await get(cache, "904", { chatId: -1001 }))?.threadId).toBe("88");
+    const persistedRoot = Array.from(entries.values()).find(
+      (entry) => entry.sourceMessage.message_id === 906,
+    );
+    expect(persistedRoot?.threadId).toBe("77");
+  });
+
+  it("persists a channel Direct Messages binding ahead of conflicting raw thread metadata", async () => {
     const { bucketKey, store } = createMemoryStore();
-    const photoMessage = message(9000, "Kesava", {
-      date: 1_736_380_700,
-      photo: photo("photo-1"),
-    });
-    const reply = message(9001, "Ada", {
-      date: 1_736_380_750,
-      text: "The cache warmer is the piece I meant",
-      from: sender(2, "Ada"),
-      reply_to_message: photoMessage,
-    });
-    const firstCache = cacheFor(bucketKey, store);
-    await record(firstCache, photoMessage);
-    await record(firstCache, reply);
+    const cache = cacheFor(bucketKey, store);
+    await record(
+      cache,
+      message(904, "Ada", {
+        chat: {
+          id: -1002,
+          type: "supergroup",
+          title: "Channel replies",
+          is_direct_messages: true,
+        },
+        direct_messages_topic: { topic_id: 77 },
+        message_thread_id: 999,
+        is_topic_message: true,
+      }),
+      {
+        chatId: -1002,
+        threadId: 999,
+        providerObservedThread: { scope: "direct-messages", id: 77 },
+      },
+    );
 
     resetCache();
-    const secondCache = cacheFor(bucketKey, store);
+    const reloaded = await get(cacheFor(bucketKey, store), "904", { chatId: -1002 });
+    expect(reloaded?.threadId).toBe("77");
+    expect(resolveProviderObservedTelegramThreadSpec(reloaded)).toEqual({
+      scope: "direct-messages",
+      id: 77,
+    });
+  });
+
+  it("does not resolve caller-only topic metadata as a provider-observed binding", async () => {
+    const cache = createTelegramMessageCache();
+    await record(
+      cache,
+      message(903, "Ada", {
+        chat: { id: -1001, type: "supergroup", title: "QA", is_forum: true },
+        message_thread_id: 77,
+        is_topic_message: true,
+      }),
+      { chatId: -1001, threadId: 77 },
+    );
+
+    const node = await get(cache, "903", { chatId: -1001 });
+    expect(resolveProviderObservedTelegramThreadSpec(node)).toBeUndefined();
+  });
+
+  it("resolves external reply references only from the same chat without inventing message bodies", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    const chat = { id: -1001, type: "supergroup", title: "Local group" };
+    await record(cache, message(9, "Ada", { chat, text: "Local body" }), { chatId: chat.id });
+    const reference = (peerId: number, messageId: number) =>
+      message(11, "Ada", {
+        chat,
+        external_reply: {
+          origin: {
+            type: "chat",
+            date: 1_736_371_609,
+            sender_chat: { ...chat, id: peerId },
+          },
+          chat: { ...chat, id: peerId },
+          message_id: messageId,
+        },
+      });
+
+    expect(await replyChain(cache, reference(-1002, 9), chat.id)).toEqual([]);
+    expect(await replyChain(cache, reference(chat.id, 8), chat.id)).toEqual([]);
+    expect(await replyChain(cache, reference(chat.id, 9), chat.id)).toMatchObject([
+      { messageId: "9", body: "Local body" },
+    ]);
+  });
+
+  it("prefers exact stored ancestors over stale embedded content and topic metadata", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    await record(
+      cache,
+      message(8, "Ada", {
+        caption: "Corrected photo",
+        photo: photo("photo-2"),
+        edit_date: 1_736_380_720,
+      }),
+      { providerObservedThread: { scope: "none" } },
+    );
     const chain = await replyChain(
-      secondCache,
-      message(9002, "Grace", {
-        text: "Please explain what this reply was about",
-        from: sender(3, "Grace"),
-        reply_to_message: message(9001, "Ada", {
-          date: 1_736_380_750,
-          text: "The cache warmer is the piece I meant",
-          from: sender(2, "Ada"),
+      cache,
+      message(10, "Grace", {
+        message_thread_id: 77,
+        reply_to_message: message(9, "Lin", {
+          reply_to_message: message(8, "Ada", {
+            caption: "Stale photo",
+            photo: photo("photo-1"),
+            message_thread_id: 77,
+            reply_to_message: message(7, "Lin", { text: "Stale ancestry" }),
+          }),
         }),
       }),
     );
+    expect(chain.map((node) => node.messageId)).toEqual(["9", "8"]);
+    expect(chain[1]).toMatchObject({
+      body: "Corrected photo",
+      mediaRef: "telegram:file/photo-2",
+    });
+    expect(chain[1]?.threadId).toBeUndefined();
+    expect(chain[1]?.replyToId).toBeUndefined();
+  });
 
-    expect(chain).toEqual([
-      {
-        messageId: "9001",
-        sender: "Ada",
-        senderId: "2",
-        timestamp: 1736380750000,
-        body: "The cache warmer is the piece I meant",
-        replyToId: "9000",
-        sourceMessage: reply,
+  it("does not borrow local message identities from cross-chat embedded replies", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    await record(cache, message(8, "Ada", { text: "Unrelated local message" }));
+    const chain = await replyChain(
+      cache,
+      message(10, "Grace", {
+        reply_to_message: message(9, "Lin", {
+          reply_to_message: message(8, "Ada", {
+            chat: { id: -1002, type: "supergroup", title: "Other chat" },
+            text: "Foreign snapshot",
+          }),
+        }),
+      }),
+    );
+    expect(chain.map((node) => node.messageId)).toEqual(["9"]);
+  });
+
+  it("propagates ancestor lookup failures instead of using an embedded snapshot", async () => {
+    const { bucketKey, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    const unavailable: Cache = {
+      ...cache,
+      async get(params) {
+        if (params.messageId === "8") {
+          throw new Error("ancestor lookup unavailable");
+        }
+        return cache.get(params);
       },
-      {
-        messageId: "9000",
-        sender: "Kesava",
-        senderId: "1",
-        timestamp: 1736380700000,
-        mediaRef: "telegram:file/photo-1",
-        mediaType: "image",
-        sourceMessage: photoMessage,
-      },
-    ]);
+    };
+    await expect(
+      replyChain(
+        unavailable,
+        message(10, "Grace", {
+          reply_to_message: message(9, "Lin", {
+            reply_to_message: message(8, "Ada", { text: "Stale fallback" }),
+          }),
+        }),
+      ),
+    ).rejects.toThrow("ancestor lookup unavailable");
+  });
+
+  it.each([
+    { boundary: "depth cap", ids: [9, 8, 7, 6, 5], expected: ["9", "8", "7", "6"] },
+    { boundary: "cycle", ids: [9, 8, 9], expected: ["9", "8"] },
+  ])("bounds embedded-only reply traversal at the $boundary", async ({ ids, expected }) => {
+    const { bucketKey, store } = createMemoryStore();
+    const cache = cacheFor(bucketKey, store);
+    let reply: Message | undefined;
+    for (const id of ids.toReversed()) {
+      reply = message(id, "Ada", { reply_to_message: reply });
+    }
+    const chain = await replyChain(cache, message(10, "Grace", { reply_to_message: reply }));
+    expect(chain.map((node) => node.messageId)).toEqual(expected);
   });
 
   it("records embedded reply targets as normal cached messages", async () => {
@@ -328,24 +513,6 @@ describe("telegram message cache", () => {
     );
 
     expect(chain.map((entry) => entry.messageId)).toEqual(["9101", "9100"]);
-  });
-
-  it("persists cached records through the plugin state store", async () => {
-    const { bucketKey, store } = createMemoryStore(3);
-    const cache = cacheFor(bucketKey, store);
-    for (let index = 0; index < 5; index++) {
-      await record(
-        cache,
-        message(9120 + index, "Nora", {
-          date: 1_736_380_700 + index,
-          text: `State message ${index}`,
-        }),
-      );
-    }
-
-    resetCache();
-    const recent = await recentBefore(cacheFor(bucketKey, store), "9125");
-    expect(recent.map((entry) => entry.messageId)).toEqual(["9122", "9123", "9124"]);
   });
 
   it("persists prompt-context projection provenance across cache restart", async () => {

@@ -1,5 +1,6 @@
 // Focused public test contracts for native agent-runtime adapters.
 
+export { setHostToolFactoryForTest } from "./test-helpers/agents/host-tool-factory.js";
 export {
   AUTH_PROFILE_RUNTIME_CONTRACT,
   createAuthAliasManifestRegistry,
@@ -11,6 +12,11 @@ export {
   openFileBackedSessionManagerForTest,
 } from "./test-helpers/agents/session-manager-file-fixture.js";
 export {
+  buildContractReplyPayloads,
+  createContractToolTerminalObserver,
+  createHostTtsRuntimeContract,
+  createOwnerBackedContractTool,
+  createProcessPollDeliveryContract,
   createTerminalPresentationContractTool,
   installCodexToolResultMiddleware,
   installOpenClawOwnedToolHooks,

@@ -1,6 +1,11 @@
 import path from "node:path";
+import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { resolveStateDir } from "../config/paths.js";
 import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
+import {
+  createTranscriptSummaryUpdates,
+  persistTranscriptSummary,
+} from "../transcripts/capture-summary.js";
 import { resolveTranscriptsConfig } from "../transcripts/config.js";
 import type {
   TranscriptSessionDescriptor,
@@ -11,8 +16,8 @@ import type {
   TranscriptUtterance,
 } from "../transcripts/provider-types.js";
 import { sanitizeTranscriptSourceLocator } from "../transcripts/source-locator.js";
+import { TranscriptsSummaryChangedError } from "../transcripts/store-errors.js";
 import { TranscriptsStore } from "../transcripts/store.js";
-import { summarizeTranscripts } from "../transcripts/summary.js";
 import { MeetingTranscriptDeliveryError } from "./session-transcript-store.js";
 import type { MeetingSessionRecord, MeetingTranscriptLine } from "./session-types.js";
 import type {
@@ -35,6 +40,7 @@ type ActiveCapture<TSession extends MeetingSessionRecord> = {
   session: TSession;
   timer?: ReturnType<typeof setInterval>;
   utteranceCount: number;
+  summaryUpdates?: Awaited<ReturnType<typeof createTranscriptSummaryUpdates>>;
 };
 
 type Subscriber = {
@@ -60,6 +66,8 @@ function descriptorForSession(
     startedAt: session.createdAt,
     metadata: {
       agentId: session.agentId,
+      // The meeting owner supplies this transcript ID.
+      sessionIdOrigin: "supplied",
       meetingSessionId: session.id,
       mode: session.mode,
       participantIdentity: session.participantIdentity,
@@ -98,16 +106,14 @@ export function createMeetingDurableTranscriptBridge<
     env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
   });
   const captures = new Map<string, ActiveCapture<TSession>>();
-  const pendingSubscribers = new Map<string, { agentId: string; meetingSessionId: string }>();
+  const pendingSubscribers = new Map<string, Subscriber>();
   const subscribers = new Map<string, Subscriber>();
   const lifecycleTasks = new KeyedAsyncQueue();
   const tasks = new KeyedAsyncQueue();
 
   const reportCaptureError = (sessionId: string, error: unknown) => {
     params.logger.debug?.(
-      `[meeting-transcripts] capture ignored session=${sessionId}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `[meeting-transcripts] capture ignored session=${sessionId}: ${coerceErrorMessage(error)}`,
     );
   };
 
@@ -118,16 +124,12 @@ export function createMeetingDurableTranscriptBridge<
     try {
       void Promise.resolve(subscriber.onStatus(status)).catch((error: unknown) => {
         params.logger.warn(
-          `[meeting-transcripts] subscriber status failed session=${status.sessionId ?? "unknown"}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `[meeting-transcripts] subscriber status failed session=${status.sessionId ?? "unknown"}: ${coerceErrorMessage(error)}`,
         );
       });
     } catch (error) {
       params.logger.warn(
-        `[meeting-transcripts] subscriber status failed session=${status.sessionId ?? "unknown"}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `[meeting-transcripts] subscriber status failed session=${status.sessionId ?? "unknown"}: ${coerceErrorMessage(error)}`,
       );
     }
   };
@@ -168,14 +170,27 @@ export function createMeetingDurableTranscriptBridge<
           }
           try {
             await store.writeSession(descriptor);
+            active.summaryUpdates = await createTranscriptSummaryUpdates({
+              config,
+              cfg: params.options.openclawConfig,
+              store,
+              session: descriptor,
+              logger: params.logger,
+              isCaptureActive: () =>
+                captures.get(session.id) === active && active.initialized && !active.closing,
+              assertCurrent: () => {
+                if (captures.get(session.id) !== active || active.closing) {
+                  throw new TranscriptsSummaryChangedError();
+                }
+              },
+            });
+            active.summaryUpdates.start();
             active.initialized = true;
             active.initializationWarned = false;
           } catch (error) {
             if (!active.initializationWarned) {
               params.logger.warn(
-                `[meeting-transcripts] durable capture initialization pending session=${session.id}: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
+                `[meeting-transcripts] durable capture initialization pending session=${session.id}: ${coerceErrorMessage(error)}`,
               );
               active.initializationWarned = true;
             }
@@ -242,9 +257,7 @@ export function createMeetingDurableTranscriptBridge<
             } catch (error) {
               subscribers.delete(subscriberSessionId);
               params.logger.warn(
-                `[meeting-transcripts] detached failing subscriber session=${subscriberSessionId}: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
+                `[meeting-transcripts] detached failing subscriber session=${subscriberSessionId}: ${coerceErrorMessage(error)}`,
               );
               notifySubscriberStatus(subscriber, {
                 sessionId: subscriberSessionId,
@@ -274,67 +287,89 @@ export function createMeetingDurableTranscriptBridge<
       if (!active) {
         return false;
       }
-      let initializationError: Error | undefined;
-      if (!active.initialized) {
-        try {
-          await store.writeSession(active.descriptor);
-          active.initialized = true;
-        } catch (error) {
-          initializationError =
-            error instanceof Error
-              ? error
-              : new Error("could not initialize durable transcript session", { cause: error });
+      const summariesStopped = active.summaryUpdates?.stop();
+      try {
+        let initializationError: Error | undefined;
+        if (!active.initialized) {
+          try {
+            await store.writeSession(active.descriptor);
+            active.initialized = true;
+          } catch (error) {
+            initializationError =
+              error instanceof Error
+                ? error
+                : new Error("could not initialize durable transcript session", { cause: error });
+          }
         }
-      }
-      let deliveryError: MeetingTranscriptDeliveryError | undefined;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          await active.runCapture(finalCapture);
-          deliveryError = undefined;
-          break;
-        } catch (error) {
-          if (!(error instanceof MeetingTranscriptDeliveryError)) {
-            reportCaptureError(session.id, error);
-            active.finalCaptureError = error instanceof Error ? error.message : String(error);
-            active.finalCaptureFailedAt ??= new Date().toISOString();
+        let deliveryError: MeetingTranscriptDeliveryError | undefined;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            await active.runCapture(finalCapture);
             deliveryError = undefined;
             break;
-          }
-          if (error.finalCaptureError !== undefined) {
-            active.finalCaptureError = error.finalCaptureError;
-            active.finalCaptureFailedAt ??= new Date().toISOString();
-          }
-          deliveryError = error;
-        }
-      }
-      if (deliveryError) {
-        throw deliveryError;
-      }
-      if (initializationError !== undefined) {
-        throw initializationError;
-      }
-      const finalCaptureError = active.finalCaptureError;
-      const stoppedAt = new Date().toISOString();
-      const stopped = {
-        ...active.descriptor,
-        stoppedAt,
-        ...(finalCaptureError !== undefined
-          ? {
-              metadata: {
-                ...active.descriptor.metadata,
-                finalCaptureError,
-                finalCaptureFailedAt: active.finalCaptureFailedAt,
-              },
+          } catch (error) {
+            if (!(error instanceof MeetingTranscriptDeliveryError)) {
+              reportCaptureError(session.id, error);
+              active.finalCaptureError = coerceErrorMessage(error);
+              active.finalCaptureFailedAt ??= new Date().toISOString();
+              deliveryError = undefined;
+              break;
             }
-          : {}),
-      };
-      try {
-        await tasks.enqueue(session.id, async () => {
-          await store.writeSession(stopped);
-          const utterances = await store.readUtterancesForSession(stopped, {
-            maxUtterances: config.maxUtterances,
+            if (error.finalCaptureError !== undefined) {
+              active.finalCaptureError = error.finalCaptureError;
+              active.finalCaptureFailedAt ??= new Date().toISOString();
+            }
+            deliveryError = error;
+          }
+        }
+        if (deliveryError) {
+          throw deliveryError;
+        }
+        if (initializationError !== undefined) {
+          throw initializationError;
+        }
+        await summariesStopped;
+        const finalCaptureError = active.finalCaptureError;
+        const stoppedAt = new Date().toISOString();
+        const stopped = {
+          ...active.descriptor,
+          stoppedAt,
+          ...(finalCaptureError !== undefined
+            ? {
+                metadata: {
+                  ...active.descriptor.metadata,
+                  finalCaptureError,
+                  finalCaptureFailedAt: active.finalCaptureFailedAt,
+                },
+              }
+            : {}),
+        };
+        try {
+          await tasks.enqueue(session.id, async () => {
+            await store.writeSession(stopped);
+            await persistTranscriptSummary({
+              config,
+              cfg: params.options.openclawConfig,
+              store,
+              session: stopped,
+              assertCurrent: () => {
+                if (captures.get(session.id) !== active || !active.closing) {
+                  throw new TranscriptsSummaryChangedError();
+                }
+              },
+            });
           });
-          await store.writeSummary(summarizeTranscripts({ session: stopped, utterances }), stopped);
+        } catch (error) {
+          params.logger.warn(
+            `[meeting-transcripts] could not finalize durable capture session=${session.id}: ${coerceErrorMessage(error)}`,
+          );
+          throw error;
+        }
+      } finally {
+        await summariesStopped;
+        // Final delivery drains before retirement, even if durable finalization
+        // needs recovery. Subscribers no longer receive this capture's audio.
+        await tasks.enqueue(session.id, async () => {
           for (const [subscriberSessionId, subscriber] of subscribers) {
             if (subscriber.meetingSessionId !== session.id) {
               continue;
@@ -343,18 +378,11 @@ export function createMeetingDurableTranscriptBridge<
               sessionId: subscriberSessionId,
               active: false,
               message: `${params.options.providerName} meeting capture ended.`,
-              source: stopped.source,
+              source: active.descriptor.source,
             });
             subscribers.delete(subscriberSessionId);
           }
         });
-      } catch (error) {
-        params.logger.warn(
-          `[meeting-transcripts] could not finalize durable capture session=${session.id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        throw error;
       }
       captures.delete(session.id);
       return true;
@@ -377,17 +405,21 @@ export function createMeetingDurableTranscriptBridge<
         };
       }
       let attached = false;
-      pendingSubscribers.set(request.session.sessionId, {
+      const subscriber: Subscriber = {
         agentId: session.agentId,
         meetingSessionId: session.id,
-      });
+        deliveredUtteranceIds: new Set(),
+        onStatus: request.onStatus,
+        onUtterance: request.onUtterance,
+      };
+      pendingSubscribers.set(request.session.sessionId, subscriber);
       try {
         await tasks.enqueue(session.id, async () => {
           if (captures.get(session.id) !== active || active.closing) {
             return;
           }
           const utterances = await store.readUtterancesForSession(active.descriptor);
-          const deliveredUtteranceIds = new Set<string>();
+          const { deliveredUtteranceIds } = subscriber;
           for (const utterance of utterances) {
             await request.onUtterance({
               ...utterance,
@@ -398,13 +430,7 @@ export function createMeetingDurableTranscriptBridge<
               deliveredUtteranceIds.add(utterance.id);
             }
           }
-          subscribers.set(request.session.sessionId, {
-            agentId: session.agentId,
-            deliveredUtteranceIds,
-            meetingSessionId: session.id,
-            onStatus: request.onStatus,
-            onUtterance: request.onUtterance,
-          });
+          subscribers.set(request.session.sessionId, subscriber);
           try {
             await request.onStatus?.({
               sessionId: request.session.sessionId,
@@ -437,19 +463,17 @@ export function createMeetingDurableTranscriptBridge<
       }
       return await tasks.enqueue(owner.meetingSessionId, async () => {
         const current = subscribers.get(request.sessionId);
-        if (!current) {
+        // A queued detach must not consume a replacement attachment with the same id.
+        if (current !== owner) {
           return { ok: true, sessionId: request.sessionId, stoppedAt: new Date().toISOString() };
         }
-        if (request.source.agentId !== current.agentId) {
-          return { ok: false as const, error: "transcripts session belongs to another agent" };
-        }
+        subscribers.delete(request.sessionId);
         notifySubscriberStatus(current, {
           sessionId: request.sessionId,
           active: false,
           message: `Detached from ${params.options.providerName} meeting capture.`,
           source: request.source,
         });
-        subscribers.delete(request.sessionId);
         return {
           ok: true as const,
           sessionId: request.sessionId,
