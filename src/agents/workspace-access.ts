@@ -3,10 +3,24 @@ import {
   collectErrorGraphCandidates,
   extractErrorCode,
 } from "@openclaw/normalization-core/error-coercion";
+import type {
+  WorkspaceSkillSourceRequest,
+  WorkspaceSkillSources,
+} from "../skills/loading/workspace-skill-sources.types.js";
+import type { SkillResourceSourceReader } from "../skills/types.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.types.js";
 
 /** Host-owned workspace files; callers keep their existing allowlists. */
 export type AgentWorkspaceAccess = {
+  /** Read native source tiers and execution-host facts without applying Gateway policy. */
+  loadSkills?: (request: WorkspaceSkillSourceRequest) => Promise<WorkspaceSkillSources>;
+  /** Keep a host subscription alive until aborted; notify without transferring file contents. */
+  watchSkills?: (
+    request: Pick<WorkspaceSkillSourceRequest, "sourcePlan" | "executionWorkspaceDir">,
+    onChange: (event: "change" | "unavailable") => void,
+    signal: AbortSignal,
+  ) => Promise<void>;
+  skillResources?: SkillResourceSourceReader;
   bridge: Pick<
     SandboxFsBridge,
     "readFile" | "readFileWithSource" | "readDirectory" | "writeFile" | "stat"
@@ -55,6 +69,7 @@ export function registerAgentWorkspaceAccess(
     throw new Error(`Workspace access is already registered: ${key}`);
   }
   const binding: { access?: AgentWorkspaceAccess; active: boolean } = { active: true };
+  const lifetime = new AbortController();
   const assertCurrent = () => {
     if (!binding.active || bindings.get(key) !== binding) {
       throw new WorkspaceAccessUnavailableError("Workspace access is stopped or not ready");
@@ -99,16 +114,82 @@ export function registerAgentWorkspaceAccess(
     };
   }
   const boundAccess: AgentWorkspaceAccess = { bridge: Object.freeze(bridge) };
+  const loadSkills = access.loadSkills?.bind(access);
+  if (loadSkills) {
+    boundAccess.loadSkills = async (request) => {
+      assertCurrent();
+      let result: WorkspaceSkillSources;
+      try {
+        result = await loadSkills(request);
+      } catch (cause) {
+        throw new WorkspaceAccessUnavailableError("Remote workspace skill discovery failed", {
+          cause,
+        });
+      }
+      assertCurrent();
+      return result;
+    };
+  }
+  const watchSkills = access.watchSkills?.bind(access);
+  if (watchSkills) {
+    boundAccess.watchSkills = async (request, onChange, signal) => {
+      assertCurrent();
+      const active = AbortSignal.any([signal, lifetime.signal]);
+      active.throwIfAborted();
+      await watchSkills(
+        request,
+        (event) => {
+          if (!active.aborted && binding.active && bindings.get(key) === binding) {
+            onChange(event);
+          }
+        },
+        active,
+      );
+    };
+  }
+  const skillResources = access.skillResources;
+  if (skillResources) {
+    boundAccess.skillResources = Object.freeze({
+      async readInstructions(filePath, options) {
+        assertCurrent();
+        options.signal?.throwIfAborted();
+        const result = await skillResources.readInstructions(filePath, options);
+        assertCurrent();
+        options.signal?.throwIfAborted();
+        return result;
+      },
+      async resolveExplicitSkill(selection) {
+        assertCurrent();
+        const result = await skillResources.resolveExplicitSkill(selection);
+        assertCurrent();
+        return result;
+      },
+      async readSkillFiles(skill, options) {
+        assertCurrent();
+        const result = await skillResources.readSkillFiles(skill, options);
+        assertCurrent();
+        return result;
+      },
+    });
+  }
   binding.access = Object.freeze(boundAccess);
   bindings.set(key, binding);
   return () => {
     // A stopped remote workspace remains remote; never expose stale local files.
     binding.active = false;
+    lifetime.abort();
   };
 }
 
-export function getAgentWorkspaceAccess(workspaceDir: string): AgentWorkspaceAccess | undefined {
+export function getAgentWorkspaceAccess(
+  workspaceDir: string,
+  capability?: keyof AgentWorkspaceAccess,
+): AgentWorkspaceAccess | undefined {
   const binding = bindings.get(path.resolve(workspaceDir));
+  // Stopping an adapter must not disable capabilities it never owned.
+  if (capability && binding?.access && !binding.access[capability]) {
+    return undefined;
+  }
   if (binding && !binding.active) {
     throw new WorkspaceAccessUnavailableError("Workspace access is stopped or not ready");
   }

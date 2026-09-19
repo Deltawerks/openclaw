@@ -8,3 +8,4 @@ export {
   type AgentWorkspaceAccess,
 } from "../agents/workspace-access.js";
 export { createWorkspaceBootstrapFilePolicy } from "../agents/workspace-bootstrap-policy.js";
+export { readWorkspaceSkillResources } from "../agents/workspace-worker.js";
