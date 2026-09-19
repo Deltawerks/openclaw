@@ -163,7 +163,10 @@ describe("SQLite read-only session operation custody", () => {
       { kinds: ["store", "state"] },
     );
     try {
-      child.emit("message", { id, result: { type: "start", handle } });
+      child.emit("message", {
+        id,
+        result: { type: "start", handle: { ...handle, cacheable: false } },
+      });
       expect(child.send).toHaveBeenLastCalledWith(
         { id, transfer: { type: "next", transferId: handle.id } },
         expect.any(Function),
