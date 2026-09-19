@@ -76,6 +76,7 @@ const packageManifestContractTests: PackageManifestContractParams[] = [
   { pluginId: "tlon", minHostVersionBaseline: "2026.3.22" },
   { pluginId: "tokenjuice", pluginLocalRuntimeDeps: ["tokenjuice"] },
   { pluginId: "twitch", minHostVersionBaseline: "2026.3.22" },
+  { pluginId: "typesafe", pluginLocalRuntimeDeps: ["@typesafe-ai/sdk"] },
   { pluginId: "voice-call", minHostVersionBaseline: "2026.3.22" },
   {
     pluginId: "whatsapp",

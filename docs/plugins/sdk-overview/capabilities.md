@@ -138,6 +138,9 @@ selected provider may incur its normal usage charges. Plugin disablement wins;
 installing a tool or credential alone does not select a provider. Vendor adapters
 own transport and model-specific translation; no vendor is a core dependency.
 
+The bundled [TypeSafe plugin](/plugins/typesafe) supplies a Jev adapter. It remains
+disabled until explicitly configured.
+
 ### Calling from a third-party plugin
 
 Like `api.runtime.llm.complete`, `api.runtime.judgments.evaluate` lets a plugin
