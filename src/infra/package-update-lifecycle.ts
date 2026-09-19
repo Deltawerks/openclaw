@@ -4,8 +4,15 @@ import {
   completePendingPackageLifecycle,
   PackageLifecycleOwnershipError,
 } from "./package-lifecycle.js";
-import type { runGlobalPackageUpdateSteps } from "./package-update-steps.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
+
+export type PackageUpdateStepRunner = (params: {
+  name: string;
+  argv: string[];
+  cwd?: string;
+  timeoutMs: number;
+  env?: NodeJS.ProcessEnv;
+}) => Promise<UpdateStepResult>;
 
 type PackageUpdateLifecycleResult =
   | { status: "complete" }
@@ -17,7 +24,7 @@ export async function runPackageUpdateLifecycle(params: {
   manager: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
-  runStep: Parameters<typeof runGlobalPackageUpdateSteps>[0]["runStep"];
+  runStep: PackageUpdateStepRunner;
   verifyCompleted: () => Promise<void>;
   steps: UpdateStepResult[];
 }): Promise<PackageUpdateLifecycleResult> {

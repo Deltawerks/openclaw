@@ -123,6 +123,50 @@ describe("package lifecycle ownership", () => {
     expect(await fs.readdir(packageRoot)).toEqual([]);
   });
 
+  it.each(["pending", "completed", "replacement"])(
+    "handles a cooperative release before the contended snapshot with %s work",
+    async (state) => {
+      const { packageRoot, pending, lock } = await fixture();
+      vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+      await fs.writeFile(lock, JSON.stringify(ownerPayload()));
+      const open = fs.open;
+      let released = false;
+      vi.spyOn(fs, "open").mockImplementation(async (file, flags, mode) => {
+        try {
+          return await open(file, flags, mode);
+        } catch (error) {
+          if (!released && file === lock && flags === "wx") {
+            expect(error).toMatchObject({ code: "EEXIST" });
+            released = true;
+            // The existing owner releases after exclusive creation collides, but
+            // before the provider can read that owner's payload.
+            await fs.rm(lock);
+            if (state === "completed") {
+              await fs.rm(pending);
+            } else if (state === "replacement") {
+              await fs.writeFile(lock, "{replacement publishing");
+            }
+          }
+          throw error;
+        }
+      });
+      const runScript = vi.fn();
+      const completion = completePendingPackageLifecycle({ packageRoot, runScript });
+      if (state === "replacement") {
+        await expect(completion).rejects.toBeInstanceOf(PackageLifecycleOwnershipError);
+        expect(runScript).not.toHaveBeenCalled();
+        expect(await fs.readFile(lock, "utf8")).toBe("{replacement publishing");
+        expect(await fs.readFile(pending, "utf8")).toBe("pending\n");
+      } else {
+        await expect(completion).resolves.toBe(state === "pending");
+        expect(runScript).toHaveBeenCalledTimes(state === "pending" ? 2 : 0);
+        await expect(fs.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.lstat(pending)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      expect(released).toBe(true);
+    },
+  );
+
   it("refuses an ambiguous lock even after its pending marker disappears", async () => {
     const { packageRoot, lock, pending } = await fixture();
     await fs.rm(pending);

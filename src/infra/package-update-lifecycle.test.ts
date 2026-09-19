@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH } from "../../scripts/lib/package-lifecycle-marker.mjs";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as pidAlive from "../shared/pid-alive.js";
 import { PACKAGE_DIST_INVENTORY_RELATIVE_PATH } from "./package-dist-inventory.js";
@@ -207,8 +208,8 @@ describe("runGlobalPackageUpdateSteps lifecycle ownership", () => {
 
   it("reverifies the candidate after another lifecycle owner completes", async () => {
     const fixture = await createFixture();
-    const entered = Promise.withResolvers<void>();
-    const finish = Promise.withResolvers<void>();
+    const entered = createDeferred();
+    const finish = createDeferred();
     let owner: Promise<boolean> | undefined;
     let waitedForOwner = false;
     const isPidAlive = pidAlive.isPidAlive;

@@ -173,15 +173,13 @@ async function acquireLifecycleLock(
         !isPidAlive(owner.pid) ||
         getFileLockProcessStartTime(owner.pid) !== owner.starttime
       ) {
-        if (owner) {
-          try {
-            await fs.lstat(paths.lock);
-          } catch (inspectionError) {
-            if (hasErrorCode(inspectionError, "ENOENT")) {
-              // A cooperative release can win this race. Retry exclusive creation,
-              // never reclamation, within the original admission deadline.
-              continue;
-            }
+        try {
+          await fs.lstat(paths.lock);
+        } catch (inspectionError) {
+          if (hasErrorCode(inspectionError, "ENOENT")) {
+            // Release can precede even the provider's first payload read. Retry
+            // exclusive creation, never reclamation, within the original deadline.
+            continue;
           }
         }
         throw new PackageLifecycleOwnershipError(

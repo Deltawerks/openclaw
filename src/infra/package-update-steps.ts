@@ -12,6 +12,7 @@ import { collectPackageDistContentInventoryErrors } from "./package-dist-invento
 import { readPackageVersion } from "./package-json.js";
 import type { LocalPackageOverridesResult } from "./package-local-overrides.js";
 import { readPackageVersionIfPresent } from "./package-update-integrity.js";
+import type { PackageUpdateStepRunner } from "./package-update-lifecycle.js";
 import { runPackageUpdateLifecycle } from "./package-update-lifecycle.js";
 import {
   checkGlobalPackageUpdatePermissions,
@@ -67,14 +68,6 @@ import {
 import type { UpdateRecovery } from "./update-recovery.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 export type { PackageUpdateTransaction } from "./package-update-swap.js";
-
-type PackageUpdateStepRunner = (params: {
-  name: string;
-  argv: string[];
-  cwd?: string;
-  timeoutMs: number;
-  env?: NodeJS.ProcessEnv;
-}) => Promise<UpdateStepResult>;
 
 type PackageUpdateStepsResult = {
   localOverrides?: LocalPackageOverridesResult;
