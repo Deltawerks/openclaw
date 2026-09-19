@@ -81,6 +81,7 @@ import {
   recordSessionStateEventInDatabase,
 } from "../sessions/session-state-events.kernel.js";
 import { listWatchedSessionUpstreamLinksInDatabase } from "../sessions/session-upstream-links.kernel.js";
+import { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
 import { isTaskRegistryWorkerCommand } from "../tasks/task-registry.worker-contract.js";
 import { executeTaskRegistryCommand } from "../tasks/task-registry.worker.js";
 import { ensureMeetingTranscriptsSchema } from "../transcripts/sqlite-schema.js";
@@ -108,7 +109,7 @@ import type {
 } from "./openclaw-state-worker-contract.js";
 import { readUserModelAuthProfile } from "./user-model-accounts.js";
 import { executeUserPreferenceCommand } from "./user-preferences.worker.js";
-import { executeUserProfileReadCommand } from "./user-profiles.worker.js";
+import { executeUserProfileCommand } from "./user-profiles.worker.js";
 
 type Operations = OpenClawStateWorkerOperations & OpenClawStateWorkerInspectionOperations;
 
@@ -289,8 +290,13 @@ export function executeSharedStateCommand(
       env: getSqliteWorkerStateContext().environment,
     });
   }
-  if (command.type === "userProfiles.list" || command.type === "userProfiles.directory") {
-    return executeUserProfileReadCommand(command, {
+  if (
+    command.type === "userProfiles.list" ||
+    command.type === "userProfiles.directory" ||
+    command.type === "userProfiles.avatar.inspect" ||
+    command.type === "userProfiles.avatar.adopt"
+  ) {
+    return executeUserProfileCommand(command, {
       database: open(),
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
@@ -425,6 +431,9 @@ export function executeSharedStateCommand(
     path: context.databasePath,
     env: getSqliteWorkerStateContext().environment,
   };
+  if (command.type === "skillUploads.commit") {
+    return commitSkillUploadInDatabase(command.input, writeOptions);
+  }
   if (
     command.type === "deviceAuth.store" ||
     command.type === "deviceAuth.storeOrigin" ||
