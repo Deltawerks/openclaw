@@ -292,7 +292,7 @@ export async function handleSendChat(
                 previousDraft,
                 attachmentsToSend,
                 previousMentions,
-                true,
+                "annotations",
               )
             : {};
         if (messageOverride == null) {
@@ -397,18 +397,15 @@ export async function handleSendChat(
                 attachments: cleared.previousAttachments ?? [],
               };
             }
-          } else {
+          } else if (parsed.command.key !== "export-session") {
             recoveryComposer = {
               draft: previousDraft,
               mentions: previousMentions,
-              attachments: parsed.command.key === "export-session" ? [] : attachmentsToSend,
+              attachments: attachmentsToSend,
             };
             host.chatMessage = "";
             host.chatMentions = [];
-            // Export stays put; /new must clear attachments before route handoff.
-            if (parsed.command.key !== "export-session") {
-              host.chatAttachments = [];
-            }
+            host.chatAttachments = [];
             resetChatInputHistoryNavigation(host);
           }
         }
@@ -427,6 +424,20 @@ export async function handleSendChat(
               chatOutboxDrainDependencies.sendResetSlashCommand(host, resetMessage, resetOpts),
           },
         );
+        if (
+          parsed.command.key === "export-session" &&
+          dispatchResult === "completed" &&
+          messageOverride == null &&
+          submittedCommandScopeIsVisible(host, recovery)
+        ) {
+          clearSubmittedComposerState(
+            host,
+            previousDraft,
+            attachmentsToSend,
+            previousMentions,
+            "all",
+          );
+        }
         if (dispatchResult === "failed") {
           if (messageOverride != null || submittedCommandScopeIsVisible(host, recovery)) {
             opts?.onLocalCommandSendRejected?.();
@@ -603,7 +614,7 @@ export async function handleSendChat(
             previousDraft,
             attachmentsToSend,
             previousMentions,
-            Boolean(rawParsedCommand),
+            rawParsedCommand ? "annotations" : "none",
           )
         : {};
     if (messageOverride == null) {
