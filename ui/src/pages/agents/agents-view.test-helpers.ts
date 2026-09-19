@@ -5,6 +5,12 @@ import type { renderAgents } from "./view.ts";
 type AgentsViewProps = Parameters<typeof renderAgents>[0];
 type AgentFilesProps = Parameters<typeof renderAgentFiles>[0];
 
+export function primaryModelPicker(container: ParentNode) {
+  return container.querySelector(
+    'openclaw-select-picker:has([role="listbox"][aria-label^="Primary model"])',
+  );
+}
+
 export const inertAgentFileControls = {
   agentFileConflict: null,
   onLoadFiles: () => undefined,
