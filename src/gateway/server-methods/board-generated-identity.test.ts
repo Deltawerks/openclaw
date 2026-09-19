@@ -6,6 +6,7 @@ import { SqliteBoardStore } from "../../boards/sqlite-board-store.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.entry.js";
 import { resetPluginRuntimeStateForTest } from "../../plugins/runtime.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
@@ -14,8 +15,9 @@ import { createBoardHarness } from "./board.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-afterEach(() => {
+afterEach(async () => {
   resetPluginRuntimeStateForTest();
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });
@@ -86,6 +88,7 @@ it("serializes in-flight generated-name collisions and reuses both names after r
     broadcast.mock.calls.map(([, event]) => (event as { widget?: string }).widget).filter(Boolean),
   ).toEqual(expect.arrayContaining(committedNames));
 
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   const reloaded = createBoardHarness(undefined, {}, new SqliteBoardStore(options));

@@ -3,6 +3,7 @@ import type { BoardWidgetMaterializedPutParams } from "../../packages/gateway-pr
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
@@ -11,11 +12,14 @@ import { BoardValidationError } from "./board-layout.js";
 import { createBoardWidgetPutSnapshot, type BoardStore } from "./board-store.js";
 import { readBoardHtml, createTestBoardStore } from "./board-store.test-support.js";
 
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
-});
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeOpenClawAgentDatabasesAsync();
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 async function putHtml(store: BoardStore, sessionKey: string, name: string, html = "<p>one</p>") {
   return await store.putWidget({ sessionKey, name, content: { kind: "html", html } });

@@ -23,6 +23,7 @@ import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gate
 import { resetGatewayWorkAdmission } from "../../process/gateway-work-admission.js";
 import { runWithGatewayRootWorkAdmissionForTest } from "../../process/gateway-work-admission.test-helpers.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
@@ -75,8 +76,9 @@ describe("board gateway runtime boundaries", () => {
     cronRun.mockReset();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     resetGatewayWorkAdmission();
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
     closeOpenClawStateDatabaseForTest();
   });
@@ -750,6 +752,7 @@ describe("board gateway runtime boundaries", () => {
     );
     expect(descriptor).not.toHaveProperty("props");
 
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
     closeOpenClawStateDatabaseForTest();
     tool = createTool();

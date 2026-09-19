@@ -6,6 +6,7 @@ import { buildWidgetDocument } from "../canvas/wrap.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.entry.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
@@ -17,7 +18,8 @@ import { createProgressCardHandlers } from "./server-methods/progress-card.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-afterEach(() => {
+afterEach(async () => {
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   clearRuntimeConfigSnapshot();
@@ -76,6 +78,7 @@ it("keeps global boards and progress under each owner's canonical row across reo
       expect.objectContaining({ session_key: "global" }),
     ]);
   }
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 
@@ -164,6 +167,7 @@ it("keeps retained global progress separate from an ordinary qualified global ro
       undefined,
     );
   }
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 
@@ -236,6 +240,7 @@ it("reopens separate boards and progress cards in a shared database owned by ano
     });
     await progressCardStore.put(sessionKey, { markdown: `${agentId} progress` });
   }
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 

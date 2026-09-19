@@ -226,11 +226,14 @@ test.each(
             if (operation === "board") {
               boardAppends.push(
                 board
-                  .putWidget({
-                    sessionKey: scope.sessionKey,
-                    name: "writer-proof",
-                    content: { kind: "html", html: "<p>committed</p>" },
-                  })
+                  .putWidget(
+                    {
+                      sessionKey: scope.sessionKey,
+                      name: "writer-proof",
+                      content: { kind: "html", html: "<p>committed</p>" },
+                    },
+                    { assertCurrent: () => expect(owner.getStore()).toBe("transcript-writer") },
+                  )
                   .then(
                     (snapshot) => {
                       expect(workerAuthorizationChecked).toBe(true);
@@ -262,6 +265,8 @@ test.each(
             databaseOptions,
           );
           expect(stored).toEqual({ found: true, value: [] });
+          expect(appends).toEqual([]);
+          expect(appendErrors).toEqual([]);
         }
       });
     const reclamation = owner.run("reclamation-owner", () =>
@@ -290,16 +295,20 @@ test.each(
           value: { archivedTranscripts: [], deleted: true },
         });
       }
+      await Promise.all(boardAppends);
     } finally {
       process.off("worker", observeWorker);
     }
-    await Promise.all(boardAppends);
-    expect(workers).toHaveLength(1);
+    // Boards add one canonical data worker; reclamation retains its separate worker.
+    expect(workers).toHaveLength(operation === "board" ? 2 : 1);
     expect(workers[0]?.id).toBeGreaterThan(0);
     expect(diagnostics).toEqual({ kind: "history-eviction", workerThreadId: workers[0]?.id });
     await closeOpenClawAgentDatabasesAsync();
     expect(workers[0]?.worker.threadId).toBe(-1);
     if (operation === "board") {
+      expect(workers[1]?.id).toBeGreaterThan(0);
+      expect(workers[1]?.id).not.toBe(workers[0]?.id);
+      expect(workers[1]?.worker.threadId).toBe(-1);
       expect(checksDuringWriters).toBe(0);
       expect(boardWriteOrder).toEqual(scopes.map((scope) => scope.sessionId));
     } else {

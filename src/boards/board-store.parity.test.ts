@@ -7,6 +7,7 @@ import { deleteSessionEntryLifecycle } from "../config/sessions/session-accessor
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { migrateLegacyMediaPersistence } from "../infra/state-migrations.media-persistence.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
@@ -27,7 +28,8 @@ function seedSession(env: NodeJS.ProcessEnv, agentId: string, sessionKey: string
   return database.path;
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });
@@ -499,6 +501,7 @@ describe("SqliteBoardStore persistence", () => {
     seedSession(env, "main", sessionKey);
     const opened = openOpenClawAgentDatabase({ agentId: "main", env });
     const databasePath = opened.path;
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
     closeOpenClawStateDatabaseForTest();
 
@@ -615,6 +618,7 @@ describe("SqliteBoardStore persistence", () => {
       PRAGMA user_version = 14;
       UPDATE schema_meta SET schema_version = 14 WHERE meta_key = 'primary';
     `);
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
 
     expect((await migrateLegacyMediaPersistence({ env })).warnings).toEqual([]);
@@ -978,6 +982,7 @@ describe("SqliteBoardStore persistence", () => {
       content: { kind: "html", html: "beta" },
     });
 
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawAgentDatabasesForTest();
     closeOpenClawStateDatabaseForTest();
 

@@ -18,7 +18,10 @@ import {
   onSessionIdentityMutation,
   type SessionIdentityMutation,
 } from "../sessions/session-lifecycle-events.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { loadGatewayWorkerEnvironmentStartupState } from "./server-worker-environment-startup.js";
@@ -54,12 +57,13 @@ const {
 } = setupGatewaySessionsHandlerTestHarness();
 const companions = new Set<SessionCompanionService>();
 
-afterEach(() => {
+afterEach(async () => {
   for (const companion of companions) {
     companion.dispose();
   }
   companions.clear();
   vi.restoreAllMocks();
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });

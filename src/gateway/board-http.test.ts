@@ -6,7 +6,10 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { readBoardHtml, createTestBoardStore } from "../boards/board-store.test-support.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { handleBoardHttpRequest } from "./board-http.js";
 import {
@@ -123,6 +126,7 @@ afterAll(async () => {
       resolve();
     });
   });
+  await closeOpenClawAgentDatabasesAsync(stateDir);
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   rmSync(stateDir, { recursive: true, force: true });

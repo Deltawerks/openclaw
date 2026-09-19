@@ -5,6 +5,7 @@ import { onTestFinished } from "vitest";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.entry.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
@@ -19,7 +20,8 @@ export function createTestBoardStore(options: { stateDir?: string } = {}): Sqlit
   const seededSessions = new Set<string>();
 
   if (ownsStateDir) {
-    onTestFinished(() => {
+    onTestFinished(async () => {
+      await closeOpenClawAgentDatabasesAsync();
       closeOpenClawAgentDatabasesForTest();
       closeOpenClawStateDatabaseForTest();
       rmSync(stateDir, { recursive: true, force: true });
