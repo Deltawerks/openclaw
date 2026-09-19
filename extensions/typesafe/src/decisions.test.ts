@@ -1,10 +1,10 @@
-import type { JudgmentBatch } from "openclaw/plugin-sdk/judgments";
+import type { DecisionBatch } from "openclaw/plugin-sdk/decisions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { evaluate } from "./client.js";
+import { createDecisionProvider } from "./decisions.js";
 import { EvaluationError } from "./errors.js";
-import { createJudgmentProvider } from "./judgments.js";
 vi.mock("./client.js", () => ({ evaluate: vi.fn() }));
-const batch: JudgmentBatch = {
+const batch: DecisionBatch = {
   state: "synthetic",
   questions: {
     b: { type: "boolean", instructions: "truth" },
@@ -13,6 +13,8 @@ const batch: JudgmentBatch = {
   },
 };
 const context = () => ({
+  model: "jev-agent-selected",
+  agentId: "research",
   signal: new AbortController().signal,
   deadlineMonotonicMs: performance.now() + 500,
 });
@@ -20,7 +22,7 @@ const config = { apiKey: "synthetic-key", model: "jev-test", timeoutMs: 2000 };
 beforeEach(() => {
   vi.mocked(evaluate).mockReset();
 });
-describe("host judgment adapter", () => {
+describe("host decision adapter", () => {
   it("maps Boolean/Noul and ordered fractional scores without rounding or losing distributions", async () => {
     vi.mocked(evaluate).mockResolvedValue({
       evaluation: {
@@ -44,7 +46,7 @@ describe("host judgment adapter", () => {
         usage: { input_tokens: 13, output_tokens: 3 },
       },
     });
-    const result = await createJudgmentProvider(() => config).evaluate(batch, context());
+    const result = await createDecisionProvider(() => config).evaluate(batch, context());
     expect(result).toEqual({
       status: "ok",
       result: {
@@ -63,12 +65,13 @@ describe("host judgment adapter", () => {
       },
     });
     expect(vi.mocked(evaluate).mock.lastCall?.[0]).toMatchObject({
+      model: "jev-agent-selected",
       questions: { b: { type: "noul" } },
     });
     expect(vi.mocked(evaluate).mock.lastCall?.[1].timeoutMs).toBeLessThanOrEqual(500);
   });
   it("rejects unsupported vendor rubrics locally and cold credentials without dispatch", async () => {
-    const provider = createJudgmentProvider(() => config);
+    const provider = createDecisionProvider(() => config);
     expect(
       await provider.evaluate(
         { state: null, questions: { s: { type: "score", criteria: Array(11).fill("level") } } },
@@ -76,7 +79,7 @@ describe("host judgment adapter", () => {
       ),
     ).toEqual({ status: "unavailable", reason: "unsupported-input" });
     expect(
-      await createJudgmentProvider(() => ({ ...config, apiKey: undefined })).evaluate(
+      await createDecisionProvider(() => ({ ...config, apiKey: undefined })).evaluate(
         batch,
         context(),
       ),
@@ -89,7 +92,7 @@ describe("host judgment adapter", () => {
       vi.mocked(evaluate).mockRejectedValue(
         new EvaluationError("synthetic-private-detail", reason, 123),
       );
-      expect(await createJudgmentProvider(() => config).evaluate(batch, context())).toEqual({
+      expect(await createDecisionProvider(() => config).evaluate(batch, context())).toEqual({
         status: "unavailable",
         reason,
         retryAfterMs: 123,
@@ -103,13 +106,13 @@ describe("host judgment adapter", () => {
       throw new EvaluationError("cancelled", "transport");
     });
     await expect(
-      createJudgmentProvider(() => config).evaluate(batch, {
+      createDecisionProvider(() => config).evaluate(batch, {
         ...context(),
         signal: controller.signal,
       }),
     ).rejects.toThrow("caller closed");
     vi.mocked(evaluate).mockRejectedValue(new Error("private detail"));
-    await expect(createJudgmentProvider(() => config).evaluate(batch, context())).rejects.toThrow(
+    await expect(createDecisionProvider(() => config).evaluate(batch, context())).rejects.toThrow(
       "adapter contract failure",
     );
   });

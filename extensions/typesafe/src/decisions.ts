@@ -1,25 +1,29 @@
 import type {
-  JudgmentBatch,
-  JudgmentBatchResult,
-  JudgmentProviderV1,
-} from "openclaw/plugin-sdk/judgments";
+  DecisionBatch,
+  DecisionBatchResult,
+  DecisionProviderV1,
+} from "openclaw/plugin-sdk/decisions";
 import { evaluate as evaluateTypeSafe } from "./client.js";
 import type { RuntimeConfig } from "./config.js";
 import { EvaluationError } from "./errors.js";
 import { MAX_CHOICE_OPTIONS, MAX_SCORE_LEVELS, parseInput } from "./schema.js";
 
 /** Transport and result validation are shared with the independently usable agent tool. */
-export function createJudgmentProvider(getConfig: () => RuntimeConfig): JudgmentProviderV1 {
+export function createDecisionProvider(getConfig: () => RuntimeConfig): DecisionProviderV1 {
   return {
     id: "typesafe",
     contractVersion: 1,
     isReady: () => Boolean(getConfig().apiKey),
-    async evaluate(batch: JudgmentBatch, context) {
+    async evaluate(batch: DecisionBatch, context) {
       context.signal.throwIfAborted();
       const config = getConfig();
-      if (!config.apiKey) return { status: "unavailable", reason: "credentials-unavailable" };
+      if (!config.apiKey) {
+        return { status: "unavailable", reason: "credentials-unavailable" };
+      }
       const remaining = context.deadlineMonotonicMs - performance.now();
-      if (remaining <= 0) return { status: "unavailable", reason: "transport" };
+      if (remaining <= 0) {
+        return { status: "unavailable", reason: "transport" };
+      }
       if (
         Object.values(batch.questions).some((q) =>
           q.type === "choice"
@@ -39,7 +43,7 @@ export function createJudgmentProvider(getConfig: () => RuntimeConfig): Judgment
       // Validate locally before credentials can be sent; never truncate/split a rubric.
       let input: ReturnType<typeof parseInput>;
       try {
-        input = parseInput({ state: batch.state, questions });
+        input = parseInput({ state: batch.state, questions, model: context.model });
       } catch {
         return { status: "unavailable", reason: "unsupported-input" };
       }
@@ -50,15 +54,17 @@ export function createJudgmentProvider(getConfig: () => RuntimeConfig): Judgment
           context.signal,
         );
         context.signal.throwIfAborted();
-        const answers: Record<string, JudgmentBatchResult["answers"][string]> = {};
+        const answers: Record<string, DecisionBatchResult["answers"][string]> = {};
         for (const [id, answer] of Object.entries(evaluation.answers)) {
-          if (answer.type === "noul")
+          if (answer.type === "noul") {
             answers[id] = { type: "boolean", probabilityTrue: answer.noul };
-          else if (answer.type === "choice") answers[id] = answer;
-          else {
+          } else if (answer.type === "choice") {
+            answers[id] = answer;
+          } else {
             const question = batch.questions[id];
-            if (!question || question.type !== "score")
+            if (!question || question.type !== "score") {
               return { status: "unavailable", reason: "invalid-response" };
+            }
             answers[id] = {
               type: "score",
               score: answer.score,
@@ -80,13 +86,15 @@ export function createJudgmentProvider(getConfig: () => RuntimeConfig): Judgment
         };
       } catch (error) {
         context.signal.throwIfAborted();
-        if (error instanceof EvaluationError)
+        if (error instanceof EvaluationError) {
           return {
             status: "unavailable",
             reason: error.reason,
             ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
           };
-        throw new Error("TypeSafe judgment adapter contract failure.");
+        }
+        // oxlint-disable-next-line preserve-caught-error -- Raw vendor causes can contain credentials or supplied state.
+        throw new Error("TypeSafe decision adapter contract failure.");
       }
     },
   };

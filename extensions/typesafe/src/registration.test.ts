@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import fs from "node:fs";
 import type { OpenClawPluginApi, AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { getPreparedPluginSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
@@ -7,7 +8,7 @@ import plugin from "../index.js";
 import { evaluate } from "./client.js";
 import { ConfigSchema, runtimeConfig } from "./config.js";
 
-// Registration tests exercise host wiring without loading or executing the vendor SDK.
+// Registration tests exercise host wiring without dispatching HTTP requests.
 vi.mock("./client.js", () => ({ evaluate: vi.fn() }));
 
 vi.mock("openclaw/plugin-sdk/secret-input-runtime", () => ({
@@ -51,18 +52,25 @@ describe("plugin ownership and configuration", () => {
         },
       },
       registerTool,
-      registerJudgmentProvider: vi.fn(),
+      registerDecisionProvider: vi.fn(),
     } as unknown as OpenClawPluginApi;
     plugin.register(api);
     expect(registerTool).toHaveBeenCalledTimes(1);
-    const tool: AnyAgentTool = registerTool.mock.calls[0][0];
+    const registration = registerTool.mock.calls[0];
+    assert(registration);
+    const tool: AnyAgentTool = registration[0];
     expect(tool.name).toBe("typesafe_evaluate");
-    expect(registerTool.mock.calls[0][1]).toEqual({ optional: true });
+    expect(registration[1]).toEqual({ optional: true });
     expect(manifest.contracts).toEqual({
       tools: ["typesafe_evaluate"],
-      judgmentProviders: ["typesafe"],
+      decisionProviders: ["typesafe"],
     });
+    expect(manifest.decisionModels).toEqual([
+      { provider: "typesafe", id: "jev-latest", name: "Jev" },
+      { provider: "typesafe", id: "jev-1.13.0", name: "Jev 1.13.0" },
+    ]);
     expect(manifest.providers).toBeUndefined();
+    expect(manifest.modelCatalog).toBeUndefined();
     expect(manifest.controlUi).toBeUndefined();
     const metadata = JSON.parse(
       fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -70,7 +78,7 @@ describe("plugin ownership and configuration", () => {
     expect(metadata.openclaw.controlUi).toBeUndefined();
     expect(metadata.openclaw.extensions).toEqual(["./index.ts"]);
     expect(manifest.enabledByDefault).toBe(false);
-    expect(api.registerJudgmentProvider).toHaveBeenCalledExactlyOnceWith(
+    expect(api.registerDecisionProvider).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ id: "typesafe", contractVersion: 1 }),
     );
     expect(metadata.devDependencies).not.toHaveProperty("jsdom");
@@ -81,9 +89,11 @@ describe("plugin ownership and configuration", () => {
       pluginConfig: {},
       runtime: { config: { current: () => ({}) } },
       registerTool,
-      registerJudgmentProvider: vi.fn(),
+      registerDecisionProvider: vi.fn(),
     } as unknown as OpenClawPluginApi);
-    const tool: AnyAgentTool = registerTool.mock.calls[0][0];
+    const registration = registerTool.mock.calls[0];
+    assert(registration);
+    const tool: AnyAgentTool = registration[0];
     vi.mocked(evaluate).mockClear();
     await expect(
       tool.execute("test", {
@@ -110,9 +120,11 @@ it("uses current credentials through rotation, unavailability and recovery", asy
       config: { current: () => ({ plugins: { entries: { typesafe: { config: current } } } }) },
     },
     registerTool,
-    registerJudgmentProvider: vi.fn(),
+    registerDecisionProvider: vi.fn(),
   } as unknown as OpenClawPluginApi);
-  const tool: AnyAgentTool = registerTool.mock.calls[0][0];
+  const registration = registerTool.mock.calls[0];
+  assert(registration);
+  const tool: AnyAgentTool = registration[0];
   vi.mocked(evaluate).mockReset();
   vi.mocked(evaluate).mockResolvedValue({
     evaluation: {
@@ -159,9 +171,11 @@ it("uses only prepared references for the registered tool without stale fallback
       },
     },
     registerTool,
-    registerJudgmentProvider: vi.fn(),
+    registerDecisionProvider: vi.fn(),
   } as unknown as OpenClawPluginApi);
-  const tool: AnyAgentTool = registerTool.mock.calls[0][0];
+  const registration = registerTool.mock.calls[0];
+  assert(registration);
+  const tool: AnyAgentTool = registration[0];
   const request = { state: null, questions: { q: { type: "noul", instructions: "test" } } };
   vi.mocked(evaluate).mockReset();
   vi.mocked(evaluate).mockResolvedValue({
@@ -192,13 +206,15 @@ it("uses only prepared references for the registered tool without stale fallback
 });
 
 it("executes the registered provider with prepared credentials and preserves cancellation", async () => {
-  const registerJudgmentProvider = vi.fn();
+  const registerDecisionProvider = vi.fn();
   plugin.register({
     runtime: { config: { current: () => ({}) } },
     registerTool: vi.fn(),
-    registerJudgmentProvider,
+    registerDecisionProvider,
   } as unknown as OpenClawPluginApi);
-  const provider = registerJudgmentProvider.mock.calls[0][0];
+  const registration = registerDecisionProvider.mock.calls[0];
+  assert(registration);
+  const provider = registration[0];
   vi.mocked(getPreparedPluginSecretInput).mockReturnValue({ revision: 1, value: "synthetic-key" });
   vi.mocked(evaluate).mockReset();
   vi.mocked(evaluate).mockResolvedValue({
@@ -210,7 +226,12 @@ it("executes the registered provider with prepared credentials and preserves can
   });
   const batch = { state: "synthetic evidence", questions: { q: { type: "boolean" } } };
   const controller = new AbortController();
-  const context = { signal: controller.signal, deadlineMonotonicMs: performance.now() + 1000 };
+  const context = {
+    model: "jev-agent-selected",
+    agentId: "research",
+    signal: controller.signal,
+    deadlineMonotonicMs: performance.now() + 1000,
+  };
   expect(provider.isReady()).toBe(true);
   await expect(provider.evaluate(batch, context)).resolves.toMatchObject({
     status: "ok",

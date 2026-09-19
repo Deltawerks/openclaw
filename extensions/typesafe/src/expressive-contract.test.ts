@@ -1,7 +1,10 @@
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { evaluate } from "./client.js";
 import { EvaluateInput, parseInput, parseResult } from "./schema.js";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const config = { apiKey: "synthetic-key", model: "jev-default", timeoutMs: 1000 };
 const usage = { input_tokens: 1, output_tokens: 1 };
@@ -12,7 +15,7 @@ const example = JSON.parse(
   ),
 );
 
-it("preserves structured instructions, all criteria types, legends, and model override through the real SDK", async () => {
+it("preserves structured instructions, all criteria types, legends, and model override through HTTP", async () => {
   const input = { ...example, model: "jev-pinned" };
   const answer = {
     model: "jev-pinned",
@@ -38,10 +41,13 @@ it("preserves structured instructions, all criteria types, legends, and model ov
     usage,
   };
   const fetch = vi.fn(
-    async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(answer)),
+    async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(answer)),
   );
-  expect(await evaluate(input, config, undefined, fetch)).toEqual({ evaluation: answer });
-  expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual(input);
+  vi.stubGlobal("fetch", fetch);
+  expect(await evaluate(input, config)).toEqual({ evaluation: answer });
+  const body = fetch.mock.calls[0]?.[1]?.body;
+  assert(typeof body === "string");
+  expect(JSON.parse(body)).toEqual(input);
   const bad = structuredClone(answer);
   bad.answers.urgency.legend[0].examples = ["Different rubric"];
   expect(() => parseResult(bad, parseInput(input))).toThrow("invalid evaluation response");
@@ -72,10 +78,11 @@ it("supports 255 options with literal labels and rejects 256 before dispatch", a
     usage,
   };
   const fetch = vi.fn(async () => new Response(JSON.stringify(answer)));
-  expect(await evaluate(input, config, undefined, fetch)).toEqual({ evaluation: answer });
+  vi.stubGlobal("fetch", fetch);
+  expect(await evaluate(input, config)).toEqual({ evaluation: answer });
   criteria.extra = null;
   fetch.mockClear();
-  await expect(evaluate(input, config, undefined, fetch)).rejects.toThrow("2–255");
+  await expect(evaluate(input, config)).rejects.toThrow("2–255");
   expect(fetch).not.toHaveBeenCalled();
 });
 
@@ -97,7 +104,8 @@ it("accepts larger states and question batches without silently splitting them",
   const fetch = vi.fn(
     async () => new Response(JSON.stringify({ model: "jev-test", answers, usage })),
   );
-  expect((await evaluate(input, config, undefined, fetch)).evaluation.answers).toEqual(answers);
+  vi.stubGlobal("fetch", fetch);
+  expect((await evaluate(input, config)).evaluation.answers).toEqual(answers);
   expect(fetch).toHaveBeenCalledOnce();
 });
 
@@ -107,7 +115,7 @@ it.each([
   "",
   { question: "True?", examples: [true, 1, null] },
   ["True?", { rule: "x" }],
-])("accepts SDK EntryType instructions, including omitted instructions", (instructions) => {
+])("accepts structured instructions, including omitted instructions", (instructions) => {
   const q = { type: "noul", ...(instructions === undefined ? {} : { instructions }) };
   expect(() => parseInput({ state: null, questions: { q } })).not.toThrow();
 });
@@ -120,8 +128,9 @@ it.each([
   { type: "score", criteria: ["ok", { nested: Infinity }] },
 ])("rejects invalid structured values before dispatch without leaking content", async (q) => {
   const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
   await expect(
-    evaluate({ state: "private state", questions: { "private ID": q } }, config, undefined, fetch),
+    evaluate({ state: "private state", questions: { "private ID": q } }, config),
   ).rejects.toThrow();
   try {
     parseInput({ state: "private state", questions: { "private ID": q } });
@@ -133,12 +142,33 @@ it.each([
 
 it("publishes typed map values and every variant without patternProperties", () => {
   // Regression for the agent-visible empty-object declaration, not just runtime validation.
-  const schema = JSON.parse(JSON.stringify(EvaluateInput));
-  expect(JSON.stringify(schema)).not.toContain("patternProperties");
-  const variants = schema.properties.questions.additionalProperties.anyOf;
-  expect(variants.map((v: any) => v.properties.type.const)).toEqual(["noul", "choice", "score"]);
-  expect(
-    variants[1].properties.criteria.additionalProperties.anyOf.map((v: any) => v.type),
-  ).toEqual(["string", "object", "array", "null"]);
-  expect(variants[0].properties.criteria.anyOf[0].properties).toHaveProperty("true");
+  expect(JSON.stringify(EvaluateInput)).not.toContain("patternProperties");
+  expect(EvaluateInput.properties.questions).toMatchObject({
+    additionalProperties: {
+      anyOf: [
+        {
+          properties: {
+            type: { const: "noul" },
+            criteria: { anyOf: [{ properties: { true: expect.any(Object) } }, { type: "null" }] },
+          },
+        },
+        {
+          properties: {
+            type: { const: "choice" },
+            criteria: {
+              additionalProperties: {
+                anyOf: [
+                  { type: "string" },
+                  { type: "object" },
+                  { type: "array" },
+                  { type: "null" },
+                ],
+              },
+            },
+          },
+        },
+        { properties: { type: { const: "score" } } },
+      ],
+    },
+  });
 });

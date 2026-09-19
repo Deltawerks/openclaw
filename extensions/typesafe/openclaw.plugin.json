@@ -13,7 +13,7 @@
     "tools": [
       "typesafe_evaluate"
     ],
-    "judgmentProviders": [
+    "decisionProviders": [
       "typesafe"
     ]
   },
@@ -41,8 +41,8 @@
       "sensitive": true
     },
     "model": {
-      "label": "Evaluation model",
-      "help": "TypeSafe evaluation model only; never added to the conversational model picker."
+      "label": "Evaluation tool default model",
+      "help": "Default only for the optional typesafe_evaluate tool. Native decisions use the agent decisionModel selection."
     },
     "timeoutMs": {
       "label": "Request timeout (ms)",
@@ -111,5 +111,17 @@
   },
   "skills": [
     "./skills/typesafe-evaluate"
+  ],
+  "decisionModels": [
+    {
+      "provider": "typesafe",
+      "id": "jev-latest",
+      "name": "Jev"
+    },
+    {
+      "provider": "typesafe",
+      "id": "jev-1.13.0",
+      "name": "Jev 1.13.0"
+    }
   ]
 }

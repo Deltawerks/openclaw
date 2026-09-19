@@ -1,12 +1,12 @@
 ---
 name: typesafe-evaluate
-description: Make explicit typed TypeSafe/Jev judgments with the typesafe_evaluate tool.
+description: Make explicit typed TypeSafe/Jev decisions with the typesafe_evaluate tool.
 ---
 
 # TypeSafe evaluations
 
 Use `typesafe_evaluate` for semantic decisions over explicit supplied state. It
-returns typed judgments, not generated explanations or permission to act. If the
+returns typed decisions, not generated explanations or permission to act. If the
 tool is unavailable, report that; do not substitute shell/HTTP calls or ask for a
 credential in chat. Calls send the supplied data to TypeSafe and may incur charges.
 
@@ -27,6 +27,10 @@ Do not silently truncate evidence or split competing Choice options to fit a
 request. The plugin bounds JSON to 4 MiB, 262144 nodes, and depth 64; vendor token
 limits are separate. A model override is optional; pin a version when comparing runs.
 
+Reported probabilities may be rounded and need not sum exactly to one. Preserve the
+vendor-selected label and score; normalization or selecting the largest reported
+probability is an explicit consumer policy, not an adapter repair.
+
 Batch independent questions. Use a later call when its state or options depend on
 an earlier result. Validate judgment quality on representative cases before using
 probabilities as thresholds; confidence is not the probability that a whole
@@ -34,5 +38,7 @@ workflow is correct. Preserve uncertainty and verify deterministic rules, curren
 evidence, and authorization separately. A service/validation error is not a
 negative judgment; do not retry automatically or fabricate an answer.
 
-The optional tool is distinct from the background judgment-provider API. Enabling
-the plugin/tool does not itself select the provider or schedule consumer work.
+The optional tool is distinct from the background decision-provider API. Enabling
+the plugin/tool does not itself select a decision model or schedule consumer work.
+Native consumers use the global or per-agent `decisionModel` role. Plugin `model`
+configuration is only the optional tool’s default.

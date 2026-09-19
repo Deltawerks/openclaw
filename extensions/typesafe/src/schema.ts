@@ -107,7 +107,7 @@ export const EvaluateInput = Type.Object(
       Type.String({
         ...model,
         description:
-          "Optional Jev model ID or alias; defaults to plugin configuration. Pin a version for reproducibility.",
+          "Optional Jev model ID or alias for this explicit tool call; defaults to the plugin’s evaluation-tool model. Native decisions use the host-selected model.",
       }),
     ),
   },
@@ -119,7 +119,7 @@ const distribution = map(probability, {
   minProperties: 2,
   maxProperties: MAX_CHOICE_OPTIONS,
 });
-export const Answer = Type.Union([
+const Answer = Type.Union([
   Type.Object({ type: Type.Literal("noul"), noul: probability }, objectOptions),
   Type.Object(
     {
@@ -144,7 +144,7 @@ export const Answer = Type.Union([
     objectOptions,
   ),
 ]);
-export const VendorResult = Type.Object(
+const VendorResult = Type.Object(
   {
     model,
     answers: map(Answer, {
@@ -164,29 +164,29 @@ export const EvaluateOutput = Type.Object({ evaluation: VendorResult }, objectOp
 export type Evaluation = Static<typeof VendorResult>;
 
 /** Reject non-JSON values and excessive structure before schema walking or serialization. */
-export function assertBoundedJson(value: unknown): void {
+function assertBoundedJson(value: unknown): void {
   let nodes = 0;
-  const visit = (entry: unknown, depth: number): void => {
+  const visit = (node: unknown, depth: number): void => {
     if (++nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH) {
       throw new Error("TypeSafe JSON exceeds resource limits (262144 nodes or depth 64).");
     }
-    if (entry === null || typeof entry === "string" || typeof entry === "boolean") {
+    if (node === null || typeof node === "string" || typeof node === "boolean") {
       return;
     }
-    if (typeof entry === "number" && Number.isFinite(entry)) {
+    if (typeof node === "number" && Number.isFinite(node)) {
       return;
     }
-    if (typeof entry !== "object" || !entry) {
+    if (typeof node !== "object" || !node) {
       throw new Error("TypeSafe input must be JSON.");
     }
     if (
-      !Array.isArray(entry) &&
-      Object.getPrototypeOf(entry) !== Object.prototype &&
-      Object.getPrototypeOf(entry) !== null
+      !Array.isArray(node) &&
+      Object.getPrototypeOf(node) !== Object.prototype &&
+      Object.getPrototypeOf(node) !== null
     ) {
       throw new Error("TypeSafe input must be plain JSON.");
     }
-    for (const [key, item] of Object.entries(entry)) {
+    for (const [key, item] of Object.entries(node)) {
       if (["__proto__", "constructor", "prototype"].includes(key)) {
         throw new Error("TypeSafe input contains a reserved key.");
       }
@@ -243,12 +243,11 @@ export function parseResult(value: unknown, input: EvaluationInput): Evaluation 
     if (!Check(VendorResult, value)) {
       throw new Error();
     }
-    const names = Object.keys(input.questions);
-    if (Object.keys(value.answers).length !== names.length) {
+    const questions = Object.entries(input.questions);
+    if (Object.keys(value.answers).length !== questions.length) {
       throw new Error();
     }
-    for (const id of names) {
-      const expected = input.questions[id];
+    for (const [id, expected] of questions) {
       const answer = value.answers[id];
       if (!answer || answer.type !== expected.type) {
         throw new Error();
@@ -269,27 +268,15 @@ export function parseResult(value: unknown, input: EvaluationInput): Evaluation 
         throw new Error();
       }
       const total = Object.values(answer.probabilities).reduce((sum, item) => sum + item, 0);
-      if (Math.abs(total - 1) > 0.001) {
+      if (!(total > 0)) {
         throw new Error();
       }
-      if (answer.type === "choice") {
-        // Preserve tied or rounded choices, but reject a contradictory selected label.
-        const maximum = Math.max(...Object.values(answer.probabilities));
-        if (
-          !labels.includes(answer.choice) ||
-          maximum - answer.probabilities[answer.choice] > 0.001
-        ) {
-          throw new Error();
-        }
+      if (answer.type === "choice" && !labels.includes(answer.choice)) {
+        throw new Error();
       }
       if (answer.type === "score" && expected.type === "score") {
-        // Allow one-thousandth of a rubric level for vendor rounding; preserve the reported value.
-        const expectedScore = labels.reduce(
-          (sum, label, index) => sum + index * answer.probabilities[label],
-          0,
-        );
+        // Score and probabilities are reported independently; do not recompute rounded estimates.
         if (
-          Math.abs(answer.score - expectedScore) > 0.001 ||
           answer.score > labels.length - 1 ||
           Object.keys(answer.legend).length !== labels.length ||
           labels.some(

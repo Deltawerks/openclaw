@@ -1,4 +1,5 @@
-import type { JudgmentBatch, JudgmentProviderV1 } from "openclaw/plugin-sdk/judgments";
+import assert from "node:assert/strict";
+import type { DecisionBatch, DecisionProviderV1 } from "openclaw/plugin-sdk/decisions";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { getPreparedPluginSecretInput } from "openclaw/plugin-sdk/secret-input-runtime";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -8,7 +9,7 @@ vi.mock("openclaw/plugin-sdk/secret-input-runtime", () => ({
   getPreparedPluginSecretInput: vi.fn(),
 }));
 
-const batch: JudgmentBatch = {
+const batch: DecisionBatch = {
   state: { evidence: "synthetic only" },
   questions: {
     q: { type: "boolean", instructions: "Does the evidence satisfy the criterion?" },
@@ -32,14 +33,16 @@ const response = {
   usage: { input_tokens: 12, output_tokens: 3 },
 };
 
-function registeredProvider(): JudgmentProviderV1 {
-  const registerJudgmentProvider = vi.fn<OpenClawPluginApi["registerJudgmentProvider"]>();
+function registeredProvider(): DecisionProviderV1 {
+  const registerDecisionProvider = vi.fn<OpenClawPluginApi["registerDecisionProvider"]>();
   plugin.register({
     runtime: { config: { current: () => ({}) } },
     registerTool: vi.fn(),
-    registerJudgmentProvider,
+    registerDecisionProvider,
   } as unknown as OpenClawPluginApi);
-  return registerJudgmentProvider.mock.calls[0][0];
+  const registration = registerDecisionProvider.mock.calls[0];
+  assert(registration);
+  return registration[0];
 }
 
 beforeEach(() => {
@@ -47,14 +50,16 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-it("runs the registered provider through the real SDK transport and back to host judgments", async () => {
+it("runs the registered provider through the HTTP transport and back to host decisions", async () => {
   const fetch = vi.fn(
-    async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(response)),
+    async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(response)),
   );
   vi.stubGlobal("fetch", fetch);
   const provider = registeredProvider();
   await expect(
     provider.evaluate(batch, {
+      model: "jev-agent-selected",
+      agentId: "research",
       signal: new AbortController().signal,
       deadlineMonotonicMs: performance.now() + 1000,
     }),
@@ -71,25 +76,33 @@ it("runs the registered provider through the real SDK transport and back to host
     },
   });
   expect(fetch).toHaveBeenCalledOnce();
-  expect(fetch.mock.calls[0][0]).toBe("https://api.typesafe.ai/v1/systemone");
-  expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
+  expect(fetch.mock.calls[0]?.[0]).toBe("https://api.typesafe.ai/v1/systemone");
+  const body = fetch.mock.calls[0]?.[1]?.body;
+  assert(typeof body === "string");
+  expect(JSON.parse(body)).toEqual({
     ...batch,
     questions: { ...batch.questions, q: { ...batch.questions.q, type: "noul" } },
-    model: "jev-latest",
+    model: "jev-agent-selected",
   });
 });
 
-it("rejects the complete registered batch when the service contradicts its choice", async () => {
-  const invalid = structuredClone(response);
-  invalid.answers.c.choice = "skip";
-  const fetch = vi.fn(async () => new Response(JSON.stringify(invalid)));
+it("preserves reported probability rounding and a non-argmax vendor choice", async () => {
+  const reported = structuredClone(response);
+  reported.answers.c.choice = "skip";
+  reported.answers.c.probabilities = { keep: 0.5, skip: 0.49 };
+  reported.answers.s.score = 0.607;
+  const fetch = vi.fn(async () => new Response(JSON.stringify(reported)));
   vi.stubGlobal("fetch", fetch);
   await expect(
     registeredProvider().evaluate(batch, {
+      model: "jev-agent-selected",
       signal: new AbortController().signal,
       deadlineMonotonicMs: performance.now() + 1000,
     }),
-  ).resolves.toEqual({ status: "unavailable", reason: "invalid-response" });
+  ).resolves.toMatchObject({
+    status: "ok",
+    result: { answers: { c: reported.answers.c, s: { score: 0.607, probabilities: [0.4, 0.6] } } },
+  });
   expect(fetch).toHaveBeenCalledOnce();
 });
 
@@ -98,7 +111,12 @@ it("does not dispatch when prepared credentials disappear or caller authority is
   vi.stubGlobal("fetch", fetch);
   const provider = registeredProvider();
   const controller = new AbortController();
-  const context = { signal: controller.signal, deadlineMonotonicMs: performance.now() + 1000 };
+  const context = {
+    model: "jev-agent-selected",
+    agentId: "research",
+    signal: controller.signal,
+    deadlineMonotonicMs: performance.now() + 1000,
+  };
   vi.mocked(getPreparedPluginSecretInput).mockReturnValue({ revision: 2 });
   await expect(provider.evaluate(batch, context)).resolves.toEqual({
     status: "unavailable",

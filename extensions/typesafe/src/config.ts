@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 
-export const DEFAULT_MODEL = "jev-latest";
+const DEFAULT_MODEL = "jev-latest";
 export const ConfigSchema = Type.Object(
   {
     apiKey: Type.Optional(

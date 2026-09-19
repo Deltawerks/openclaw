@@ -53,13 +53,15 @@ it("rejects an eleven-level Score rubric before evaluation", () => {
   expect(() => parseInput(input)).toThrow();
 });
 
-// Score is an expected value, not an independent scalar classification.
+// Preserve the reported estimate; rounded probabilities cannot determine its exact value.
 it.each([
   { score: 0.6, accepted: true },
   { score: 0.6009, accepted: true },
-  { score: 0.6011, accepted: false },
-  { score: 0, accepted: false },
-])("checks Score expectation with a 0.001-level tolerance: $score", ({ score, accepted }) => {
+  { score: 0.6011, accepted: true },
+  { score: 0, accepted: true },
+  { score: -0.1, accepted: false },
+  { score: 1.1, accepted: false },
+])("preserves a reported Score within the submitted rubric: $score", ({ score, accepted }) => {
   const input = parseInput({
     state: null,
     questions: { quality: { type: "score", instructions: "rate", criteria: ["Low", "High"] } },
@@ -85,16 +87,18 @@ it.each([
   }
 });
 
-// Choice identifies a maximum-probability label, with tolerance for vendor rounding.
+// Selection policy belongs to the consumer; validate reported label membership and probability bounds.
 it.each([
   { choice: "keep", keep: 0.7, skip: 0.3, accepted: true },
   { choice: "keep", keep: 0.5, skip: 0.5, accepted: true },
   { choice: "keep", keep: 0.4996, skip: 0.5004, accepted: true },
-  { choice: "keep", keep: 0.4994, skip: 0.5006, accepted: false },
-  { choice: "keep", keep: 0, skip: 1, accepted: false },
+  { choice: "keep", keep: 0.4994, skip: 0.5006, accepted: true },
+  { choice: "keep", keep: 0.49, skip: 0.5, accepted: true },
+  { choice: "keep", keep: 0, skip: 1, accepted: true },
+  { choice: "keep", keep: 0, skip: 0, accepted: false },
   { choice: "unknown", keep: 0.7, skip: 0.3, accepted: false },
 ])(
-  "checks Choice selection against its distribution: $choice/$keep/$skip",
+  "preserves reported Choice estimates: $choice/$keep/$skip",
   ({ choice, keep, skip, accepted }) => {
     const input = parseInput({
       state: null,
