@@ -425,9 +425,16 @@ export function isReplyPayloadStatusNotice(
   return Boolean(payload.isCompactionNotice || payload.isFallbackNotice || payload.isStatusNotice);
 }
 
-/** Returns whether a payload carries terminal assistant content rather than a supplemental lane. */
-export const isReplyPayloadTerminalContent = (payload: ReplyPayload): boolean =>
-  payload.isReasoning !== true &&
-  payload.isCommentary !== true &&
-  !isReplyPayloadStatusNotice(payload) &&
-  !isReplyPayloadTtsSupplement(payload);
+/** Returns whether a payload carries a terminal answer or command result, not a supplemental lane. */
+export const isReplyPayloadTerminalContent = (payload: ReplyPayload): boolean => {
+  const supplement = getReplyPayloadTtsSupplement(payload);
+  return (
+    payload.isReasoning !== true &&
+    payload.isCommentary !== true &&
+    (!isReplyPayloadStatusNotice(payload) ||
+      getReplyPayloadMetadata(payload)?.commandReply === true) &&
+    (!supplement ||
+      (supplement.visibleTextAlreadyDelivered !== true &&
+        Boolean(readNonBlankString(payload.text))))
+  );
+};

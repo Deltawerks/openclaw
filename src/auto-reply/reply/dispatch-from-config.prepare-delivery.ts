@@ -202,7 +202,7 @@ export async function prepareDispatchDelivery(state: GatherDispatchRequestReadyS
         : await runtime.routeReply({ ...routeParams, payload });
     // Routed sends settle here: the transport result is the settlement. This is
     // the single routed choke point, so every routed lane feeds the turn ledger.
-    turnLedger.recordRoutedDelivery(payload, result);
+    turnLedger.recordRoutedDelivery(options?.kind ?? "final", payload, result);
     return result;
   };
 

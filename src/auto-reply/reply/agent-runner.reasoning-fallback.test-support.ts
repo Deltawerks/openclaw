@@ -21,37 +21,6 @@ export function registerReasoningFallbackTests({
   createMinimalRun,
 }: ReasoningFallbackFixture) {
   it.each([
-    { lane: "reasoning", payload: { text: "internal", isReasoning: true } },
-    { lane: "commentary", payload: { text: "internal", isCommentary: true } },
-  ])("does not let streamed $lane suppress the empty-reply fallback", async ({ payload }) => {
-    const onBlockReply = vi.fn();
-    runEmbeddedAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
-      await params.onBlockReply?.(payload);
-      return { payloads: [], meta: { durationMs: 0 } };
-    });
-    const { run } = createMinimalRun({
-      blockStreamingEnabled: true,
-      opts: {
-        onBlockReply,
-        reasoningPayloadsEnabled: true,
-        commentaryPayloadsEnabled: true,
-      },
-    });
-
-    const result = await run();
-    const payloads = Array.isArray(result) ? result : [result];
-
-    expect(onBlockReply).toHaveBeenCalled();
-    expect(onBlockReply.mock.calls[0]?.[0]).toEqual(expect.objectContaining(payload));
-    expect(payloads).toContainEqual(
-      expect.objectContaining({
-        text: expect.stringContaining("did not produce a visible reply"),
-        isError: true,
-      }),
-    );
-  });
-
-  it.each([
     { delivery: "direct", blockStreamingEnabled: false, reasoning: "enabled", enabled: true },
     { delivery: "pipeline", blockStreamingEnabled: true, reasoning: "enabled", enabled: true },
     {

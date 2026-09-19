@@ -1,5 +1,5 @@
 // Exercises control-command reachability without relaxing ordinary reply admission.
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred, raceWithTimeoutResult } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { markCommandReplyForDelivery } from "../reply-payload.js";
@@ -35,6 +35,7 @@ describe("dispatch active command admission", () => {
       resetTriggered: false,
     });
     activeOperation.setPhase("running");
+    onTestFinished(() => activeOperation.complete());
     const waitingForActive = createDeferred<{ status: "waiting_for_active" }>();
     const waitForIdle = replyRunRegistry.waitForIdle.bind(replyRunRegistry);
     vi.spyOn(replyRunRegistry, "waitForIdle").mockImplementation((key, ...args) => {
@@ -245,6 +246,7 @@ describe("dispatch active command admission", () => {
     activeOperation.setPhase("running");
 
     const acknowledgement = { text: "Thinking level set to high.", isStatusNotice: true };
+    const finalReply = { text: "The calculation is complete." };
     const dispatcher = createDispatcher();
     const dispatchPromise = dispatchReplyFromConfig({
       ctx: buildTestCtx({
@@ -270,7 +272,7 @@ describe("dispatch active command admission", () => {
       dispatcher,
       replyResolver: async (_resolverCtx, options) => {
         await options?.onBlockReply?.(acknowledgement);
-        return undefined;
+        return finalReply;
       },
     });
 
@@ -290,7 +292,8 @@ describe("dispatch active command admission", () => {
     } finally {
       activeOperation.complete();
     }
-    await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: false });
+    await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith(finalReply);
     expect(getActiveReplyRunCount()).toBe(0);
   });
 

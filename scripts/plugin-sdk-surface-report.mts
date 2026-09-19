@@ -385,8 +385,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: canonical media/attachment associations for recovered-final filtering.
       // +4: approved workspace access exports; later stack exports belong to their consumers.
       // +6: passive link-reader descriptor, metadata, document, preview, and request types.
+      // +1: shared workspace bootstrap file policy.
+      // +2: typed workspace unavailability and its structural classifier.
       // +1: preserve accepted modifier media selection during transcript recovery.
-      4501,
+      4504,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -532,8 +534,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: preserve opaque host reply metadata through Telegram recovery text clones.
       // +1: canonical media/attachment associations for recovered-final filtering.
       // +3: approved workspace access callables; later stack exports belong to their consumers.
+      // +1: shared workspace bootstrap file policy.
+      // +1: workspace unavailability classifier.
       // +1: preserve accepted modifier media selection during transcript recovery.
-      2657,
+      2659,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
