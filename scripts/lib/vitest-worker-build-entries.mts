@@ -14,6 +14,7 @@ import {
   cliRecoveryEntrypoints,
   gatewayDirectStopEntrypoints,
   stateDirGatewayFixtureEntrypoint,
+  updateCandidateExitEntrypoints,
 } from "../../src/cli/cli-entrypoint.test-support.ts";
 import { updateExecutorNativeEntrypoints } from "../../src/cli/update-cli/update-command-executor-native-runtime.test-support.ts";
 import { doctorConfigRuntimeEntrypoints } from "../../src/commands/doctor-config-runtime.test-support.ts";
@@ -81,6 +82,7 @@ export const vitestWorkerBuildEntries = {
     pluginRuntimeRetentionEntrypoint,
     ...groqSetupSdkEntrypoints,
     ...Object.values(cliRecoveryEntrypoints),
+    ...Object.values(updateCandidateExitEntrypoints),
     ...Object.values(updateExecutorNativeEntrypoints),
     ...Object.values(gatewayDirectStopEntrypoints),
     stateDirGatewayFixtureEntrypoint,

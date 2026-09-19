@@ -63,6 +63,7 @@ type CanaryResult = {
   candidateSchemaVersions?: OpenClawSchemaVersions;
   doctorConfigWrites?: boolean;
   doctorConfigChanges?: UpdateDoctorConfigChange[];
+  retainedRehearsal?: { rehearsal: UpdateCandidateRehearsal; cleanup: () => Promise<void> };
   listenerIsolation?: {
     gateway: { host: "127.0.0.1"; port: number };
     mcpAppSandbox: "disabled";
@@ -79,24 +80,48 @@ type CanaryResult = {
 export async function validateUpdateCandidateCanary(params: {
   root: string;
   config: OpenClawConfig;
+  sourceConfigHash?: string | null;
   stateDir: string;
   timeoutMs?: number;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   nodeRunner?: string;
   rehearsal?: UpdateCandidateRehearsal;
+  /** Transfer a failed private copy to the caller after every validation child is drained. */
+  retainFailedRehearsal?: boolean;
   assertCurrent?: () => void;
   /** Emit at completion; replaying after the canary shifts persisted step timestamps. */
   onStep?: (step: UpdateStepResult) => void;
 }): Promise<CanaryResult> {
   const started = Date.now();
   let rehearsal = params.rehearsal;
+  let retainedRehearsal: CanaryResult["retainedRehearsal"];
+  let unsettledCanaries = 0;
   const sourceEnv = params.env ?? process.env;
   const logTail: string[] = [];
   const stepLogTail: string[] = [];
   let activeStep = { name: "Checking update runtime", command: "Checking update runtime" };
   let stepStartedAt = started;
   const steps: UpdateStepResult[] = [];
+  const cleanupRehearsal = async () => {
+    if (!rehearsal) {
+      return;
+    }
+    for (const directory of rehearsal.cleanupDirectories) {
+      await cleanupUpdateTemporaryDirectory({
+        directory,
+        root: params.root,
+        name:
+          directory === rehearsal.stateDir
+            ? "Removing temporary update files"
+            : "Removing temporary plugin inventory",
+        onWarning: (step) => {
+          steps.push(step);
+          params.onStep?.(step);
+        },
+      });
+    }
+  };
   let candidateSchemaVersions: OpenClawSchemaVersions | undefined;
   let doctorConfigWrites = false;
   let doctorConfigChanges: UpdateDoctorConfigChange[] = [];
@@ -128,6 +153,7 @@ export async function validateUpdateCandidateCanary(params: {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    unsettledCanaries += 1;
     let stdout = "";
     let firstStderrLine: string | undefined;
     let cliReason: string | undefined;
@@ -229,6 +255,7 @@ export async function validateUpdateCandidateCanary(params: {
   const stopCanary = async (running: ReturnType<typeof launch>, name: string, deadline: number) => {
     const cleanupStarted = Date.now();
     if (await terminateCanary(running.child, running.closed, deadline)) {
+      unsettledCanaries -= 1;
       return;
     }
     const step: UpdateStepResult = {
@@ -290,6 +317,7 @@ export async function validateUpdateCandidateCanary(params: {
     rehearsal ??= await prepareUpdateCandidateRehearsal({
       candidateRoot: params.root,
       config: params.config,
+      sourceConfigHash: params.sourceConfigHash,
       stateDir: params.stateDir,
       env: sourceEnv,
       nodeRunner: params.nodeRunner,
@@ -651,6 +679,16 @@ export async function validateUpdateCandidateCanary(params: {
     );
     failed.stderrTail = stepLogTail.slice(0, repeatsFact ? -1 : undefined).join("\n");
     params.onStep?.(failed);
+    if (
+      params.retainFailedRehearsal &&
+      !params.rehearsal &&
+      rehearsal &&
+      phase !== "snapshot" &&
+      phase !== "doctor" &&
+      unsettledCanaries === 0
+    ) {
+      retainedRehearsal = { rehearsal, cleanup: cleanupRehearsal };
+    }
     return {
       status: "error",
       reason:
@@ -660,25 +698,13 @@ export async function validateUpdateCandidateCanary(params: {
       logTail,
       candidateSchemaVersions,
       ...(doctorConfigChanges.length ? { doctorConfigChanges } : {}),
+      ...(retainedRehearsal ? { retainedRehearsal } : {}),
       listenerIsolation,
       steps,
     };
   } finally {
-    if (!params.rehearsal && rehearsal) {
-      for (const directory of rehearsal.cleanupDirectories) {
-        await cleanupUpdateTemporaryDirectory({
-          directory,
-          root: params.root,
-          name:
-            directory === rehearsal.stateDir
-              ? "Removing temporary update files"
-              : "Removing temporary plugin inventory",
-          onWarning: (step) => {
-            steps.push(step);
-            params.onStep?.(step);
-          },
-        });
-      }
+    if (!params.rehearsal && !retainedRehearsal) {
+      await cleanupRehearsal();
     }
   }
 }
