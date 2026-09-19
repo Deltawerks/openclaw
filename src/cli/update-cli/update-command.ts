@@ -513,10 +513,13 @@ async function updateCommandInternal(
     run.executorFence = await executor.enter(root, {
       preflight: true,
       serviceRoot: managedServiceRoot,
-      activationTimeoutMs: (run.activationTimeoutMs ??= await resolveUpdateFinalizationTimeoutMs(
-        updateStepTimeoutMs,
-        { env: run.env, pluginCount },
-      )),
+      activationTimeoutMs: (run.activationTimeoutMs ??=
+        timeoutMs === undefined
+          ? undefined
+          : await resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs, {
+              env: run.env,
+              pluginCount,
+            })),
     });
   };
   if (packageAlreadyCurrent) {

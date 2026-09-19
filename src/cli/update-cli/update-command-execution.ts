@@ -551,13 +551,16 @@ export async function executeMutableUpdate(
     // Health and candidate work can outlive the inspected service/config generation.
     await recheckSchemas(admittedTargetSchemaVersions);
     assertExecutionCurrent();
-    const activationTimeoutMs = await resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs, {
-      env,
-      databases: schemaVersions,
-      observedStartupMs: observedGatewayStartupMs,
-      pluginCount: Object.keys(config.plugins?.entries ?? {}).length,
-      nodeRunner: params.packageUpdateNodeRunner,
-    });
+    const activationTimeoutMs =
+      params.timeoutMs === undefined
+        ? undefined
+        : await resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs, {
+            env,
+            databases: schemaVersions,
+            observedStartupMs: observedGatewayStartupMs,
+            pluginCount: Object.keys(config.plugins?.entries ?? {}).length,
+            nodeRunner: params.packageUpdateNodeRunner,
+          });
     assertExecutionCurrent();
     await prepareMutableUpdate(env, activationTimeoutMs);
     assertExecutionCurrent();

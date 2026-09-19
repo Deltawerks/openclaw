@@ -17,7 +17,6 @@ import * as gatewayCall from "../../gateway/call.js";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
 import * as portInspection from "../../infra/ports-inspect.js";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
-import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
 import {
   updateRunStepsFromResultStep,
@@ -30,19 +29,20 @@ import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import * as utils from "../../utils.js";
 import * as restartProbe from "../daemon-cli/restart-health-probe.js";
 import { UpdatePreMutationError } from "./shared.js";
+import { registerExecutionFailureTests } from "./update-command-execution-failures.test-support.js";
 import { registerNativeAdmissionTests } from "./update-command-execution-native-admission.test-support.js";
+import { registerExecutionTimeoutTests } from "./update-command-execution-timeouts.test-support.js";
 import { executeMutableUpdate } from "./update-command-execution.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import * as readiness from "./update-command-readiness.js";
-import {
-  gatewayServiceCommandUsesRoot,
-  GatewayServiceUpdateOwnershipError,
-} from "./update-command-service-plan.js";
+import { gatewayServiceCommandUsesRoot } from "./update-command-service-plan.js";
 
 const { executionParams, inspectOrStopService, mocks, schemaContext, successfulUpdate } =
   await import("./update-command-execution.test-support.js");
 
 describe("mutable update execution", () => {
+  registerExecutionTimeoutTests();
+
   it.each(["package", "git"] as const)(
     "continues the %s update with the recorded readiness warning instead of inference repair",
     async (kind) => {
@@ -882,43 +882,7 @@ describe("mutable update execution", () => {
     },
   );
 
-  it.each(["activation", "requester revocation", "service ownership"])(
-    "reports %s exceptions without retrying a fallback package updater",
-    async (kind) => {
-      const failure =
-        kind === "requester revocation"
-          ? new UpdateRequesterRevokedError()
-          : kind === "service ownership"
-            ? new GatewayServiceUpdateOwnershipError(
-                "Service manager returned EACCES.",
-                undefined,
-                "service-manager-access-denied",
-              )
-            : new Error("activation failed");
-      mocks.runPackageUpdate.mockRejectedValue(failure);
-
-      const execution = await executeMutableUpdate(executionParams("package"));
-
-      expect(mocks.runPackageUpdate).toHaveBeenCalledOnce();
-      expect(execution?.failure?.cause).toBe(failure);
-      expect(execution?.result).toMatchObject({
-        status: "error",
-        reason: kind === "requester revocation" ? "requester-revoked" : "update-failed",
-        recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-        steps: [expect.objectContaining({ name: "update", exitCode: 1 })],
-      });
-      expect(mocks.verifyPackageRecovery).not.toHaveBeenCalled();
-      if (kind === "service ownership") {
-        expect(execution?.result.steps[0]?.failureFacts).toEqual([
-          {
-            check: "managed-service",
-            code: "service-manager-access-denied",
-            message: "Service manager returned EACCES.",
-          },
-        ]);
-      }
-    },
-  );
+  registerExecutionFailureTests();
 
   it("keeps Git selection online and reserves service rewrites for finalization", async () => {
     await withTestDir({ prefix: "git-selection-online-" }, async (root) => {
