@@ -17,7 +17,10 @@ import {
 import { createSubagentTaskBackingDetail } from "../../../tasks/task-backing-authority.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
-import { updateSwarmCollectorCompletion } from "../swarm/swarm-collector.js";
+import {
+  prepareTerminatedCollectorLaunch,
+  updateSwarmCollectorCompletion,
+} from "../swarm/swarm-collector.js";
 import { bindSwarmRunReservation } from "../swarm/swarm-scheduler.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -414,23 +417,9 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       return true;
     }
     const snapshot = structuredClone(entry);
-    entry.swarmLaunchPending = false;
-    entry.collectorLaunchCleanupPending = true;
-    entry.queuedLaunch = undefined;
-    entry.execution = {
-      ...entry.execution,
-      status: "terminal",
-      endedAt: entry.execution.endedAt,
-    };
-    entry.completion = {
-      required: false,
-      resultText:
-        entry.execution.outcome?.status === "error"
-          ? (entry.execution.outcome.error ?? error)
-          : error,
-      capturedAt: entry.execution.endedAt,
-    };
-    updateSwarmCollectorCompletion(entry, this.options.getRuntimeConfig());
+    prepareTerminatedCollectorLaunch(entry, entry.execution.endedAt, error, () =>
+      this.options.getRuntimeConfig(),
+    );
     try {
       this.options.persistOrThrow(entry.runId);
     } catch (persistError) {

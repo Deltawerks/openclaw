@@ -61,6 +61,7 @@ import {
 import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import { formatForLog } from "../ws-log.js";
 import { setGatewayDedupeEntries } from "./agent-dedupe.js";
+import { captureAgentJobSession } from "./agent-job.js";
 import { readAgentRunDispatchExecutionIdentity } from "./agent-run-dispatch-execution-identity.js";
 import type { AgentTurnContext, AgentTurnIo } from "./types.js";
 
@@ -151,6 +152,7 @@ type TaskSettlementAdmission =
 export function dispatchAgentRunFromGateway(
   params: {
     assertCurrent?: () => void;
+    admittedRunEntry: ChatAbortControllerEntry | undefined;
     ingressOpts: Parameters<typeof agentCommandFromGatewayIngress>[0];
     runId: string;
     cronCreatorAuthority?: GatewayCronCreatorAuthorityAdmission;
@@ -174,7 +176,8 @@ export function dispatchAgentRunFromGateway(
   } & TaskSettlementAdmission,
 ) {
   const assertSettlementCurrent = params.assertSettlementCurrent;
-  const registeredRunEntry = params.context.chatAbortControllers.get(params.runId);
+  const registeredRunEntry = params.admittedRunEntry;
+  const jobSessionBinding = registeredRunEntry ?? params.ingressOpts;
   const registeredRunInstance = registeredRunEntry?.operationalRunInstance;
   const registeredLifecycleGeneration = registeredRunEntry?.lifecycleGeneration;
   const registeredSessionKey = registeredRunEntry?.sessionKey;
@@ -346,6 +349,7 @@ export function dispatchAgentRunFromGateway(
         params.cronCreatorAuthority.isCurrent,
         undefined,
         params.cronCreatorAuthority.requesterOwner,
+        params.cronCreatorAuthority.callerScopedCreation,
       )
     : undefined;
   if (cronCreatorAuthorityCapability) {
@@ -528,6 +532,7 @@ export function dispatchAgentRunFromGateway(
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.dedupeKeys,
+          session: captureAgentJobSession(jobSessionBinding),
           entry: {
             ts: Date.now(),
             ok: true,
@@ -546,6 +551,7 @@ export function dispatchAgentRunFromGateway(
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.dedupeKeys,
+          session: captureAgentJobSession(jobSessionBinding),
           entry: { ts: Date.now(), ok: false, payload: failedPayload, error },
         });
         cleanupRunOwner();
@@ -628,6 +634,7 @@ export function dispatchAgentRunFromGateway(
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.dedupeKeys,
+          session: captureAgentJobSession(jobSessionBinding),
           entry: {
             ts: Date.now(),
             ok: aborted && settlementPersisted,

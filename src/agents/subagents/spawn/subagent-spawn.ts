@@ -9,11 +9,9 @@ import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-confi
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
 import { getCanonicalGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { recordSessionCreated } from "../../../sessions/session-created.js";
 import { recordSessionParticipantBestEffort } from "../../../sessions/session-participant-recording.js";
-import {
-  recordSessionCreated,
-  recordSubagentSpawned,
-} from "../../../sessions/session-state-events.js";
+import { recordSubagentSpawned } from "../../../sessions/session-state-events.js";
 import { hasDeliveryTargetFields } from "../../../utils/delivery-context.shared.js";
 import { hasPromptUnsafeControlCharacter } from "../../sanitize-for-prompt.js";
 import {
@@ -348,7 +346,7 @@ export async function spawnSubagentDirect(
         swarmMaxConcurrent: swarmConfig.maxConcurrent,
       });
     if (childEntry) {
-      recordSessionCreated({
+      recordSessionCreated(cfg, {
         sessionKey: childSessionKey,
         agentId: targetAgentId,
         entry: childEntry,

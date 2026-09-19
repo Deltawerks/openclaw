@@ -119,6 +119,7 @@ it.each(["unstarted", "active"] as const)(
         let execution: ReturnType<typeof dispatchAgentRunFromGateway> | undefined;
         try {
           execution = dispatchAgentRunFromGateway({
+            admittedRunEntry: entry,
             assertCurrent() {
               entry.controller.signal.throwIfAborted();
               assertSettlementCurrent();

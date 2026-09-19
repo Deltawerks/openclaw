@@ -4,6 +4,7 @@ import type { CreatedDetachedTaskRun } from "../../tasks/detached-task-runtime-c
 import type { TaskRunOwner } from "../../tasks/task-registry.process-state.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
+import { setGatewayDedupeEntries } from "./agent-dedupe.js";
 import { dispatchAgentRunFromGateway } from "./agent-run-dispatch.js";
 import { createTrackedDispatch } from "./agent-run-dispatch.test-support.js";
 
@@ -55,11 +56,13 @@ vi.mock("../../tasks/task-run-owner.js", () => ({
 vi.mock("../server-methods/agent-task-tracking.js", () => ({
   tryFinalizeTrackedAgentTask: mocks.finalizeTrackedTask,
 }));
-vi.mock("../../infra/agent-run-registry.js", () => ({
+vi.mock(import("../../infra/agent-run-registry.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   clearAgentRunContext: mocks.clearAgentRunContext,
   validateAgentRunDelegatedAuthority: () => true,
 }));
-vi.mock("../../infra/agent-events.js", () => ({
+vi.mock(import("../../infra/agent-events.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   isAgentEventLifecycleGenerationCurrent: () => true,
 }));
 vi.mock("../../agents/cron-creator-authority-context.js", () => ({
@@ -140,6 +143,7 @@ describe("Gateway dispatch task creation ownership", () => {
       const emitFinal = vi.fn();
       const onSettled = vi.fn(() => true);
       const completion = dispatchAgentRunFromGateway({
+        admittedRunEntry: entry,
         assertSettlementCurrent() {},
         ingressOpts: { message: task.task, sessionKey, allowModelOverride: false },
         runId,
@@ -189,6 +193,7 @@ describe("Gateway dispatch task creation ownership", () => {
         Object.assign(selected, terminal);
       });
       const completion = dispatchAgentRunFromGateway({
+        admittedRunEntry: entry,
         assertSettlementCurrent() {
           if (!gatewayCurrent) {
             throw new Error("Gateway retired");
@@ -222,12 +227,65 @@ describe("Gateway dispatch task creation ownership", () => {
         await completion;
         expect(task.status).toBe(replacement === "different-session run" ? "succeeded" : "running");
         expect(mocks.finalizeTrackedTask).not.toHaveBeenCalled();
+        expect(setGatewayDedupeEntries).toHaveBeenCalledWith(
+          expect.objectContaining({
+            session: {
+              sessionKey,
+              sessionId: entry.sessionId,
+              agentId: entry.agentId,
+              lifecycleGeneration: entry.lifecycleGeneration,
+            },
+          }),
+        );
       } finally {
         resume.resolve();
         await completion;
       }
     },
   );
+  it("keeps rejected pre-dispatch results with their admitted registration", async () => {
+    const { runId, sessionKey, context, entry, task } = createTrackedDispatch();
+    const successor: ChatAbortControllerEntry = {
+      ...entry,
+      controller: new AbortController(),
+      sessionId: "successor-session",
+      sessionKey: "agent:main:successor-session",
+      operationalRunInstance: { runId, instanceId: "successor-instance" },
+    };
+    context.chatAbortControllers.set(runId, successor);
+    const emitFinal = vi.fn();
+    await dispatchAgentRunFromGateway({
+      assertCurrent() {
+        if (context.chatAbortControllers.get(runId) !== entry) {
+          throw new Error("Gateway run owner replaced");
+        }
+      },
+      admittedRunEntry: entry,
+      ingressOpts: { message: task.task, sessionKey, allowModelOverride: false },
+      runId,
+      dedupeKeys: [`agent:${runId}`],
+      abortController: entry.controller,
+      cleanupAbortController: vi.fn(),
+      io: { emitAcceptance: vi.fn(), emitFinal },
+      context,
+      taskTrackingMode: "none",
+    });
+    expect(mocks.agentCommand).not.toHaveBeenCalled();
+    expect(mocks.clearAgentRunContext).not.toHaveBeenCalled();
+    expect(context.chatAbortControllers.get(runId)).toBe(successor);
+    expect(setGatewayDedupeEntries).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session: {
+          sessionKey,
+          sessionId: entry.sessionId,
+          agentId: entry.agentId,
+          lifecycleGeneration: entry.lifecycleGeneration,
+        },
+        entry: expect.objectContaining({ ok: false }),
+      }),
+    );
+    expect(emitFinal).toHaveBeenCalledOnce();
+  });
 
   it.each(["current", "different-session", "adopted-task"] as const)(
     "waits for task creation before activation and respects owner replacement (%s)",
@@ -265,6 +323,7 @@ describe("Gateway dispatch task creation ownership", () => {
         },
         runId,
         dedupeKeys: [`agent:${runId}`],
+        admittedRunEntry: entry,
         abortController: entry.controller,
         cleanupAbortController,
         io: { emitAcceptance: vi.fn(), emitFinal },
@@ -381,6 +440,7 @@ describe("Gateway dispatch task creation ownership", () => {
         ingressOpts: { message: task.task, sessionKey, allowModelOverride: false },
         runId,
         dedupeKeys: [`agent:${runId}`],
+        admittedRunEntry: entry,
         abortController: entry.controller,
         cleanupAbortController,
         io: { emitAcceptance: vi.fn(), emitFinal },
@@ -481,6 +541,7 @@ describe("Gateway dispatch task creation ownership", () => {
         ingressOpts: { message: task.task, sessionKey, allowModelOverride: false },
         runId,
         dedupeKeys: [],
+        admittedRunEntry: entry,
         abortController: entry.controller,
         cleanupAbortController: vi.fn(),
         io: { emitAcceptance: vi.fn(), emitFinal },

@@ -31,6 +31,7 @@ import { holdQueuedSwarmRun, reserveSwarmRun } from "../swarm/swarm-scheduler.js
 import { testing as schedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import { SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
 import { registerQueuedRegistrationAdmissionCases } from "./subagent-registry-queued-admission.test-support.js";
+import { registerQueuedCancelledLaunchCases } from "./subagent-registry-queued-cancelled-launch.test-support.js";
 import { registerQueuedRegistrationNoTaskCases } from "./subagent-registry-queued-no-task.test-support.js";
 import { registerQueuedRegistrationClaimCases } from "./subagent-registry-queued-registration-claims.test-support.js";
 import { createQueuedRegistrationFixture } from "./subagent-registry-queued-registration.test-support.js";
@@ -831,6 +832,7 @@ const queuedRegistrationFixtureParams = {
 registerQueuedRegistrationAdmissionCases(queuedRegistrationFixtureParams);
 registerQueuedRegistrationNoTaskCases(queuedRegistrationFixtureParams);
 registerQueuedRegistrationClaimCases(queuedRegistrationFixtureParams);
+registerQueuedCancelledLaunchCases(queuedRegistrationFixtureParams);
 
 it("retires an uncertain settlement callback after confirmed same-entry Stop", async () => {
   const f = fixture();
