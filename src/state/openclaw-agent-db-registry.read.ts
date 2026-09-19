@@ -1,25 +1,32 @@
 import type { DatabaseSync } from "node:sqlite";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../infra/kysely-sync.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import type { OpenClawRegisteredAgentDatabase } from "./openclaw-agent-db-contract.js";
 import { detectOpenClawStateDatabaseSchemaMigrationsFromDatabase } from "./openclaw-state-db-schema-repair.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
 import { resolveOpenClawRegisteredAgentDatabasePath } from "./openclaw-state-db.paths.js";
 
-type OpenClawAgentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "agent_databases">;
+type OpenClawAgentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "agent_databases"> & {
+  sqlite_master: { name: string; type: string };
+};
 
 /** Read durable registrations from an already opened live or captured database. */
 export function readOpenClawAgentDatabaseRegistryRows(database: DatabaseSync, pathname: string) {
-  const registryTable = database
-    .prepare("SELECT type FROM sqlite_master WHERE name = 'agent_databases'")
-    .get();
+  const db = getNodeSqliteKysely<OpenClawAgentRegistryDatabase>(database);
+  const registryTable = executeSqliteQueryTakeFirstSync(
+    database,
+    db.selectFrom("sqlite_master").select("type").where("name", "=", "agent_databases"),
+  );
   if (!registryTable) {
     return [];
   }
   if (registryTable.type !== "table") {
     throw new Error(`OpenClaw state database ${pathname} has an invalid agent registry.`);
   }
-  const db = getNodeSqliteKysely<OpenClawAgentRegistryDatabase>(database);
   return executeSqliteQuerySync(
     database,
     db.selectFrom("agent_databases").selectAll().orderBy("agent_id", "asc").orderBy("path", "asc"),
