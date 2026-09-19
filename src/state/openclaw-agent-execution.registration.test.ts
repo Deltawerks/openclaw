@@ -16,7 +16,7 @@ import type { acquireSqliteWorkerLifecycle } from "../infra/sqlite-worker-lifecy
 import type { SqliteWorkerAdmissionRequest } from "../infra/sqlite-worker-operation-admission.js";
 import { createSqliteWorkerTransferOwner } from "../infra/sqlite-worker-transfer.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
-import type { OpenClawAgentDatabaseRegistrationCommit } from "./openclaw-agent-db-registry.js";
+import type { OpenClawAgentDatabaseRegistrationCommit } from "./openclaw-agent-db-contract.js";
 import type { AgentDatabaseExecutionOpen } from "./openclaw-agent-execution-contract.js";
 
 const edge = vi.hoisted(() => {

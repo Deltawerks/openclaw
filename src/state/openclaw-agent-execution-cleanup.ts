@@ -1,13 +1,8 @@
-import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
-import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { readDatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
-import {
-  openSharedStateSqliteWorkerStore,
-  runSqliteWorkerStoreOperation,
-} from "../infra/sqlite-worker-store.js";
+import { runSqliteWorkerStoreOperation } from "../infra/sqlite-worker-store.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
-import type { OpenClawStateWorkerCleanupOperations } from "./openclaw-state-worker-contract.js";
+import { openOpenClawStateWorkerCleanupStore } from "./openclaw-state-worker-store.js";
 
 /** Release only this owner's prepared lease after the broker certifies native retirement. */
 export async function cleanupRetiredAgentDatabaseLease(params: {
@@ -28,12 +23,8 @@ export async function cleanupRetiredAgentDatabaseLease(params: {
     coordinatorRuntime: { ...params.context.coordinatorRuntime, keepAlive: false },
     existingSchemaPath: params.context.existingSchemaPath,
   };
-  const store = await openSharedStateSqliteWorkerStore<OpenClawStateWorkerCleanupOperations>(
-    {
-      moduleUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sharedStateStore),
-      databasePath: params.lease.sharedStatePath,
-      existingOnly: true,
-    },
+  const store = await openOpenClawStateWorkerCleanupStore(
+    params.lease.sharedStatePath,
     context,
     () => params.assertOwned(),
   );

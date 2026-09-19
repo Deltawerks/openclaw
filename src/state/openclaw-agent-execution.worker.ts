@@ -10,7 +10,10 @@ import {
   requestSqliteWorkerOperationAdmission,
   SqliteWorkerOpenRefusedError,
 } from "../infra/sqlite-worker-operation-admission.js";
-import type { OpenClawAgentDatabase } from "./openclaw-agent-db-contract.js";
+import type {
+  OpenClawAgentDatabase,
+  OpenClawAgentDatabaseRegistrationCommit,
+} from "./openclaw-agent-db-contract.js";
 import { readOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
 import { prepareOpenClawAgentDatabaseWorkerLease } from "./openclaw-agent-db-lease.js";
 import {
@@ -18,7 +21,6 @@ import {
   retainAgentDatabase,
 } from "./openclaw-agent-db-lifecycle.js";
 import { ensureOpenClawAgentDatabasePermissions } from "./openclaw-agent-db-permissions.js";
-import type { OpenClawAgentDatabaseRegistrationCommit } from "./openclaw-agent-db-registry.js";
 import { getOpenClawAgentDatabaseIfOpen, openOpenClawAgentDatabase } from "./openclaw-agent-db.js";
 import type {
   AgentDatabaseExecutionIdentity,

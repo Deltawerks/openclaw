@@ -49,6 +49,7 @@ import { createOpenClawAgentDatabaseAdmissionOwner } from "./openclaw-agent-db-a
 import type {
   OpenClawAgentDatabase,
   OpenClawAgentDatabaseOptions,
+  OpenClawAgentDatabaseRegistrationCommit,
 } from "./openclaw-agent-db-contract.js";
 import { registerOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
 import {
@@ -78,7 +79,6 @@ import {
   isSameOpenClawAgentDatabasePath,
   registerOpenClawAgentDatabase,
   unregisterOpenClawAgentDatabase,
-  type OpenClawAgentDatabaseRegistrationCommit,
 } from "./openclaw-agent-db-registry.js";
 import {
   assertCanonicalAgentPersistenceVersion,

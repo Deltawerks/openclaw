@@ -8,9 +8,9 @@ import { sessionChanges } from "../sessions/session-row-changes.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
   OPENCLAW_AGENT_SCHEMA_VERSION,
+  type OpenClawAgentDatabaseRegistrationCommit,
   type OpenClawRegisteredAgentDatabase,
 } from "./openclaw-agent-db-contract.js";
-import type { OpenClawAgentDatabaseRegistrationCommit } from "./openclaw-agent-db-registry.js";
 import {
   isStateDatabaseReadAdmissionInvalidatedError,
   type OpenClawStateDatabaseReadAdmission,

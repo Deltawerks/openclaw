@@ -11,7 +11,10 @@ import {
   assertAgentDeletionPathFence,
   prepareAgentDeletionPathFence,
 } from "./agent-deletion-journal.js";
-import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
+import {
+  OPENCLAW_AGENT_SCHEMA_VERSION,
+  type OpenClawAgentDatabaseRegistrationCommit,
+} from "./openclaw-agent-db-contract.js";
 import { invalidateRegisteredAgentDatabasesMemo } from "./openclaw-agent-db-registry-listing.js";
 import {
   invalidateOpenClawAgentDatabaseValidation,
@@ -556,13 +559,6 @@ export function isSameOpenClawAgentDatabasePath(left: string, right: string): bo
     resolveAgentDatabasePathIdentity(right),
   );
 }
-
-export type OpenClawAgentDatabaseRegistrationCommit = Readonly<{
-  agentId: string;
-  agentPath: string;
-  stateDatabasePath: string;
-  stateDatabaseIdentity: string;
-}>;
 
 export function registerOpenClawAgentDatabase(
   params: {
