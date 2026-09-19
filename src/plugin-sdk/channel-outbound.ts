@@ -8,7 +8,9 @@ import {
   resolveChannelProgressDraftConfig as readProgressDraftConfig,
   type StreamingCompatEntry as ProgressDraftCompatEntry,
 } from "../channels/streaming.js";
+import { preserveReplyPayloadMediaSelection as preserveMediaSelection } from "../infra/outbound/reply-media-entries.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import type { ReplyPayload } from "./reply-payload.js";
 
 export { isCompleteAgentPreamble } from "../agents/agent-activity-presentation.js";
 
@@ -83,6 +85,15 @@ export {
   projectOutboundPayloadPlanForDelivery,
 } from "../infra/outbound/payloads.js";
 export { collectReplyMediaEntries } from "../infra/outbound/reply-media-entries.js";
+
+/** Keep the current operation media selection when recovering other reply fields. */
+export function preserveReplyPayloadMediaSelection(
+  source: ReplyPayload,
+  recovered: ReplyPayload,
+): ReplyPayload {
+  return preserveMediaSelection(source, recovered);
+}
+
 export type { OutboundPayloadPlan } from "../infra/outbound/reply-payload-parts.js";
 export { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 export type { OutboundSessionContext } from "../infra/outbound/session-context.js";

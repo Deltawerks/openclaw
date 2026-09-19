@@ -10,6 +10,7 @@ import {
   type readSessionRowFacts,
 } from "./server-methods/session-placement-read-projection.js";
 import { compareSessionEntryPairs } from "./session-list-order.js";
+import { readSessionListSelectionFacts } from "./session-list-target.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import * as rowProjection from "./session-utils-row.js";
@@ -20,8 +21,11 @@ export type Row = {
   storeTarget: SessionStoreTarget;
   storedEntry?: SessionEntry;
   entry?: SessionEntry;
+  selection: ReturnType<typeof readSessionListSelectionFacts>;
   materialized?: ReturnType<typeof rowProjection.materializeSessionRow>;
   materializedSequence?: number;
+  profileRevision?: number;
+  subagentRevision?: number;
   lastMessagePreview?: string;
   fallbackModel?: ReturnType<
     typeof rowProjection.readSessionRowInputs
@@ -96,6 +100,7 @@ export function create(target: RowTarget, entry?: SessionEntry): Row {
   return {
     ...target,
     storedEntry: entry,
+    selection: readSessionListSelectionFacts(target.key, entry),
     parents: new Set(),
     membership: new Set(),
     generation: Symbol("row"),
@@ -261,6 +266,41 @@ export function dematerialize(row: Row): Row {
   };
 }
 
+export function readSessionRowParents(
+  row: Row,
+  storedEntry: SessionEntry,
+  cfg: Inputs["cfg"],
+  context: SessionListRowContext,
+) {
+  const parents = new Set<string>();
+  const addParent = (key: string | null | undefined) => {
+    if (key && key !== row.key) {
+      parents.add(parentReference(cfg, key, row.agentId, row.storeTarget.storePath));
+    }
+  };
+  addParent(storedEntry.parentSessionKey ?? resolveSessionParentSessionKey(row.key));
+  addParent(storedEntry.spawnedBy);
+  const runs = context.subagentRunsByChildSessionKey.get(row.key);
+  if (runs) {
+    for (const run of runs) {
+      addParent(run.controllerSessionKey || run.requesterSessionKey);
+    }
+  }
+  return parents;
+}
+
+export function sameParents(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) {
+    return false;
+  }
+  for (const parent of left) {
+    if (!right.has(parent)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function acquireSessionRowEntry(params: {
   row: Row;
   storedEntry: SessionEntry | undefined;
@@ -277,21 +317,12 @@ export function acquireSessionRowEntry(params: {
     return undefined;
   }
   const entry = projectGatewaySessionEntry(cfg, storedEntry);
-  const parents = new Set<string>();
-  const addParent = (key: string | null | undefined) => {
-    if (key && key !== row.key) {
-      parents.add(parentReference(cfg, key, row.agentId, row.storeTarget.storePath));
-    }
-  };
-  addParent(storedEntry.parentSessionKey ?? resolveSessionParentSessionKey(row.key));
-  addParent(storedEntry.spawnedBy);
-  const runs = context.subagentRunsByChildSessionKey.get(row.key);
-  if (runs) {
-    for (const run of runs) {
-      addParent(run.controllerSessionKey || run.requesterSessionKey);
-    }
-  }
-  const changed = !isDeepStrictEqual([storedEntry, parents], [row.storedEntry, row.parents]);
+  const parents = readSessionRowParents(row, storedEntry, cfg, context);
+  // Equal timestamps still need the full metadata comparison.
+  const changed =
+    !sameParents(row.parents, parents) ||
+    !Object.is(storedEntry.updatedAt, row.storedEntry?.updatedAt) ||
+    !isDeepStrictEqual(storedEntry, row.storedEntry);
   if (changed) {
     params.markRelated(row);
   }
@@ -305,6 +336,8 @@ export function acquireSessionRowEntry(params: {
     ...row,
     storedEntry,
     entry,
+    // Selection metadata survives archive dematerialization and refreshes with the entry.
+    selection: readSessionListSelectionFacts(row.key, entry),
     parents,
     generation,
     hasBoard:

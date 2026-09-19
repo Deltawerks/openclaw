@@ -476,5 +476,6 @@ describe("handleMessageUpdate text signatures", () => {
       replyToTag: true,
       replyToCurrent: true,
     });
+    expect(ctx.state.pendingAssistantReplyDirectives).toBeUndefined();
   });
 });

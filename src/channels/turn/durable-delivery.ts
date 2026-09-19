@@ -2,7 +2,10 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import { getGroupThreadDispatchContext } from "../../auto-reply/group-thread-context.js";
-import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
+import {
+  isReplyPayloadTargetSuppressed,
+  type ReplyPayload,
+} from "../../auto-reply/reply-payload.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeDeliverableOutboundChannel } from "../../infra/outbound/channel-resolution.js";
@@ -82,6 +85,9 @@ function resolveDeliveryTarget(params: DurableInboundReplyDeliveryParams): strin
 function resolveDurableInboundReplyToId(
   params: Pick<DurableInboundReplyDeliveryParams, "ctxPayload" | "payload" | "replyToId">,
 ): string | null | undefined {
+  if (isReplyPayloadTargetSuppressed(params.payload)) {
+    return null;
+  }
   // Explicit null means "do not reply to a source message"; do not fall back to context ids.
   if (params.replyToId === null || params.payload.replyToId === null) {
     return null;

@@ -3,6 +3,8 @@ import { expectDefined } from "@openclaw/normalization-core";
 import type { Bot } from "grammy";
 import { projectAgentToolActivity } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
+import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeAll, beforeEach, describe, expect, vi } from "vitest";
 import { resolveAutoTopicLabelConfig as resolveAutoTopicLabelConfigRuntime } from "./auto-topic-label-config.js";
 import type { TelegramBotDeps } from "./bot-deps.js";
@@ -308,7 +310,6 @@ vi.mock("./bot/delivery.js", () => ({
 vi.mock("./bot/delivery.replies.js", () => ({
   deliverReplies: deliverRepliesHoisted,
   deliverStructuredReplies: deliverRepliesHoisted,
-  emitTelegramMessageSentHooks: emitTelegramMessageSentHooksHoisted,
 }));
 
 vi.mock("./send.js", async () => ({
@@ -388,18 +389,16 @@ export const telegramDepsForTest: TelegramBotDeps = {
 export type TelegramMessageContext = Parameters<typeof dispatchTelegramMessage>[0]["context"];
 export const trailingFinalStatusText = "Post-final plugin status";
 
-async function loadTelegramDispatchForTests() {
-  ({ dispatchTelegramMessage } = await import("./bot-message-dispatch.js"));
-}
+let testState: OpenClawTestState;
 
-function resetTelegramDispatchTestState() {
+async function resetTelegramDispatchTestState() {
+  testState = await createOpenClawTestState({ label: "telegram-dispatch", layout: "state-only" });
   resetPluginStateStoreForTests({ closeDatabase: false });
   setTelegramPluginStateRuntimeForTests();
   resetTelegramReplyFenceForTests();
   observeInboundDelivery.mockReset();
   createTelegramDraftStream.mockReset();
   dispatchReplyWithBufferedBlockDispatcher.mockReset();
-  deliverInboundReplyWithMessageSendContext.mockReset();
   emitTelegramMessageSentHooks.mockReset();
   recordOutboundMessageForPromptContext.mockReset();
   loadConfig.mockReset();
@@ -418,8 +417,17 @@ function resetTelegramDispatchTestState() {
     queuedFinal: false,
     counts: { block: 0, final: 0, tool: 0 },
   });
-  deliverReplies.mockReset().mockResolvedValue({ delivered: true });
-  deliverInboundReplyWithMessageSendContext.mockResolvedValue({
+  deliverReplies
+    .mockReset()
+    .mockImplementation(
+      async (params: Parameters<NonNullable<TelegramBotDeps["deliverReplies"]>>[0]) => {
+        params.onMediaAccepted?.(
+          params.replies.flatMap((payload) => resolveSendableOutboundReplyParts(payload).mediaUrls),
+        );
+        return { delivered: true };
+      },
+    );
+  deliverInboundReplyWithMessageSendContext.mockReset().mockResolvedValue({
     status: "unsupported",
     reason: "missing_outbound_handler",
   });
@@ -473,9 +481,10 @@ function resetTelegramDispatchTestState() {
   getGlobalHookRunner.mockReset().mockReturnValue(null);
 }
 
-function cleanupTelegramDispatchTestState() {
+async function cleanupTelegramDispatchTestState() {
   clearTelegramRuntime();
   resetPluginStateStoreForTests();
+  await testState.cleanup();
 }
 
 export const createDraftStream = (messageId?: number) => createTestDraftStream({ messageId });
@@ -580,7 +589,6 @@ export function createContext(overrides?: Partial<TelegramMessageContext>): Tele
     threadSpec: { id: 777, scope: "dm" },
     historyKey: undefined,
     historyLimit: 0,
-    groupHistories: new Map(),
     route: { agentId: "default", accountId: "default" },
     skillFilter: undefined,
     sendTyping: vi.fn(),
@@ -730,7 +738,10 @@ export function createReasoningForumTopicContext(): TelegramMessageContext {
 
 export function describeTelegramDispatch(name: string, registerTests: () => void): void {
   describe(name, () => {
-    beforeAll(loadTelegramDispatchForTests);
+    beforeAll(async () => {
+      // Dependency factories capture mocks initialized by this harness before the runtime loads.
+      ({ dispatchTelegramMessage } = await import("./bot-message-dispatch.js"));
+    });
     beforeEach(resetTelegramDispatchTestState);
     afterEach(cleanupTelegramDispatchTestState);
     registerTests();

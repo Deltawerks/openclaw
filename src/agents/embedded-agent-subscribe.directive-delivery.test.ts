@@ -19,6 +19,11 @@ import type { ReplyPayload } from "../auto-reply/types.js";
 import { runAgentLoop } from "../plugin-sdk/agent-core.js";
 import { sanitizeUserFacingText } from "./embedded-agent-helpers/sanitize-user-facing-text.js";
 import {
+  blockDirectiveCases,
+  settledParagraph,
+} from "./embedded-agent-subscribe.directive-delivery.block-code.test-support.js";
+import { inlineDirectiveCases } from "./embedded-agent-subscribe.directive-delivery.inline-code.test-support.js";
+import {
   createSubscribedSessionHarness,
   emitAssistantTextDelta,
   emitAssistantTextEnd,
@@ -26,7 +31,6 @@ import {
 import {
   consumePendingAssistantReplyDirectivesIntoReply,
   hasAssistantVisibleReply,
-  recordPendingAssistantReplyDirectives,
   resolveManagedStreamMediaUrls,
 } from "./embedded-agent-subscribe.handlers.messages.replies.js";
 import { resolveStreamingReply } from "./embedded-agent-subscribe.handlers.messages.stream.js";
@@ -52,7 +56,6 @@ const responsesModel: Model<"openai-responses"> = {
 };
 const audioUrl = "https://example.invalid/clip.ogg";
 const nextParagraph = "A second paragraph gives the completed example enough text to drain.\n\n";
-const settledParagraph = "Another paragraph is visible before the next streaming update.\n\n";
 
 function createDeliveryHarness(
   options: { minChars?: number; blockReplyBreak?: "text_end" | "message_end" } = {},
@@ -142,6 +145,7 @@ const cases = [
     replyToId: "later-id",
     textOnly: true,
   },
+  ...blockDirectiveCases,
   {
     name: "ordinary continuations after array access",
     chunks: [
@@ -199,20 +203,7 @@ const cases = [
     marker: "    const value = 1;\n    use(value);",
     literal: true,
   },
-  {
-    name: "voice marker split from its inline opener",
-    chunks: ["Use `", "[[audio_as_voice]]` literally.\n\n"],
-    marker: "[[audio_as_voice]]",
-    literal: true,
-    audioAsVoice: false,
-  },
-  {
-    name: "voice marker in physically split inline code",
-    chunks: ["Use `" + "x".repeat(60), "[[audio_as_voice]]` literally.\n\n"],
-    marker: "[[audio_as_voice]]",
-    literal: true,
-    audioAsVoice: false,
-  },
+  ...inlineDirectiveCases,
   {
     name: "genuine split voice directive",
     chunks: ["[[audio_as_", "voice]]Visible reply.\n\n"],
@@ -467,14 +458,26 @@ describe.each(["google raw", "responses prepared"] as const)("%s directive deliv
       const text = delivered.map((payload) => payload.text ?? "").join("");
       if ("literal" in scenario) {
         expect.soft(text).toContain(scenario.marker);
+        if ("literalText" in scenario) {
+          expect
+            .soft(delivered.find((payload) => payload.text?.includes(scenario.marker))?.text)
+            .toBe(scenario.literalText);
+        }
       } else {
         expect.soft(text).not.toContain(scenario.marker);
       }
       if ("replyToId" in scenario) {
         expect
           .soft(
-            delivered.some(
-              (payload) => payload.replyToId === scenario.replyToId && payload.replyToTag,
+            delivered.filter((payload) => payload.replyToId).map((payload) => payload.replyToId),
+          )
+          .toContain(scenario.replyToId);
+        expect
+          .soft(
+            delivered.every(
+              (payload) =>
+                !payload.replyToId ||
+                (payload.replyToId === scenario.replyToId && payload.replyToTag),
             ),
           )
           .toBe(true);
@@ -935,31 +938,6 @@ describe("assistant stream managed media", () => {
 });
 
 describe("pending assistant reply directives", () => {
-  it("merges directive metadata into the next non-reasoning block reply", () => {
-    const state = { pendingAssistantReplyDirectives: undefined };
-
-    recordPendingAssistantReplyDirectives(state, {
-      text: "",
-      replyToCurrent: true,
-      replyToTag: true,
-      audioAsVoice: true,
-      isSilent: false,
-    });
-
-    expect(
-      consumePendingAssistantReplyDirectivesIntoReply(state, {
-        text: "Done.",
-      }),
-    ).toEqual({
-      text: "Done.",
-      audioAsVoice: true,
-      replyToId: undefined,
-      replyToTag: true,
-      replyToCurrent: true,
-    });
-    expect(state.pendingAssistantReplyDirectives).toBeUndefined();
-  });
-
   it("does not consume pending directive metadata on reasoning replies", () => {
     const state = {
       pendingAssistantReplyDirectives: {

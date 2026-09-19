@@ -1,4 +1,5 @@
 // Normalizes payloads and applies post-send presentation/media effects.
+import { copyReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { resolveReceiptSourceId } from "../../channels/message/receipt.js";
 import type { ChannelOutboundTargetRef } from "../../channels/plugins/types.adapters.js";
@@ -43,10 +44,10 @@ export function normalizeEmptyPayloadForDelivery(payload: ReplyPayload): ReplyPa
       return null;
     }
     if (text) {
-      return {
+      return copyReplyPayloadMetadata(payload, {
         ...payload,
         text: "",
-      };
+      });
     }
   }
   return payload;
@@ -57,7 +58,7 @@ export function normalizePayloadsForChannelDelivery(
   handler: ChannelHandler,
   copyPayloadMetadata?: (source: ReplyPayload, payload: ReplyPayload) => ReplyPayload,
 ): NormalizedPayloadForChannelDelivery[] {
-  const copyMetadata = copyPayloadMetadata ?? ((_source, payload) => payload);
+  const copyMetadata = copyPayloadMetadata ?? copyReplyPayloadMetadata;
   const normalizedPayloads: NormalizedPayloadForChannelDelivery[] = [];
   for (const entry of plan) {
     let sanitizedPayload = copyMetadata(
@@ -65,17 +66,23 @@ export function normalizePayloadsForChannelDelivery(
       stripInternalRuntimeScaffoldingFromPayload(entry.payload),
     );
     if (!handler.preserveMarkdownDetails && sanitizedPayload.text) {
-      sanitizedPayload = copyMetadata(sanitizedPayload, {
-        ...sanitizedPayload,
-        text: flattenMarkdownDetails(sanitizedPayload.text),
-      });
+      const text = flattenMarkdownDetails(sanitizedPayload.text);
+      if (text !== sanitizedPayload.text) {
+        sanitizedPayload = copyMetadata(sanitizedPayload, {
+          ...sanitizedPayload,
+          text,
+        });
+      }
     }
     if (handler.sanitizeText && sanitizedPayload.text) {
       if (!handler.shouldSkipPlainTextSanitization?.(sanitizedPayload)) {
-        sanitizedPayload = copyMetadata(sanitizedPayload, {
-          ...sanitizedPayload,
-          text: handler.sanitizeText(sanitizedPayload),
-        });
+        const text = handler.sanitizeText(sanitizedPayload);
+        if (text !== sanitizedPayload.text) {
+          sanitizedPayload = copyMetadata(sanitizedPayload, {
+            ...sanitizedPayload,
+            text,
+          });
+        }
       }
     }
     const normalizedPayload = handler.normalizePayload
@@ -188,8 +195,11 @@ export function resolveOutboundMediaAccessForSend(
 
 export function stripInternalRuntimeScaffoldingFromPayload(payload: ReplyPayload): ReplyPayload {
   const stripped = stripInternalRuntimeScaffoldingFromValue(payload);
-  return stripped && typeof stripped === "object" && !Array.isArray(stripped)
-    ? (stripped as ReplyPayload)
+  return stripped !== payload &&
+    stripped &&
+    typeof stripped === "object" &&
+    !Array.isArray(stripped)
+    ? copyReplyPayloadMetadata(payload, stripped as ReplyPayload)
     : payload;
 }
 

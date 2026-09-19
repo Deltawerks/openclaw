@@ -21,8 +21,13 @@ type EmitMessageSentHookParams = {
   groupId?: string;
 };
 
-function buildTelegramSentHookContext(params: EmitMessageSentHookParams) {
-  return buildCanonicalSentMessageHookContext({
+export function emitTelegramMessageSentHooks(params: EmitMessageSentHookParams): void {
+  const hookRunner = getGlobalHookRunner();
+  const enabled = hookRunner?.hasHooks("message_sent") ?? false;
+  if (!enabled && !params.sessionKeyForInternalHooks) {
+    return;
+  }
+  const canonical = buildCanonicalSentMessageHookContext({
     to: params.chatId,
     content: params.content,
     success: params.success,
@@ -34,40 +39,10 @@ function buildTelegramSentHookContext(params: EmitMessageSentHookParams) {
     isGroup: params.isGroup,
     groupId: params.groupId,
   });
-}
-
-function emitInternalMessageSentHook(params: EmitMessageSentHookParams): void {
-  if (!params.sessionKeyForInternalHooks) {
-    return;
-  }
-  const canonical = buildTelegramSentHookContext(params);
-  fireAndForgetHook(
-    triggerInternalHook(
-      createInternalHookEvent(
-        "message",
-        "sent",
-        params.sessionKeyForInternalHooks,
-        toInternalMessageSentContext(canonical),
-      ),
-    ),
-    "telegram: message:sent internal hook failed",
-  );
-}
-
-export function emitMessageSentHooks(
-  params: EmitMessageSentHookParams & {
-    hookRunner: ReturnType<typeof getGlobalHookRunner>;
-    enabled: boolean;
-  },
-): void {
-  if (!params.enabled && !params.sessionKeyForInternalHooks) {
-    return;
-  }
-  const canonical = buildTelegramSentHookContext(params);
-  if (params.enabled) {
+  if (enabled) {
     fireAndForgetHook(
       Promise.resolve(
-        params.hookRunner!.runMessageSent(
+        hookRunner!.runMessageSent(
           toPluginMessageSentEvent(canonical),
           toPluginMessageContext(canonical),
         ),
@@ -75,14 +50,17 @@ export function emitMessageSentHooks(
       "telegram: message_sent plugin hook failed",
     );
   }
-  emitInternalMessageSentHook(params);
-}
-
-export function emitTelegramMessageSentHooks(params: EmitMessageSentHookParams): void {
-  const hookRunner = getGlobalHookRunner();
-  emitMessageSentHooks({
-    ...params,
-    hookRunner,
-    enabled: hookRunner?.hasHooks("message_sent") ?? false,
-  });
+  if (params.sessionKeyForInternalHooks) {
+    fireAndForgetHook(
+      triggerInternalHook(
+        createInternalHookEvent(
+          "message",
+          "sent",
+          params.sessionKeyForInternalHooks,
+          toInternalMessageSentContext(canonical),
+        ),
+      ),
+      "telegram: message:sent internal hook failed",
+    );
+  }
 }

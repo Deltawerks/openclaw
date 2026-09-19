@@ -1,6 +1,7 @@
 import type { Bot } from "grammy";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { vi } from "vitest";
+import { createTelegramPromptContextProjectionSequence } from "../prompt-context-projection.js";
 
 const { loadWebMedia } = vi.hoisted(() => ({
   loadWebMedia: vi.fn(),
@@ -176,3 +177,16 @@ export {
   recordSentMessage,
   triggerInternalHook,
 };
+
+export function createObservedPromptContextSequence(
+  record: (value: unknown) => void,
+  source?: { transcriptMessageId: string },
+) {
+  return createTelegramPromptContextProjectionSequence({
+    ...(source ? { source } : {}),
+    record: async (value) => {
+      record(value);
+      return true;
+    },
+  });
+}

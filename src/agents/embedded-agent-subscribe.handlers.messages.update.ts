@@ -523,8 +523,11 @@ export function handleMessageUpdate(
     if (projection?.kind === "raw") {
       projection.directiveCodePrefix = directiveCodePrefix;
     }
+    recordPendingAssistantReplyDirectives(ctx.state, replyDirectives, {
+      previous: ctx.state.lastAssistantAudioDirectiveCount,
+      current: audioDirectiveCount,
+    });
     ctx.state.lastAssistantAudioDirectiveCount = audioDirectiveCount;
-    recordPendingAssistantReplyDirectives(ctx.state, replyDirectives);
     const hasAudio = Boolean(replyDirectives?.audioAsVoice);
 
     const hasVisibleReply = hasText || hasAudio;

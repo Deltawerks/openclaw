@@ -179,9 +179,25 @@ describe("text_end snapshot reconciliation", () => {
       expectedText: "First\nCorrected",
       expectedBlocks: ["First", "Corrected"],
     },
+    {
+      name: "replaces a completed code prefix with real reply intent",
+      priorBlocks: [],
+      draft: "```text\n[[reply_to:example-id]]\n```\n\nThe original draft continues here.",
+      finalBlock: "[[reply_to:replacement]]Corrected",
+      expectedText: "Corrected",
+      expectedBlocks: ["Corrected"],
+      replyToId: "replacement",
+    },
   ])(
     "unphased terminal checkpoint $name",
-    async ({ priorBlocks, finalBlock, expectedText, expectedBlocks }) => {
+    async ({
+      priorBlocks,
+      draft = "Draft",
+      finalBlock,
+      expectedText,
+      expectedBlocks,
+      replyToId,
+    }) => {
       const onAgentEvent = vi.fn();
       const onBlockReply = vi.fn();
       const { emit, subscription } = createSubscribedSessionHarness({
@@ -191,7 +207,7 @@ describe("text_end snapshot reconciliation", () => {
         blockReplyBreak: "text_end",
       });
       emit({ type: "message_start", message: createUnphasedAssistant([]) });
-      const streamedBlocks = [...priorBlocks, "Draft"];
+      const streamedBlocks = [...priorBlocks, draft];
       for (const [contentIndex, text] of streamedBlocks.entries()) {
         const partial = createUnphasedAssistant(streamedBlocks.slice(0, contentIndex + 1));
         emit({
@@ -247,6 +263,9 @@ describe("text_end snapshot reconciliation", () => {
         assistantTexts: expectedBlocks,
       });
       expect(onBlockReply).toHaveBeenCalledTimes(expectedBlocks.length);
+      if (replyToId) {
+        expect(onBlockReply.mock.calls.at(-1)?.[0]).toMatchObject({ replyToId, replyToTag: true });
+      }
     },
   );
 

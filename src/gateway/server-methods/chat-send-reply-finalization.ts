@@ -1,16 +1,11 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
-import {
-  appendLocalMediaParentRoots,
-  getAgentScopedMediaLocalRoots,
-} from "../../media/local-roots.js";
 import { appendChatCanvasBlocksToMessage } from "../chat-display-projection.canvas.js";
 import { attachManagedOutgoingMediaToMessage } from "../managed-image-attachments.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 import {
-  buildAssistantReplyContentFromInputs,
   combineNonStreamingReplyParts,
   extractAssistantDisplayText,
   hasAssistantDisplayMediaContent,
@@ -23,10 +18,13 @@ import {
   broadcastSideResult,
   isBtwReplyPayload,
 } from "./chat-broadcast.js";
-import { normalizeWebchatReplyMediaPathsForDisplay } from "./chat-reply-media.js";
+import {
+  captureWebchatReplyMediaScope,
+  prepareWebchatReplyMediaForDisplay,
+  type WebchatReplyMediaRequesterContext,
+} from "./chat-reply-media.js";
 import {
   readChatSendReplyPayload,
-  replaceChatSendReplyPayload,
   selectChatSendFinalReplyInputs,
   type DeliveredChatSendReply,
 } from "./chat-send-command-replies.js";
@@ -36,7 +34,7 @@ import type { PreparedChatSendSession } from "./chat-send-session.js";
 import type { GatewayInjectedTtsSupplementMarker } from "./chat-transcript-inject.js";
 import { appendAssistantTranscriptMessage } from "./chat-transcript-persistence.js";
 import { buildMediaOnlyTtsSupplementTranscriptMarker } from "./chat-tts-markers.js";
-import { buildWebchatAssistantMessageFromReplyPayloads } from "./chat-webchat-media.js";
+import type { GatewayChatUserTurnPersist } from "./chat-user-turn-recorder.js";
 import type { GatewayRequestContext } from "./types.js";
 
 type TranscriptMirrorOwner = {
@@ -137,12 +135,14 @@ function buildChatSendBtwSideResult(deliveredReplies: readonly DeliveredChatSend
 
 /** Finalize settled reply payloads, retaining the runtime's transcript ownership and outcome. */
 export async function finalizeChatSendDispatchedReplies(params: {
+  requesterContext?: WebchatReplyMediaRequesterContext;
+  abortSignal?: AbortSignal;
   accountId: string | undefined;
   context: GatewayRequestContext;
   deliveredReplies: readonly DeliveredChatSendReply[];
   emitFirstAssistantServerTiming: () => void;
   foldCommandBlocks: boolean;
-  persistUserTurnTranscript: () => Promise<void>;
+  persistUserTurnTranscript: GatewayChatUserTurnPersist;
   session: Pick<
     PreparedChatSendSession,
     "agentId" | "backingSessionId" | "cfg" | "clientRunId" | "sessionKey" | "sessionLoadOptions"
@@ -186,6 +186,18 @@ export async function finalizeChatSendDispatchedReplies(params: {
     return;
   }
 
+  const contextFreeCommand =
+    !params.runtimeOwnsTranscript &&
+    deliveredReplies.length > 0 &&
+    deliveredReplies.every(({ input }) => {
+      const payload = readChatSendReplyPayload(input);
+      const metadata = getReplyPayloadMetadata(payload);
+      return (
+        metadata?.commandReply === true &&
+        metadata.contextFreeCommand === true &&
+        metadata.assistantTranscriptOwned !== true
+      );
+    });
   const selectedInputs = selectChatSendFinalReplyInputs({
     deliveredReplies,
     foldCommandBlocks,
@@ -208,18 +220,20 @@ export async function finalizeChatSendDispatchedReplies(params: {
     transcriptMirrorResolution.kind === "owner" || transcriptMirrorResolution.kind === "blocked"
       ? transcriptMirrorResolution.owner
       : undefined;
-  const finalPayloads = await normalizeWebchatReplyMediaPathsForDisplay({
+  const mediaScope = captureWebchatReplyMediaScope({
+    requesterContext: params.requesterContext,
     cfg,
     sessionKey,
     agentId,
-    sessionEntry: loadSessionEntry(sessionKey, sessionLoadOptions).entry,
+    sessionLoadOptions,
     accountId,
-    payloads: rawFinalPayloads,
+    assertCurrent: () => {
+      if (!deliveryAuthorized()) {
+        throw new Error("Chat media delivery is no longer authorized.");
+      }
+    },
   });
-  const finalInputs = selectedInputs.flatMap((input, index) => {
-    const payload = finalPayloads[index];
-    return payload ? replaceChatSendReplyPayload(input, payload) : [];
-  });
+  const sourceSession = loadSessionEntry(sessionKey, sessionLoadOptions);
   const requestedTranscriptSession = transcriptMirrorOwner
     ? loadSessionEntry(transcriptMirrorOwner.sessionKey, {
         ...sessionLoadOptions,
@@ -262,40 +276,35 @@ export async function finalizeChatSendDispatchedReplies(params: {
   const resolvedTranscriptSession =
     useTranscriptMirrorOwner && requestedTranscriptSession
       ? requestedTranscriptSession
-      : loadSessionEntry(sessionKey, sessionLoadOptions);
+      : sourceSession;
   const { storePath: latestStorePath, entry: latestEntry } = resolvedTranscriptSession;
   const sessionId = latestEntry?.sessionId ?? backingSessionId ?? clientRunId;
-  const mediaLocalRoots = appendLocalMediaParentRoots(
-    getAgentScopedMediaLocalRoots(cfg, transcriptAgentId),
-    latestStorePath ? [latestStorePath] : undefined,
-  );
   let managedMediaPrepareFailed = false;
-  const mediaMessage = await buildWebchatAssistantMessageFromReplyPayloads(
-    finalInputs.map(readChatSendReplyPayload),
-    {
-      localRoots: mediaLocalRoots,
-      onLocalAudioAccessDenied: (err) => {
-        context.logGateway.warn(`webchat audio embedding denied local path: ${formatForLog(err)}`);
-      },
+  const {
+    payloads: finalPayloads,
+    inputs: finalInputs,
+    mediaMessage,
+    assistantContent,
+    persistedAssistantContent,
+  } = await prepareWebchatReplyMediaForDisplay({
+    scope: mediaScope,
+    storePath: sourceSession.storePath,
+    transcriptTarget: { sessionKey: transcriptSessionKey, agentId: transcriptAgentId },
+    inputs: selectedInputs,
+    abortSignal: params.abortSignal,
+    includeSensitiveMedia: false,
+    includeSensitiveDisplay: true,
+    onLocalAudioAccessDenied: (err) => {
+      context.logGateway.warn(`webchat audio embedding denied local path: ${formatForLog(err)}`);
     },
-  );
-  const { assistantContent, persistedAssistantContent } =
-    await buildAssistantReplyContentFromInputs({
-      sessionKey: transcriptSessionKey,
-      agentId: transcriptAgentId,
-      inputs: finalInputs,
-      transcriptMediaMessage: mediaMessage,
-      managedMediaLocalRoots: mediaLocalRoots,
-      includeSensitiveMedia: false,
-      includeSensitiveDisplay: true,
-      onManagedMediaPrepareError: (message) => {
-        managedMediaPrepareFailed = true;
-        context.logGateway.warn(`webchat media embedding skipped attachment: ${message}`);
-      },
-      onSensitiveDisplayPrepareError: (message) => {
-        context.logGateway.warn(`webchat sensitive display skipped attachment: ${message}`);
-      },
-    });
+    onManagedMediaPrepareError: (message) => {
+      managedMediaPrepareFailed = true;
+      context.logGateway.warn(`webchat media embedding skipped attachment: ${message}`);
+    },
+    onSensitiveDisplayPrepareError: (message) => {
+      context.logGateway.warn(`webchat sensitive display skipped attachment: ${message}`);
+    },
+  });
   const ttsSupplementMarker = finalPayloads
     .map((payload) => buildMediaOnlyTtsSupplementTranscriptMarker(payload))
     .find((marker): marker is GatewayInjectedTtsSupplementMarker => Boolean(marker));
@@ -327,7 +336,11 @@ export async function finalizeChatSendDispatchedReplies(params: {
     canAppendAssistantTranscript &&
     (transcriptReply || persistedContentForAppend?.length),
   );
-  await persistUserTurnTranscript();
+  if (contextFreeCommand) {
+    await persistUserTurnTranscript({ contextFreeCommand: true });
+  } else {
+    await persistUserTurnTranscript();
+  }
   if (!deliveryAuthorized()) {
     context.logGateway.warn(
       "webchat settled final reply skipped: session writer changed before transcript append",
@@ -347,6 +360,7 @@ export async function finalizeChatSendDispatchedReplies(params: {
       idempotencyKey: clientRunId,
       stopReason,
       ttsSupplement: ttsSupplementMarker,
+      ...(contextFreeCommand ? { contextFreeCommand: true } : {}),
       cfg,
     });
     if (appended.ok) {

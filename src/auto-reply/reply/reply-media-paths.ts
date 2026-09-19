@@ -23,6 +23,7 @@ import { collectReplyMediaEntries } from "../../infra/outbound/reply-media-entri
 import { resolveOutboundMediaMaxBytes } from "../../media/configured-max-bytes.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
 import { HostReadMediaTypeError, LocalMediaAccessError } from "../../media/local-media-access.js";
+import { normalizeMediaReferenceForComparison } from "../../media/media-reference-comparison.js";
 import { resolveOutboundAttachmentFromUrl } from "../../media/outbound-attachment.js";
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
 import {
@@ -117,6 +118,9 @@ export function createReplyMediaPathNormalizer(params: {
   sessionKey?: string;
   agentId?: string;
   workspaceDir: string;
+  sessionWorkspaceDir?: string;
+  workspaceOnly?: boolean;
+  allowHostWorkspace?: boolean;
   messageProvider?: string;
   accountId?: string;
   groupId?: string;
@@ -194,7 +198,9 @@ export function createReplyMediaPathNormalizer(params: {
       cfg: params.cfg,
       agentId,
       workspaceDir: workspaceDir ?? params.workspaceDir,
-      ...(sessionWorkspaceDir ? { sessionWorkspaceDir } : {}),
+      sessionWorkspaceDir: sessionWorkspaceDir ?? params.sessionWorkspaceDir,
+      workspaceOnly: params.workspaceOnly,
+      allowHostWorkspace: params.allowHostWorkspace,
       mediaSources: [media],
       mediaAccess: params.mediaAccess,
       workspaceMediaAccess: params.workspaceMediaAccess,
@@ -367,6 +373,8 @@ export function createReplyMediaPathNormalizer(params: {
 
     const normalizedMedia: string[] = [];
     const normalizedAttachments: NonNullable<ReplyPayload["attachments"]> = [];
+    const previousSourceUrls = getReplyPayloadMetadata(payload)?.replyMediaSourceUrls;
+    const sourcesByReference = new Map<string, Set<string>>();
     const seen = new Set<string>();
     let hasTrustedLocalMedia = payload.trustedLocalMedia === true;
     const mediaFailures: ReplyMediaFailure[] = [];
@@ -380,7 +388,22 @@ export function createReplyMediaPathNormalizer(params: {
         logVerbose(`dropping blocked reply media ${media}: ${String(err)}`);
         continue;
       }
-      if (!normalized.mediaUrl || seen.has(normalized.mediaUrl)) {
+      if (!normalized.mediaUrl) {
+        continue;
+      }
+      const normalizedKey = normalizeMediaReferenceForComparison(normalized.mediaUrl);
+      const sourceKey = normalizeMediaReferenceForComparison(media);
+      const sourceUrls = sourcesByReference.get(normalizedKey) ?? new Set<string>();
+      for (const source of previousSourceUrls?.get(sourceKey) ?? []) {
+        sourceUrls.add(source);
+      }
+      if (normalized.mediaUrl !== media.trim()) {
+        sourceUrls.add(media.trim());
+      }
+      if (sourceUrls.size > 0) {
+        sourcesByReference.set(normalizedKey, sourceUrls);
+      }
+      if (seen.has(normalized.mediaUrl)) {
         continue;
       }
       seen.add(normalized.mediaUrl);
@@ -405,6 +428,12 @@ export function createReplyMediaPathNormalizer(params: {
       normalizedAttachments.push(normalizedAttachment);
     }
 
+    const replyMediaSourceUrls =
+      sourcesByReference.size > 0
+        ? new Map<string, readonly string[]>(
+            [...sourcesByReference].map(([key, sources]) => [key, [...sources]]),
+          )
+        : undefined;
     const text = appendReplyMediaFailures(payload.text, mediaFailures);
     const previousMediaFailures = getReplyPayloadMetadata(payload)?.assistantMediaFailures ?? [];
     const assistantMediaFailures = [...previousMediaFailures, ...mediaFailures];
@@ -416,9 +445,10 @@ export function createReplyMediaPathNormalizer(params: {
         mediaUrl: undefined,
         mediaUrls: undefined,
       });
-      return mediaFailures.length === 0
-        ? normalized
-        : setReplyPayloadMetadata(normalized, { assistantMediaFailures });
+      return setReplyPayloadMetadata(normalized, {
+        replyMediaSourceUrls: undefined,
+        ...(mediaFailures.length > 0 ? { assistantMediaFailures } : {}),
+      });
     }
 
     const normalized = copyReplyPayloadMetadata(payload, {
@@ -431,9 +461,10 @@ export function createReplyMediaPathNormalizer(params: {
         : {}),
       ...(hasTrustedLocalMedia ? { trustedLocalMedia: true } : {}),
     });
-    return mediaFailures.length === 0
-      ? normalized
-      : setReplyPayloadMetadata(normalized, { assistantMediaFailures });
+    return setReplyPayloadMetadata(normalized, {
+      replyMediaSourceUrls,
+      ...(mediaFailures.length > 0 ? { assistantMediaFailures } : {}),
+    });
   };
 }
 
@@ -442,9 +473,14 @@ export type ReplyMediaContext = {
 };
 
 export function createReplyMediaContext(
-  params: Parameters<typeof createReplyMediaPathNormalizer>[0],
+  params: Parameters<typeof createReplyMediaPathNormalizer>[0] & {
+    mediaNormalizationOwner?: "gateway";
+  },
 ): ReplyMediaContext {
   return {
-    normalizePayload: createReplyMediaPathNormalizer(params),
+    normalizePayload:
+      params.mediaNormalizationOwner === "gateway"
+        ? async (payload) => payload
+        : createReplyMediaPathNormalizer(params),
   };
 }

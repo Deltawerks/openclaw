@@ -25,9 +25,18 @@ vi.mock("../message/send.js", async (importOriginal) => {
 });
 
 import { createExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
+import { runReplyPayloadSendingHook } from "../../auto-reply/reply/reply-payload-sending-hook.js";
+import { createReplyToModeFilterForChannel } from "../../auto-reply/reply/reply-threading.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
 import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
-import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
+import {
+  createOutboundPayloadPlan,
+  createStructuredOutboundPayloadPlan,
+} from "../../infra/outbound/payloads.js";
+import type { PluginHookReplyPayloadSendingEvent } from "../../plugins/hook-types.js";
+import { createHookRunner } from "../../plugins/hooks.js";
+import { addTestHook } from "../../plugins/hooks.test-fixtures.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import {
   deliverInboundReplyWithMessageSendContextCore,
   deliverStructuredInboundReplyWithMessageSendContextCore,
@@ -97,6 +106,58 @@ describe("durable inbound reply delivery", () => {
     };
     mocks.sendDurableMessageBatch.mockResolvedValue(result);
     mocks.sendStructuredDurableMessageBatch.mockResolvedValue(result);
+  });
+
+  it.each([
+    { mode: "first", raw: false },
+    { mode: "first", raw: true },
+    { mode: "off", raw: false },
+    { mode: "off", raw: true },
+  ] as const)("preserves $mode policy through a public hook (raw=$raw)", async ({ mode, raw }) => {
+    const filter = createReplyToModeFilterForChannel(mode, "telegram");
+    filter({ text: "First reply", replyToId: "source-message" });
+    const payload = filter({ text: "Later reply", replyToId: "source-message" });
+    const registry = createEmptyPluginRegistry();
+    addTestHook({
+      registry,
+      pluginId: "explicit-target",
+      hookName: "reply_payload_sending",
+      handler: (event: PluginHookReplyPayloadSendingEvent) => ({
+        payload: raw
+          ? { ...event.payload, text: "[[reply_to:hook-target]]Later reply" }
+          : { ...event.payload, replyToId: "hook-target", replyToTag: true },
+      }),
+    });
+    const hooked = await runReplyPayloadSendingHook(
+      {
+        payload,
+        kind: "final",
+        channel: "telegram",
+        context: { channelId: "telegram", conversationId: "chat-1" },
+      },
+      createHookRunner(registry),
+    );
+    if (!hooked) {
+      throw new Error("Expected an admitted hook payload");
+    }
+    const [plan] = raw
+      ? createOutboundPayloadPlan([hooked])
+      : createStructuredOutboundPayloadPlan([hooked]);
+    if (!plan) {
+      throw new Error("Expected a sendable reply plan");
+    }
+    await deliverStructuredInboundReplyWithMessageSendContextCore({
+      cfg: {},
+      channel: "telegram",
+      agentId: "main",
+      info: { kind: "final" },
+      plan,
+      replyToMode: mode,
+      ctxPayload: ctxPayload({ OriginatingTo: "chat-1", ReplyToId: "ambient-target" }),
+    });
+    expect(mocks.sendStructuredDurableMessageBatch).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ replyToId: mode === "first" ? null : "hook-target" }),
+    );
   });
 
   it("preserves explicit null thread targets instead of falling back to context thread", async () => {

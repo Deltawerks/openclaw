@@ -19,7 +19,7 @@ export const projectPayloadForDelivery = (
   delivery?: CurrentTurnTranscriptFinal["openclawDelivery"],
 ): ReplyPayload | undefined => {
   // Persisted delivery facts can accompany raw MEDIA lines; transcript text is not fully prepared.
-  let projected = createOutboundPayloadPlan([payload])[0]?.payload;
+  const projected = createOutboundPayloadPlan([payload])[0]?.payload;
   if (projected && delivery) {
     if (payload.replyToId !== undefined || payload.replyToCurrent === true) {
       // A current-message target and an explicit id are alternative intents, not mergeable fields.
@@ -35,7 +35,6 @@ export const projectPayloadForDelivery = (
       payload.audioAsVoice ?? delivery.audioAsVoice ?? projected.audioAsVoice;
     if (delivery.mediaUrls?.length) {
       projected.mediaUrls = [...(projected.mediaUrls ?? []), ...delivery.mediaUrls];
-      projected = createStructuredOutboundPayloadPlan([projected])[0]?.payload;
     }
   }
   if (projected?.replyToCurrent && projected.replyToId === undefined) {
@@ -43,7 +42,7 @@ export const projectPayloadForDelivery = (
     projected.replyToId =
       turn.context.ctxPayload.MessageSidFull ?? turn.context.ctxPayload.MessageSid;
   }
-  return projected;
+  return projected ? createStructuredOutboundPayloadPlan([projected])[0]?.payload : undefined;
 };
 
 export function normalizeDeliveryPayload(
@@ -75,5 +74,21 @@ export function normalizePreparedDeliveryPayload(turn: Turn, payload: ReplyPaylo
   return canonicalizeTelegramPresentationPayload(payload, {
     allowWebAppButtons: resolveTelegramTargetChatType(String(turn.context.chatId)) === "direct",
     richTables: false,
+  });
+}
+
+export function applyQuoteReplyTarget(turn: Turn, payload: ReplyPayload): ReplyPayload {
+  if (
+    !turn.implicitQuoteReplyTargetId ||
+    !turn.currentMessageIdForQuoteReply ||
+    payload.replyToId !== turn.currentMessageIdForQuoteReply ||
+    payload.replyToTag ||
+    payload.replyToCurrent
+  ) {
+    return payload;
+  }
+  return copyReplyPayloadMetadata(payload, {
+    ...payload,
+    replyToId: turn.implicitQuoteReplyTargetId,
   });
 }

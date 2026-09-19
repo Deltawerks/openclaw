@@ -315,9 +315,23 @@ raw callback string. Actor and source-message checks remain channel-owned.
       When cloning a host-supplied reply, use `copyReplyPayloadMetadata(source, clone)`
       from `openclaw/plugin-sdk/reply-payload` to preserve its non-serialized runtime
       metadata. Persisted transcript delivery facts cannot replace that metadata.
+      When recovering a payload from earlier source text, apply
+      `preserveReplyPayloadMediaSelection(current, recovered)` from
+      `openclaw/plugin-sdk/channel-outbound`.
+      This retains media and attachment choices changed by delivery modifiers, while
+      allowing text and reply intent to recover independently. Unchanged empty media
+      does not prevent transcript recovery. With unchanged media, the operation prefers
+      current prepared references over their recorded source aliases and retains distinct
+      recovered media. It preserves the candidate’s other runtime metadata.
+      After recovering or projecting fields on a normalized reply, finish with
+      `createStructuredOutboundPayloadPlan` from `openclaw/plugin-sdk/channel-outbound`.
+      This preserves literal text and the host's recorded single-use target policy.
       Before filtering media, use `collectReplyMediaEntries(payload, projectedMediaUrls?)`
       from `openclaw/plugin-sdk/channel-outbound` to retain each URL's attachment metadata. Filter those
       entries together so positional names and referenced records stay with their media.
+      Entries can also carry `sourceUrls` for references staged by the host. When recording
+      delivered media, request entries for only the URLs confirmed accepted by the transport;
+      source aliases for removed or unsent media are not delivery evidence.
 
       Streaming delivery can carry one `OutboundPayloadPlan` through the optional
       `onPreparedBlockReply(plan, context)`, dispatcher `sendPreparedReply(kind, plan)`,

@@ -1,7 +1,6 @@
 // Chat directive tag tests cover reply directive metadata, transcript mirrors,
 // current-message reply routing, and dispatched payload ordering.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { asOptionalRecord, expectDefined } from "@openclaw/normalization-core";
@@ -60,24 +59,19 @@ import {
 } from "../../sessions/session-lifecycle-admission.js";
 import { projectAssistantDisplayContent } from "../../shared/assistant-display-content.js";
 import { extractFirstTextBlock } from "../../shared/chat-message-content.js";
-import {
-  disposeOpenClawAgentDatabaseByPath,
-  openOpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseByPath } from "../../state/openclaw-state-db-cache.js";
-import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { withTempDir } from "../../test-utils/temp-dir.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { consumeCronCreatorAuthorityGrant } from "../cron-creator-authority-grant.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { resolveSessionStoreAgentId } from "../session-store-key.js";
 import { STALE_WORKER_BUILD_REASON } from "../worker-environments/admission.js";
 import { agentWaitHandler } from "./agent-wait.js";
+import { createScopedCliClient } from "./chat-client.test-support.js";
 import {
   createFileAttachment,
   createImageAttachment,
   createPngBuffer,
-  createScopedCliClient,
   getMessage,
   getMessageContent,
   mockCallAt,
@@ -89,6 +83,7 @@ import {
 } from "./chat-message.test-fixtures.js";
 import { handleChatSend, handleTrustedInternalChatSend } from "./chat-send-handler.js";
 import { readChatSendDedupeResponse } from "./chat-send-pre-admission.js";
+import { createChatDirectiveSuiteResources } from "./chat.directive-tags.test-support.js";
 import { initializeSessionReadContext } from "./sessions-read-cache.test-support.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
@@ -206,6 +201,7 @@ type SourceReplyTranscriptMirror = NonNullable<
   Parameters<typeof setReplyPayloadMetadata>[1]["sourceReplyTranscriptMirror"]
 >;
 
+let suiteResources: ReturnType<typeof createChatDirectiveSuiteResources>;
 let suiteFixtureRoot = "";
 let suiteDatabasePath = "";
 let suiteFixtureEnv: NodeJS.ProcessEnv = {};
@@ -617,6 +613,7 @@ vi.mock("../../media/store.js", async () => {
 });
 
 const { chatHandlers } = await import("./chat.js");
+const { handleDirectExternalChatSend } = await import("./chat-send-external-entry.js");
 
 // Multi-media transcript mirroring can exceed 1s on loaded CI before the async broadcast lands.
 async function waitForAssertion(assertion: () => void, timeoutMs = 5_000, stepMs = 2) {
@@ -1231,10 +1228,7 @@ async function runNonStreamingChatSend(params: {
   if (typeof params.deliver === "boolean") {
     sendParams.deliver = params.deliver;
   }
-  const handler =
-    params.directExternal === false
-      ? handleChatSend
-      : expectDefined(chatHandlers["chat.send"], 'chatHandlers["chat.send"] test invariant');
+  const handler = params.directExternal === false ? handleChatSend : handleDirectExternalChatSend;
   const handlerOptions = {
     params: {
       ...sendParams,
@@ -1363,15 +1357,12 @@ async function expectImageOnlyFinal(params: {
 }
 
 beforeAll(() => {
-  suiteFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-chat-directive-suite-"));
-  suiteDatabasePath = path.join(suiteFixtureRoot, "openclaw-agent.sqlite");
-  suiteFixtureEnv = { ...process.env, OPENCLAW_STATE_DIR: suiteFixtureRoot };
+  suiteResources = createChatDirectiveSuiteResources();
+  suiteFixtureRoot = suiteResources.root;
+  suiteDatabasePath = suiteResources.databasePath;
+  suiteFixtureEnv = suiteResources.env;
   mockState.storePath = suiteDatabasePath;
-  openOpenClawAgentDatabase({
-    agentId: "main",
-    env: suiteFixtureEnv,
-    path: suiteDatabasePath,
-  });
+  suiteResources.open();
 });
 
 afterEach(async () => {
@@ -1392,9 +1383,7 @@ afterAll(async () => {
       path: suiteDatabasePath,
     });
   } finally {
-    disposeOpenClawAgentDatabaseByPath(suiteDatabasePath, { env: suiteFixtureEnv });
-    closeOpenClawStateDatabaseByPath(resolveOpenClawStateSqlitePath(suiteFixtureEnv));
-    fs.rmSync(suiteFixtureRoot, { recursive: true, force: true });
+    await suiteResources.close();
   }
 });
 
@@ -4688,38 +4677,52 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     },
   );
 
-  it("keeps visible text on non-agent TTS final media because no model transcript exists", async () => {
-    const transcriptDir = await createTranscriptFixture("openclaw-chat-send-command-tts-final-");
-    const audioPath = path.join(transcriptDir, "tts.mp3");
-    fs.writeFileSync(audioPath, createPlaybackMediaFixture("mp3"));
-    mockState.config = {
-      agents: {
-        defaults: {
-          workspace: transcriptDir,
-        },
-      },
-    };
-    mockState.finalPayload = {
-      text: "Command result with TTS.",
-      spokenText: "Command result with TTS.",
-      mediaUrl: audioPath,
-      mediaUrls: [audioPath],
-      trustedLocalMedia: true,
-      audioAsVoice: true,
-    };
-    const payload = await createChatRequestFixture().send({
-      idempotencyKey: "idem-command-tts",
-    });
+  it.each([false, true])(
+    "keeps trusted worktree TTS media under sender policy (denied=%s)",
+    async (denied) => {
+      await withTempDir("openclaw-command-tts-worktree-", async (worktree) => {
+        const transcriptDir = await createTranscriptFixture(
+          "openclaw-chat-send-command-tts-final-",
+        );
+        const audioPath = path.join(worktree, "tts.mp3");
+        const audio = Buffer.alloc(6 * 1024 * 1024);
+        createPlaybackMediaFixture("mp3").copy(audio);
+        fs.writeFileSync(audioPath, audio);
+        mockState.config = {
+          agents: { defaults: { workspace: transcriptDir } },
+          tools: {
+            fs: { workspaceOnly: true },
+            toolsBySender: { "id:cli": { deny: denied ? ["read"] : [] } },
+          },
+        };
+        mockState.sessionEntry = { sessionRoot: worktree, spawnedCwd: worktree };
+        mockState.finalPayload = createSlashCommandMediaReply("final", [audioPath], {
+          text: "Command result with TTS.",
+          spokenText: "Command result with TTS.",
+          mediaUrl: audioPath,
+          audioAsVoice: true,
+        }).payload;
+        const payload = await createChatRequestFixture().send({
+          idempotencyKey: "idem-command-tts",
+          client: createScopedCliClient(["operator.admin"], { id: "cli" }),
+        });
 
-    const content = getMessageContent(payload);
-    expect(getMessage(payload)?.role).toBe("assistant");
-    expect(content[0]).toEqual({ type: "text", text: "Command result with TTS." });
-    expectManagedAudioBlock(content[1], "tts.mp3", true);
-    expect(JSON.stringify(content[1])).not.toContain(fs.realpathSync(audioPath));
-    const assistantUpdates = findAssistantTranscriptUpdates();
-    expect(assistantUpdates).toHaveLength(1);
-    expect(JSON.stringify(assistantUpdates[0]?.message)).toContain("Command result with TTS.");
-  });
+        const content = getMessageContent(payload);
+        expect(getMessage(payload)?.role).toBe("assistant");
+        expect(content[0]).toEqual({ type: "text", text: "Command result with TTS." });
+        if (denied) {
+          expect(managedAudioBlocks(content)).toEqual([]);
+          expect(JSON.stringify(content)).not.toContain("/api/chat/media/outgoing/");
+        } else {
+          expectManagedAudioBlock(content[1], "tts.mp3", true);
+          expect(JSON.stringify(content[1])).not.toContain(fs.realpathSync(audioPath));
+        }
+        const assistantUpdates = findAssistantTranscriptUpdates();
+        expect(assistantUpdates).toHaveLength(1);
+        expect(JSON.stringify(assistantUpdates[0]?.message)).toContain("Command result with TTS.");
+      });
+    },
+  );
 
   it.each(["NO_REPLY", "ANNOUNCE_SKIP", "REPLY_SKIP"])(
     "persists admitted prepared literal %s through chat.send",
@@ -4832,16 +4835,11 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         kind: "block",
         payload: { text: "Trajectory exports can include prompts." },
       },
-      {
-        kind: "final",
-        payload: {
-          mediaUrl: audioPath,
-          mediaUrls: [audioPath],
-          trustedLocalMedia: true,
-          audioAsVoice: true,
-          replyToCurrent: true,
-        },
-      },
+      createSlashCommandMediaReply("final", [audioPath], {
+        mediaUrl: audioPath,
+        audioAsVoice: true,
+        replyToCurrent: true,
+      }),
     ];
     const payload = await createChatRequestFixture().send({
       idempotencyKey: "idem-command-block-media",
@@ -5449,10 +5447,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     await createTranscriptFixture("openclaw-chat-send-session-key-too-long-");
     const { context, respond } = createChatRequestFixture();
 
-    await expectDefined(
-      chatHandlers["chat.send"],
-      'chatHandlers["chat.send"] test invariant',
-    )({
+    await handleDirectExternalChatSend({
       params: {
         sessionKey: `agent:main:${"x".repeat(CHAT_SEND_SESSION_KEY_MAX_LENGTH)}`,
         message: "hello",
@@ -5477,10 +5472,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.sessionMissing = true;
     const { context, respond } = createChatRequestFixture();
 
-    await expectDefined(
-      chatHandlers["chat.send"],
-      'chatHandlers["chat.send"] test invariant',
-    )({
+    await handleDirectExternalChatSend({
       params: {
         sessionKey: "agent:main:harness:codex:supervision:native-thread",
         message: "claim reserved session",

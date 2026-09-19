@@ -3,6 +3,7 @@ import { getGroupThreadDeliverySession } from "openclaw/plugin-sdk/channel-inbou
 import {
   createStructuredOutboundPayloadPlan,
   deriveDurableFinalDeliveryRequirements,
+  preserveReplyPayloadMediaSelection,
   resolveTranscriptBackedChannelFinalText,
   selectLongerFinalText,
 } from "openclaw/plugin-sdk/channel-outbound";
@@ -17,7 +18,11 @@ import {
   rotateAnswerLaneAfterQueuedBlocksSettle,
   rotateAnswerLaneAfterToolProgress,
 } from "./bot-message-dispatch-draft.js";
-import { applyTextToPayload, projectPayloadForDelivery } from "./bot-message-dispatch-payload.js";
+import {
+  applyQuoteReplyTarget,
+  applyTextToPayload,
+  projectPayloadForDelivery,
+} from "./bot-message-dispatch-payload.js";
 import {
   markFinalDelivered,
   markFinalStarted,
@@ -42,7 +47,7 @@ import {
 } from "./bot/delivery.js";
 import { resolveTelegramReplyId } from "./bot/helpers.js";
 import type { TelegramInlineButtons } from "./button-types.js";
-import { mergeTelegramPartialDeliveryError } from "./chunk-delivery.js";
+import { failPromptContextSequence, mergeTelegramPartialDeliveryError } from "./chunk-delivery.js";
 import { createLaneDeliveryStateTracker } from "./lane-delivery-state.js";
 import {
   createLaneTextDeliverer,
@@ -76,6 +81,7 @@ type TelegramSendPayloadOptions = {
   onPlatformSendDispatch?: () => Promise<void>;
   assertPlatformSendAuthorized?: () => void;
   bindPendingFinalDelivery?: <T extends ReplyPayload>(payload: T) => T;
+  onMediaAccepted?: (mediaUrls: readonly string[]) => void;
 };
 
 const promptContextDeliverySignature = (payload: ReplyPayload): string | undefined => {
@@ -190,22 +196,6 @@ function createDeliveryBaseOptions(turn: Turn) {
   };
 }
 
-function applyQuoteReplyTarget(turn: Turn, payload: ReplyPayload): ReplyPayload {
-  if (
-    !turn.implicitQuoteReplyTargetId ||
-    !turn.currentMessageIdForQuoteReply ||
-    payload.replyToId !== turn.currentMessageIdForQuoteReply ||
-    payload.replyToTag ||
-    payload.replyToCurrent
-  ) {
-    return payload;
-  }
-  return copyReplyPayloadMetadata(payload, {
-    ...payload,
-    replyToId: turn.implicitQuoteReplyTargetId,
-  });
-}
-
 const usesNativeTelegramQuote = (turn: Turn, payload: ReplyPayload): boolean =>
   turn.replyQuoteText != null ||
   (payload.replyToId != null && turn.replyQuoteByMessageId[payload.replyToId] != null);
@@ -315,8 +305,7 @@ export async function sendPayload(
       }),
     });
     if (durable.status === "failed") {
-      await projectionSequence.fail();
-      throw durable.error;
+      return await failPromptContextSequence(projectionSequence, durable.error);
     }
     if (durable.status === "handled_visible") {
       turn.deliveryState.markDelivered();
@@ -335,6 +324,7 @@ export async function sendPayload(
       transcriptMirror:
         options?.durable && options?.mirrorTranscript !== false ? transcriptMirror : undefined,
       replies: [effectivePayload],
+      onMediaAccepted: options?.onMediaAccepted,
       onVoiceRecording: turn.context.sendRecordVoice,
       silent,
       mediaLoader: turn.telegramDeps.loadWebMedia,
@@ -347,12 +337,22 @@ export async function sendPayload(
       await projectionSequence.fail();
       return false;
     }
-    await projectionSequence.finish();
+    try {
+      await projectionSequence.finish();
+    } catch (error) {
+      if (!result.receipt?.platformMessageIds.length) {
+        throw error;
+      }
+      throw mergeTelegramPartialDeliveryError(error, {
+        receipt: result.receipt,
+        messageIds: result.receipt.platformMessageIds,
+        visibleReplySent: true,
+      });
+    }
     turn.deliveryState.markDelivered();
     return true;
   } catch (error) {
-    await projectionSequence.fail();
-    throw error;
+    return await failPromptContextSequence(projectionSequence, error);
   }
 }
 
@@ -491,9 +491,10 @@ async function deliverTelegramProgressModeFinalAnswer(
   await cleanupProgressWithoutBlockingFinal("discard", async () => {
     await turn.answerLane.stream?.discard();
   });
-  const teardownBeforeSend = payload.isError === true;
-  if (teardownBeforeSend) {
-    await cleanupProgressWithoutBlockingFinal("teardown", () => teardownProgressWindow(turn));
+  if (payload.isError === true) {
+    await cleanupProgressWithoutBlockingFinal("teardown", async () => {
+      await teardownProgressWindow(turn);
+    });
   }
   const delivered = await sendPayload(turn, applyTextToPayload(payload, text), {
     afterAcceptedDraft,
@@ -503,10 +504,12 @@ async function deliverTelegramProgressModeFinalAnswer(
     assertPlatformSendAuthorized,
     bindPendingFinalDelivery,
   });
-  if (!teardownBeforeSend) {
+  if (payload.isError !== true) {
     // The final must dispatch before the activity window retires, so the answer
     // lane cannot accept follow-ups against a stale preview message.
-    await cleanupProgressWithoutBlockingFinal("teardown", () => teardownProgressWindow(turn));
+    await cleanupProgressWithoutBlockingFinal("teardown", async () => {
+      await teardownProgressWindow(turn);
+    });
   }
   if (!delivered) {
     return { kind: "skipped" };
@@ -514,6 +517,25 @@ async function deliverTelegramProgressModeFinalAnswer(
   turn.answerLane.finalized = true;
   markFinalDelivered(turn);
   return { kind: "sent" };
+}
+
+function recoverFinalPayload(
+  turn: Turn,
+  payload: ReplyPayload,
+  text: string,
+  final: CurrentTurnTranscriptFinal | undefined,
+): ReplyPayload | undefined {
+  const projected = projectPayloadForDelivery(
+    turn,
+    applyTextToPayload(payload, text),
+    final?.openclawDelivery,
+  );
+  return projected
+    ? deduplicateBlockSentMedia(
+        preserveReplyPayloadMediaSelection(payload, projected),
+        turn.sentBlockMediaUrls,
+      )
+    : undefined;
 }
 
 export async function deliverFinalAnswerText(
@@ -531,17 +553,10 @@ export async function deliverFinalAnswerText(
     finalText: text,
     resolveCandidateText: async () => transcriptFinal?.text,
   });
-  let finalPayload =
+  const finalPayload =
     selectedText === text
       ? answerPayload
-      : projectPayloadForDelivery(
-          turn,
-          applyTextToPayload(answerPayload, selectedText),
-          transcriptFinal?.openclawDelivery,
-        );
-  if (finalPayload && selectedText !== text) {
-    finalPayload = deduplicateBlockSentMedia(finalPayload, turn.sentBlockMediaUrls);
-  }
+      : recoverFinalPayload(turn, answerPayload, selectedText, transcriptFinal);
   if (!finalPayload) {
     return { kind: "skipped" };
   }
@@ -578,7 +593,11 @@ export async function deliverFinalAnswerText(
       replyTargetBeforeRecovery: answerPayload,
       infoKind: "final",
       buttons,
-      allowStream: !usesNativeTelegramQuote(turn, finalPayload),
+      allowStream:
+        !usesNativeTelegramQuote(turn, finalPayload) ||
+        (turn.replyQuoteText == null &&
+          resolveTelegramReplyId(finalPayload.replyToId) ===
+            turn.answerLane.stream?.currentMessageSnapshot()?.replyToMessageId),
       promptContextSequence,
       onPlatformSendDispatch,
       assertPlatformSendAuthorized,
@@ -682,14 +701,7 @@ export function createDeliveryState(
       if (selectedText === finalText) {
         return undefined;
       }
-      let recovered = projectPayloadForDelivery(
-        turn,
-        applyTextToPayload(payload, selectedText),
-        transcriptFinal?.openclawDelivery,
-      );
-      if (recovered) {
-        recovered = deduplicateBlockSentMedia(recovered, turn.sentBlockMediaUrls);
-      }
+      const recovered = recoverFinalPayload(turn, payload, selectedText, transcriptFinal);
       return recovered &&
         previewText &&
         previewText.length > (recovered.text ?? "").trimEnd().length

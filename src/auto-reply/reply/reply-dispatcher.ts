@@ -13,6 +13,7 @@ import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-comple
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import type { OutboundPayloadPlan } from "../../infra/outbound/reply-payload-parts.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { SilentReplyConversationType } from "../../shared/silent-reply-policy.js";
 import { sleep } from "../../utils.js";
 import { getGroupThreadParticipant } from "../group-thread-context.js";
@@ -105,9 +106,12 @@ export type { ReplyDispatchBeforeDeliver };
 export { composeReplyDispatchBeforeDeliver, markReplyDispatchBeforeDeliverDeadlineOwned };
 
 const silentReplyLogger = createSubsystemLogger("silent-reply/dispatcher");
-const deliveryOutcomeTrackers = new WeakMap<ReplyPayload, ReplyDispatchDeliveryOutcomeTracker>();
-const undeliveredFallbacks = new WeakMap<ReplyPayload, ReplyPayload>();
-const conversationContextsByDispatcher = new WeakMap<ReplyDispatcher, string>();
+const { deliveryOutcomeTrackers, undeliveredFallbacks, conversationContextsByDispatcher } =
+  resolveGlobalSingleton(Symbol.for("openclaw.replyDispatcherState"), () => ({
+    deliveryOutcomeTrackers: new WeakMap<ReplyPayload, ReplyDispatchDeliveryOutcomeTracker>(),
+    undeliveredFallbacks: new WeakMap<ReplyPayload, ReplyPayload>(),
+    conversationContextsByDispatcher: new WeakMap<ReplyDispatcher, string>(),
+  }));
 
 /** Associate this turn's finalized prompt with its exact dispatcher without changing the SDK. */
 export function bindReplyDispatcherConversationContext(
@@ -447,20 +451,26 @@ export function createReplyDispatcher(
         }
       }
       deliveryStarted = true;
+      const deliveredPayload =
+        deliveryInput.kind === "prepared" ? deliveryInput.plan.payload : deliveryInput.payload;
+      const continuation =
+        info.kind === "final"
+          ? getReplyPayloadMetadata(deliveredPayload)?.progressContinuation
+          : undefined;
+      const deliveryInfo = continuation
+        ? { ...info, adoptProgressContinuation: continuation.adopt }
+        : info;
       const result =
-        deliveryInput.kind === "prepared"
-          ? options.deliverPrepared
-            ? await options.deliverPrepared(deliveryInput.plan, info)
-            : await options.deliver(deliveryInput.plan.payload, info)
-          : await options.deliver(deliveryInput.payload, info);
+        deliveryInput.kind === "prepared" && options.deliverPrepared
+          ? await options.deliverPrepared(deliveryInput.plan, deliveryInfo)
+          : await options.deliver(deliveredPayload, deliveryInfo);
       const finalization =
         isRecord(result) && result.finalization instanceof Promise
           ? result.finalization
           : undefined;
       pendingFinalizations += finalization ? 1 : 0;
       return {
-        payload:
-          deliveryInput.kind === "prepared" ? deliveryInput.plan.payload : deliveryInput.payload,
+        payload: deliveredPayload,
         get pendingDelivery() {
           return pendingDelivery;
         },

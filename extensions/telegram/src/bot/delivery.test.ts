@@ -2,10 +2,10 @@
 import type { Bot } from "grammy";
 import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createTelegramPromptContextProjectionSequence } from "../prompt-context-projection.js";
 import {
   baseDeliveryParams,
   createBot,
+  createObservedPromptContextSequence,
   createRuntime,
   deliverReplies,
   firstMockCallArg,
@@ -40,19 +40,6 @@ function mockPhotoMedia(count = 2) {
   return Array.from({ length: count }, (_, index) => {
     mockMediaLoad(`photo-${index}.jpg`, "image/jpeg", `photo-${index}`);
     return `https://example.com/photo-${index}.jpg`;
-  });
-}
-
-function createObservedPromptContextSequence(
-  record: (value: unknown) => void,
-  source?: { transcriptMessageId: string },
-) {
-  return createTelegramPromptContextProjectionSequence({
-    ...(source ? { source } : {}),
-    record: async (value) => {
-      record(value);
-      return true;
-    },
   });
 }
 
@@ -330,7 +317,7 @@ describe("deliverReplies", () => {
       bot,
     });
 
-    expect(result).toEqual({ delivered: true });
+    expect(result).toMatchObject({ delivered: true });
     expect(runtime.error).not.toHaveBeenCalled();
     expect(setMessageReaction).toHaveBeenCalledWith("123", 456, [{ type: "emoji", emoji: "🔥" }]);
     if (text) {
@@ -1042,7 +1029,7 @@ describe("deliverReplies", () => {
           transcriptMirror,
           promptContextSequence,
         }),
-      ).resolves.toEqual({ delivered: true });
+      ).resolves.toMatchObject({ delivered: true });
       await promptContextSequence.finish();
 
       expect(sendMediaGroup).toHaveBeenCalledOnce();
@@ -1166,6 +1153,7 @@ describe("deliverReplies", () => {
   it("keeps every accepted album id when the first bookkeeping observer fails", async () => {
     const mediaUrls = mockPhotoMedia();
     const failure = new Error("sent-message cache unavailable");
+    const onMediaAccepted = vi.fn();
     const sendMediaGroup = vi.fn().mockResolvedValue([
       { message_id: 101, chat: { id: "123" } },
       { message_id: 102, chat: { id: "123" } },
@@ -1178,6 +1166,7 @@ describe("deliverReplies", () => {
     await expect(
       deliverWith({
         replies: [{ mediaUrls }],
+        onMediaAccepted,
         runtime: createRuntime(),
         bot: createBot({ sendMediaGroup, sendPhoto }),
       }),
@@ -1197,6 +1186,8 @@ describe("deliverReplies", () => {
     expect(sendMediaGroup).toHaveBeenCalledOnce();
     expect(sendPhoto).not.toHaveBeenCalled();
     expect(recordSentMessage).toHaveBeenCalledOnce();
+    expect(onMediaAccepted).toHaveBeenCalledExactlyOnceWith(mediaUrls);
+    expect(onMediaAccepted).toHaveBeenCalledBefore(recordSentMessage);
   });
 
   it("uses single-photo document recovery after a definite album photo-limit rejection", async () => {
@@ -1216,7 +1207,7 @@ describe("deliverReplies", () => {
         runtime,
         bot: createBot({ sendMediaGroup, sendPhoto, sendDocument }),
       }),
-    ).resolves.toEqual({ delivered: true });
+    ).resolves.toMatchObject({ delivered: true });
 
     expect(sendMediaGroup).toHaveBeenCalledOnce();
     expect(sendPhoto).toHaveBeenCalledTimes(2);
@@ -1560,7 +1551,7 @@ describe("deliverReplies", () => {
         textMode: "html",
         transcriptMirror,
       }),
-    ).resolves.toEqual({ delivered: true });
+    ).resolves.toMatchObject({ delivered: true });
 
     expect(sendPhoto).toHaveBeenCalledOnce();
     expect(mockCallArg(sendPhoto, 0, 2)).toHaveProperty("caption", undefined);
@@ -1592,7 +1583,7 @@ describe("deliverReplies", () => {
         textMode: "html",
         transcriptMirror,
       }),
-    ).resolves.toEqual({ delivered: true });
+    ).resolves.toMatchObject({ delivered: true });
 
     expect(sendPhoto).toHaveBeenCalledTimes(2);
     expectRecordFields(mockCallArg(sendPhoto, 0, 2), { caption: invisibleText });
@@ -2012,7 +2003,11 @@ describe("deliverReplies", () => {
     }
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(observed.deliveryResult.messageIds).toEqual(["41", "42"]);
-    expect(observed.deliveryResult.receipt?.threadId).toBe("43");
+    expect(observed.deliveryResult.receipt?.threadId).toBeUndefined();
+    expect(observed.deliveryResult.receipt?.parts).toEqual([
+      expect.objectContaining({ platformMessageId: "41", threadId: "42" }),
+      expect.objectContaining({ platformMessageId: "42", threadId: "43" }),
+    ]);
     expect(observer).toHaveBeenCalledOnce();
     expect(recordSentMessage).toHaveBeenCalledOnce();
   });
@@ -2866,7 +2861,11 @@ describe("deliverReplies", () => {
     expect(mockCallArg(sendMessage, 0, 2)).not.toHaveProperty("reply_parameters");
   });
 
-  it("omits native quote parameters when reply mode suppresses the reply", async () => {
+  it.each([
+    { intent: "implicit", flags: {}, explicit: false },
+    { intent: "explicit id", flags: { replyToTag: true }, explicit: true },
+    { intent: "current message", flags: { replyToCurrent: true }, explicit: true },
+  ] as const)("keeps $intent routing with replyToMode off", async ({ flags, explicit }) => {
     const runtime = createRuntime();
     const sendMessage = vi.fn().mockResolvedValue({
       message_id: 13,
@@ -2875,7 +2874,7 @@ describe("deliverReplies", () => {
     const bot = createBot({ sendMessage });
 
     await deliverWith({
-      replies: [{ text: "Hello there", replyToId: "500" }],
+      replies: [{ text: "Hello there", replyToId: "500", ...flags }],
       runtime,
       bot,
       replyToMode: "off",
@@ -2883,8 +2882,14 @@ describe("deliverReplies", () => {
       replyQuoteText: "quoted text",
     });
 
-    expect(mockCallArg(sendMessage, 0, 2)).not.toHaveProperty("reply_parameters");
-    expect(mockCallArg(sendMessage, 0, 2)).not.toHaveProperty("reply_to_message_id");
+    if (explicit) {
+      expect(mockCallArg(sendMessage, 0, 2)).toMatchObject({
+        reply_parameters: { message_id: 500, quote: "quoted text" },
+      });
+    } else {
+      expect(mockCallArg(sendMessage, 0, 2)).not.toHaveProperty("reply_parameters");
+      expect(mockCallArg(sendMessage, 0, 2)).not.toHaveProperty("reply_to_message_id");
+    }
   });
 
   it("uses legacy reply id when quote text has no quoted message id", async () => {
@@ -2921,6 +2926,7 @@ describe("deliverReplies", () => {
       },
     });
 
+    const onMediaAccepted = vi.fn();
     mockMediaLoad("note.ogg", "audio/ogg", "voice");
 
     await deliverWith({
@@ -2929,10 +2935,12 @@ describe("deliverReplies", () => {
       ],
       runtime,
       bot,
+      onMediaAccepted,
     });
 
     // Voice was attempted but failed
     expect(sendVoice).toHaveBeenCalledTimes(1);
+    expect(onMediaAccepted).not.toHaveBeenCalled();
     // Fallback to text succeeded
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(firstMockCallArg(sendMessage, 0)).toBe("123");
@@ -2993,7 +3001,7 @@ describe("deliverReplies", () => {
         textMode: "html",
         transcriptMirror,
       }),
-    ).resolves.toEqual({ delivered: true });
+    ).resolves.toMatchObject({ delivered: true });
 
     expect(sendVoice).toHaveBeenCalledTimes(2);
     expect(sendMessage).toHaveBeenCalledTimes(2);

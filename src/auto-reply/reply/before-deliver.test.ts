@@ -16,6 +16,7 @@ import {
   createOutboundPayloadPlan,
   createStructuredOutboundPayloadPlan,
 } from "../../infra/outbound/payloads.js";
+import { preserveReplyPayloadMediaSelection } from "../../infra/outbound/reply-media-entries.js";
 import type { OutboundPayloadPlan } from "../../infra/outbound/reply-payload-parts.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
@@ -81,6 +82,48 @@ async function makePendingFinalFixture() {
 }
 
 describe("beforeDeliver in reply dispatcher", () => {
+  it.each(["raw", "prepared"] as const)(
+    "retains an in-place media selection through %s dispatch recovery",
+    async (operation) => {
+      const delivered: ReplyPayload[] = [];
+      const deliver = async (payload: ReplyPayload) => {
+        delivered.push(
+          preserveReplyPayloadMediaSelection(payload, {
+            ...payload,
+            text: "Recovered full text",
+            mediaUrls: ["/tmp/rejected.png", "/tmp/selected.png"],
+          }),
+        );
+      };
+      const dispatcher = createReplyDispatcher({
+        beforeDeliver: (payload) => {
+          payload.mediaUrl = undefined;
+          payload.mediaUrls?.splice(0, 1);
+          payload.attachments?.splice(0, 1);
+          return payload;
+        },
+        deliver,
+        deliverPrepared: async (plan) => deliver(plan.payload),
+      });
+      expect(
+        sendFinal(dispatcher, operation, {
+          text: "Short answer",
+          mediaUrls: ["/tmp/rejected.png", "/tmp/selected.png"],
+          attachments: [{ name: "rejected" }, { name: "selected" }],
+        }),
+      ).toBe(true);
+      dispatcher.markComplete();
+      await dispatcher.waitForIdle();
+      expect(delivered).toEqual([
+        expect.objectContaining({
+          text: "Recovered full text",
+          mediaUrls: ["/tmp/selected.png"],
+          attachments: [{ name: "selected" }],
+        }),
+      ]);
+    },
+  );
+
   it.each(["[[reply_to:example-id]]` literally.", "[[audio_as_voice]]` literally."])(
     "preserves prepared literal %s and rebuilds projections after modifiers",
     async (text) => {

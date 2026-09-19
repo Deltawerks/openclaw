@@ -305,8 +305,8 @@ function hasDirectiveCodePrefixOpportunity(source: string, delta: string): boole
   const deltaStart = source.length - delta.length;
   const start = Math.max(0, deltaStart - 4);
   let separator = -1;
-  // This bounded probe only schedules canonical parsing; padded/mixed separators may miss it.
-  for (const match of source.slice(start).matchAll(/(?:\r\n\r\n|\n\n|\r\r)[^\S\r\n]*\S/g)) {
+  // A following line can close block code without a blank separator; ownership proves stability.
+  for (const match of source.slice(start).matchAll(/(?:\r\n|\n|\r)[^\S\r\n]*\S/g)) {
     if (start + match.index + match[0].length > deltaStart) {
       separator = start + match.index;
     }
@@ -319,7 +319,7 @@ function hasDirectiveCodePrefixOpportunity(source: string, delta: string): boole
 }
 
 function findDirectiveCodePrefix(source: string): StreamDirectiveCodePrefix | undefined {
-  const { regions, completedParagraphs } = findCodeOwnership(source);
+  const { regions, retainStart, completedParagraphs } = findCodeOwnership(source);
   let regionIndex = 0;
   let paragraphIndex = 0;
   let end = 0;
@@ -336,11 +336,17 @@ function findDirectiveCodePrefix(source: string): StreamDirectiveCodePrefix | un
     while (paragraph && paragraph.end <= marker) {
       paragraph = completedParagraphs[++paragraphIndex];
     }
+    if (!region || region.start > marker || region.end < marker + 2) {
+      return undefined;
+    }
+    if (region.block) {
+      if (region.end > retainStart) {
+        return undefined;
+      }
+      end = region.end;
+      continue;
+    }
     if (
-      !region ||
-      region.block ||
-      region.start > marker ||
-      region.end < marker + 2 ||
       !paragraph ||
       paragraph.hasReferenceCandidate ||
       paragraph.start > region.start ||
@@ -454,7 +460,7 @@ export function resolveStreamingReply(params: {
     ) {
       const prefix = findDirectiveCodePrefix(source);
       if (prefix && params.next.startsWith(source.slice(0, prefix.end))) {
-        // Both raw and projected appends retain this canonical paragraph boundary.
+        // Both raw and projected appends retain this canonical code prefix.
         directiveCodePrefix = prefix;
       }
     }

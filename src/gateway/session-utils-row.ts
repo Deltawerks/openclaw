@@ -113,16 +113,6 @@ export function readSessionRowInputs(params: {
   const rowContext =
     params.rowContext ??
     buildSessionListRowMetadataContext({ now, sessionKeys: [key, ...Object.keys(store)] });
-  const owner = projectSessionOwner(
-    entry,
-    rowContext.userProfileIdentityById,
-    cfg,
-    params.configuredAgentIds,
-  );
-  const participants = projectSessionParticipants(entry, rowContext.userProfileIdentityById, cfg);
-  if (owner?.actor.identity) {
-    participants.delete(JSON.stringify(owner.actor.identity));
-  }
   const displayName = resolveGatewaySessionDisplayName(key, entry);
   const { selectedModel, rowModelIdentity, thinkingProjection, catalogEntry } =
     readSessionRowModelFacts({
@@ -231,19 +221,13 @@ export function readSessionRowInputs(params: {
               branch: repositoryWorkspace.branch,
             }
           : undefined,
-      createdActor: projectSessionActor(
-        entry?.createdActor,
-        rowContext.userProfileIdentityById,
-        cfg,
-        Boolean(sessionCreatorProfileId(entry?.createdActor)),
-      ),
-      owner,
-      participants,
+      userProfileIdentityById: rowContext.userProfileIdentityById,
+      identityProjection: rowContext.identityProjection,
+      configuredAgentIds: params.configuredAgentIds,
       agentId,
       displayName,
       derivedTitle,
       lastMessagePreview,
-      archivedBy: projectSessionActor(entry?.archivedBy, rowContext.userProfileIdentityById, cfg),
       thinkingProjection,
       agentRuntime: projectWorkerPlacementAgentRuntime(thinkingProjection.agentRuntime),
       contextWindowProfile,
@@ -389,6 +373,48 @@ function channelAvatarRevision(reference: string): string {
   return createHash("sha256").update(reference).digest("base64url").slice(0, 12);
 }
 
+/** Profile publications invalidate display facts independently of stored session metadata. */
+function projectSessionRowProfiles(input: ReturnType<typeof readSessionRowInputs>["inputs"]) {
+  const { entry, cfg, userProfileIdentityById, configuredAgentIds, identityProjection } = input;
+  const owner = (identityProjection?.owner ?? projectSessionOwner)(
+    entry,
+    userProfileIdentityById,
+    cfg,
+    configuredAgentIds,
+  );
+  const projected = (identityProjection?.participants ?? projectSessionParticipants)(
+    entry,
+    userProfileIdentityById,
+    cfg,
+  );
+  const ownerKey = owner?.actor.identity && JSON.stringify(owner.actor.identity);
+  const participants = [...projected].flatMap(([key, participant]) =>
+    key === ownerKey ? [] : [participant],
+  );
+  return {
+    createdActor: projectSessionActor(
+      entry?.createdActor,
+      userProfileIdentityById,
+      cfg,
+      Boolean(sessionCreatorProfileId(entry?.createdActor)),
+    ),
+    owner,
+    // Keep the released v4 summary stable; expanded identities are additive for newer clients.
+    participants: participants.length
+      ? participants.slice(0, SESSION_PARTICIPANT_LIMIT)
+      : undefined,
+    expandedParticipants: participants.length
+      ? participants.slice(0, MAX_SESSION_PARTICIPANTS)
+      : undefined,
+    participantCount: participants.length || undefined,
+    archivedBy: projectSessionActor(entry?.archivedBy, userProfileIdentityById, cfg),
+  };
+}
+
+export function refreshSessionRowProfiles(materialized: ReturnType<typeof materializeSessionRow>) {
+  Object.assign(materialized.row, projectSessionRowProfiles(materialized.source));
+}
+
 export function materializeSessionRow(input: ReturnType<typeof readSessionRowInputs>["inputs"]) {
   const { cfg, key, entry } = input;
   const observerDigest =
@@ -409,7 +435,6 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
       : undefined;
   const compactionSummary = resolveSessionCompactionSummary(entry);
 
-  const participants = input.participants.size ? [...input.participants.values()] : undefined;
   // Reserve temporal fields in wire order; presentation fills a fresh copy.
   const row: GatewaySessionRow = {
     key,
@@ -439,12 +464,7 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
     subagentRole: entry?.subagentRole,
     subagentControlScope: entry?.subagentControlScope,
     createdVia: entry?.createdVia,
-    createdActor: input.createdActor,
-    owner: input.owner,
-    // Keep the released v4 summary stable; expanded identities are additive for newer clients.
-    participants: participants?.slice(0, SESSION_PARTICIPANT_LIMIT),
-    expandedParticipants: participants?.slice(0, MAX_SESSION_PARTICIPANTS),
-    participantCount: participants?.length,
+    ...projectSessionRowProfiles(input),
     createdAt: entry?.createdAt,
     forkSource: entry?.forkSource,
     previousSessionId: entry?.previousSessionId,
@@ -474,7 +494,6 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
     updatedAt: entry?.updatedAt ?? null,
     archived: entry?.archivedAt !== undefined,
     archivedAt: entry?.archivedAt,
-    archivedBy: input.archivedBy,
     archiveReason: entry?.archiveReason,
     pinned: pinnedAt !== undefined,
     pinnedAt,

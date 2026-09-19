@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { collectReplyMediaEntries } from "../../infra/outbound/reply-media-entries.js";
 import { HostReadMediaTypeError, LocalMediaAccessError } from "../../media/local-media-access.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import {
@@ -453,19 +454,30 @@ describe("createReplyMediaPathNormalizer", () => {
     expect(resolveOutboundAttachmentFromUrl).not.toHaveBeenCalled();
   });
 
-  it("keeps managed generated media under the shared media root", async () => {
-    setTestEnvValue("OPENCLAW_STATE_DIR", "/Users/peter/.openclaw");
-    const normalize = createTestReplyMediaNormalizer();
-
-    const result = await normalize({
-      mediaUrls: ["/Users/peter/.openclaw/media/tool-image-generation/generated.png"],
-    });
-
-    expectMedia(result, "/Users/peter/.openclaw/media/tool-image-generation/generated.png", [
-      "/Users/peter/.openclaw/media/tool-image-generation/generated.png",
-    ]);
-    expect(resolveOutboundAttachmentFromUrl).not.toHaveBeenCalled();
-  });
+  it.each([
+    {
+      source: "/Users/peter/.openclaw/media/tool-image-generation/generated.png",
+      sourceUrls: undefined,
+    },
+    {
+      source: "/Users/peter/.openclaw/media/tool-image-generation/./generated.png",
+      sourceUrls: ["/Users/peter/.openclaw/media/tool-image-generation/./generated.png"],
+    },
+  ])(
+    "keeps managed generated media and source spelling: $source",
+    async ({ source, sourceUrls }) => {
+      setTestEnvValue("OPENCLAW_STATE_DIR", "/Users/peter/.openclaw");
+      const normalize = createTestReplyMediaNormalizer();
+      const result = await normalize({ mediaUrls: [source] });
+      expectMedia(result, "/Users/peter/.openclaw/media/tool-image-generation/generated.png", [
+        "/Users/peter/.openclaw/media/tool-image-generation/generated.png",
+      ]);
+      expect(
+        collectReplyMediaEntries(result, result.mediaUrls).map((entry) => entry.sourceUrls),
+      ).toEqual([sourceUrls]);
+      expect(resolveOutboundAttachmentFromUrl).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps managed outbound media under the shared media root with sandbox mapping", async () => {
     ensureSandboxWorkspaceForSession.mockResolvedValue({

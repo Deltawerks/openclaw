@@ -1,15 +1,15 @@
-import { afterEach, assert, expect, it, vi, type Mock } from "vitest";
+import { randomUUID } from "node:crypto";
+import { assert, expect, it, onTestFinished, vi, type Mock } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { RunEmbeddedAgentInternalParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
 import { createSubagentRunParams } from "../../agents/subagent-test-fixtures.test-helpers.js";
-import { settleSubagentRegistryPersistenceWork } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import {
   markRequesterTurnYielded,
   registerSubagentRun,
   resetSubagentRegistryForTests,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
-import { resetTaskRegistryForTests } from "../../tasks/task-registry.test-support.js";
+import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { createBlockReplySource, setBlockReplyDelivery } from "./block-reply-delivery.js";
@@ -26,57 +26,42 @@ type WaitingStatusFixture = {
   runEmbeddedAgentMock: Pick<Mock, "mockImplementationOnce">;
 };
 
+async function mockAcceptedWaitingStatusRun(
+  runner: WaitingStatusFixture["runEmbeddedAgentMock"],
+  result: EmbeddedAgentRunResult,
+): Promise<void> {
+  const testState = await createOpenClawTestState({ label: "reply-waiting-child" });
+  resetSubagentRegistryForTests({ persist: false });
+  onTestFinished(async () => {
+    resetSubagentRegistryForTests({ persist: false });
+    await testState.cleanup();
+  });
+  runner.mockImplementationOnce(async (params: RunEmbeddedAgentInternalParams) => {
+    assert(params.preparedRunAdmission);
+    assert(params.sessionKey);
+    await params.preparedRunAdmission.admit("embedded");
+    const spawn = {
+      runId: randomUUID(),
+      childSessionKey: "agent:main:subagent:waiting-child",
+      expectsCompletionMessage: true,
+    };
+    const requester = {
+      requesterSessionKey: params.sessionKey,
+      requesterAgentId: params.agentId,
+      requesterTurnRunId: params.runId,
+    };
+    registerSubagentRun(createSubagentRunParams({ ...spawn, ...requester, queued: true }));
+    if (result.meta.yielded) {
+      expect(markRequesterTurnYielded(requester)).toBe(1);
+    }
+    return { ...result, acceptedSessionSpawns: [spawn] };
+  });
+}
+
 export function registerWaitingStatusCases({
   createMinimalRun,
   runEmbeddedAgentMock,
 }: WaitingStatusFixture): void {
-  let registeredChild = false;
-  afterEach(async () => {
-    if (!registeredChild) {
-      return;
-    }
-    await settleSubagentRegistryPersistenceWork();
-    resetSubagentRegistryForTests();
-    resetTaskRegistryForTests();
-    registeredChild = false;
-    await settleSubagentRegistryPersistenceWork();
-  });
-
-  const mockAcceptedChild = (result: EmbeddedAgentRunResult) => {
-    runEmbeddedAgentMock.mockImplementationOnce(async (params: RunEmbeddedAgentInternalParams) => {
-      assert(params.preparedRunAdmission);
-      await params.preparedRunAdmission.admit("embedded");
-      assert(params.sessionKey);
-      const child = createSubagentRunParams({
-        runId: `${params.runId}:child`,
-        childSessionKey: "agent:main:subagent:child",
-        requesterSessionKey: params.sessionKey,
-        requesterAgentId: params.agentId,
-        requesterTurnRunId: params.runId,
-        expectsCompletionMessage: true,
-        queued: true,
-      });
-      registeredChild = true;
-      registerSubagentRun(child);
-      if (result.meta.yielded) {
-        markRequesterTurnYielded({
-          requesterSessionKey: params.sessionKey,
-          requesterAgentId: params.agentId,
-          requesterTurnRunId: params.runId,
-        });
-      }
-      return {
-        ...result,
-        acceptedSessionSpawns: [
-          {
-            runId: child.runId,
-            childSessionKey: child.childSessionKey,
-            expectsCompletionMessage: true,
-          },
-        ],
-      };
-    });
-  };
   it.each([
     {
       label: "implicit continuation",
@@ -90,7 +75,7 @@ export function registerWaitingStatusCases({
       implicit: false,
     },
   ])("delivers one waiting status for $label", async ({ meta, implicit }) => {
-    mockAcceptedChild({
+    await mockAcceptedWaitingStatusRun(runEmbeddedAgentMock, {
       payloads: [],
       meta: { durationMs: 0, ...meta },
     });
@@ -108,7 +93,6 @@ export function registerWaitingStatusCases({
     assert(result && !Array.isArray(result));
     const metadata = getReplyPayloadMetadata(result);
     expect(metadata?.deliverDespiteSourceReplySuppression).toBe(true);
-    expect(metadata?.continuationStatus === true).toBe(implicit);
     expect(onPendingContinuation.mock.calls[0]).toEqual(
       implicit ? [{ settle: expect.any(Function) }] : [],
     );
@@ -263,7 +247,7 @@ export function registerWaitingStatusCases({
       { text: "⚠️ Bash failed", isError: true },
       { toolErrorWarning: { toolName: "bash" } },
     );
-    mockAcceptedChild({
+    await mockAcceptedWaitingStatusRun(runEmbeddedAgentMock, {
       payloads: [toolWarning],
       meta: { durationMs: 0, yielded: true, yieldAcknowledgment: testCase.acknowledgment },
     });

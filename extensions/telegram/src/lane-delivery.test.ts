@@ -15,19 +15,27 @@ import {
 
 const HELLO_FINAL = "Hello final";
 describe("createLaneTextDeliverer", () => {
-  it("finalizes text-only replies in the active stream message", async () => {
+  it("preserves a finalized preview receipt when the final history write fails", async () => {
     const harness = createHarness({ answerMessageId: 999 });
+    const historyFailure = new Error("retained Telegram history write failed");
+    harness.recordPromptContextPreview.mockRejectedValueOnce(historyFailure);
 
-    const result = await deliverFinalAnswer(harness, HELLO_FINAL);
+    const result = await deliverProjectedFinalAnswer(harness, HELLO_FINAL);
 
-    const delivery = expectPreviewFinalized(result);
-    expect(delivery.content).toBe(HELLO_FINAL);
-    expect(delivery.messageId).toBe(999);
-    expect(delivery.receipt?.primaryPlatformMessageId).toBe("999");
-    expect(harness.answer?.update).toHaveBeenCalledWith(HELLO_FINAL);
-    expect(harness.stopDraftLane).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      kind: "preview-finalized-partial",
+      delivery: {
+        content: HELLO_FINAL,
+        messageId: 999,
+        receipt: {
+          primaryPlatformMessageId: "999",
+          platformMessageIds: ["999"],
+        },
+      },
+      error: historyFailure,
+    });
     expect(harness.sendPayload).not.toHaveBeenCalled();
-    expect(harness.markDelivered).toHaveBeenCalledTimes(1);
+    expect(harness.answer?.clear).not.toHaveBeenCalled();
     expect(harness.lanes.answer.finalized).toBe(true);
   });
 
@@ -75,6 +83,7 @@ describe("createLaneTextDeliverer", () => {
     const delivery = expectPreviewFinalized(finalResult);
     expect(delivery.content).toBe("done");
     expect(delivery.messageId).toBe(999);
+    expect(delivery.receipt.primaryPlatformMessageId).toBe("999");
     expect(harness.answer?.update).toHaveBeenNthCalledWith(1, "working");
     expect(harness.answer?.update).toHaveBeenNthCalledWith(2, "done");
     expect(harness.flushDraftLane).toHaveBeenCalledTimes(1);
@@ -191,29 +200,6 @@ describe("createLaneTextDeliverer", () => {
     expect(harness.lanes.answer.finalized).toBe(false);
   });
 
-  it("discards an unmaterialized block preview before falling back to normal delivery", async () => {
-    const answer = createTestDraftStream();
-    const harness = createHarness({ answerStream: answer });
-
-    const result = await harness.deliverLaneText({
-      laneName: "answer",
-      text: "short",
-      payload: { text: "short" },
-      infoKind: "block",
-    });
-
-    expect(result.kind).toBe("sent");
-    expect(answer.update).toHaveBeenCalledWith("short");
-    expect(harness.flushDraftLane).toHaveBeenCalledTimes(1);
-    expect(answer.discard).toHaveBeenCalledTimes(1);
-    expect(harness.clearDraftLane).not.toHaveBeenCalled();
-    expectSentPayload(harness, { text: "short" }, false);
-    expect(harness.markDelivered).not.toHaveBeenCalled();
-    expect(harness.lanes.answer.lastPartialText).toBe("");
-    expect(harness.lanes.answer.hasStreamedMessage).toBe(false);
-    expect(harness.lanes.answer.finalized).toBe(false);
-  });
-
   it("resets the stream after discarding an unmaterialized block preview", async () => {
     const answerRef: { current?: ReturnType<typeof createTestDraftStream> } = {};
     const answer = createTestDraftStream({
@@ -258,11 +244,7 @@ describe("createLaneTextDeliverer", () => {
     const answer = createTestDraftStream({ messageId: 999 });
     answer.lastDeliveredText.mockReturnValue(fullAnswer);
     answer.currentMessageSnapshot.mockReturnValue({ text: fullAnswer, sourceText: fullAnswer });
-    const harness = createHarness({
-      answerStream: answer,
-      resolveFinalPayloadCandidate: ({ payload, candidateTexts }) =>
-        candidateTexts.includes(fullAnswer) ? undefined : { ...payload, text: fullAnswer },
-    });
+    const harness = createHarness({ answerStream: answer });
 
     const result = await deliverFinalAnswer(harness, truncatedFinal);
 
@@ -310,11 +292,7 @@ describe("createLaneTextDeliverer", () => {
       },
     });
     answer.lastDeliveredText.mockImplementation(() => deliveredText);
-    const harness = createHarness({
-      answerStream: answer,
-      resolveFinalPayloadCandidate: ({ payload, candidateTexts }) =>
-        candidateTexts.includes(fullAnswer) ? undefined : { ...payload, text: fullAnswer },
-    });
+    const harness = createHarness({ answerStream: answer });
 
     answer.update(fullAnswer);
     harness.lanes.answer.lastPartialText = fullAnswer;
@@ -341,11 +319,7 @@ describe("createLaneTextDeliverer", () => {
       },
     });
     answer.lastDeliveredText.mockImplementation(() => deliveredText);
-    const harness = createHarness({
-      answerStream: answer,
-      resolveFinalPayloadCandidate: ({ payload, candidateTexts }) =>
-        candidateTexts.includes(fullAnswer) ? undefined : { ...payload, text: fullAnswer },
-    });
+    const harness = createHarness({ answerStream: answer });
 
     answer.update(fullAnswer);
     harness.lanes.answer.lastPartialText = fullAnswer;
@@ -366,11 +340,7 @@ describe("createLaneTextDeliverer", () => {
     const truncatedFinal = "Ja. Hier nochmal sauber Schritt fuer Schritt...";
     const answer = createTestDraftStream({ messageId: 999 });
     answer.lastDeliveredText.mockReturnValue("older preview");
-    const harness = createHarness({
-      answerStream: answer,
-      resolveFinalPayloadCandidate: ({ payload, candidateTexts }) =>
-        candidateTexts.includes(fullAnswer) ? undefined : { ...payload, text: fullAnswer },
-    });
+    const harness = createHarness({ answerStream: answer });
     harness.lanes.answer.lastPartialText = fullAnswer;
     harness.lanes.answer.hasStreamedMessage = true;
 
@@ -647,11 +617,7 @@ describe("createLaneTextDeliverer", () => {
     const answer = createTestDraftStream({ messageId: 999 });
     answer.lastDeliveredText.mockReturnValue(fullAnswer);
     answer.currentMessageSnapshot.mockReturnValue({ text: fullAnswer, sourceText: fullAnswer });
-    const harness = createHarness({
-      answerStream: answer,
-      resolveFinalPayloadCandidate: ({ payload, candidateTexts }) =>
-        candidateTexts.includes(fullAnswer) ? undefined : { ...payload, text: fullAnswer },
-    });
+    const harness = createHarness({ answerStream: answer });
     harness.lanes.answer.hasStreamedMessage = true;
 
     const result = await harness.deliverLaneText({

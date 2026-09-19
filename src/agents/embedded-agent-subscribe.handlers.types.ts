@@ -91,7 +91,7 @@ export type StreamBlockState = {
   pendingTagFragment?: string;
 };
 
-/** Raw offsets for literal directives whose completed paragraph ownership is settled. */
+/** Raw offsets for literal directives whose Markdown code ownership is settled. */
 export type StreamDirectiveCodePrefix = {
   end: number;
   checkedRawLength: number;
@@ -246,7 +246,7 @@ export type EmbeddedAgentSubscribeState = {
   pendingAssistantReplyDirectives?: Pick<
     BlockReplyPayload,
     "audioAsVoice" | "replyToId" | "replyToTag" | "replyToCurrent"
-  >;
+  > & { audioDirectiveStart?: number };
   deterministicApprovalPromptPending: boolean;
   deterministicApprovalPromptSent: boolean;
   lastAssistant?: AssistantMessage;

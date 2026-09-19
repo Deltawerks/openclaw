@@ -37,7 +37,6 @@ export function createDirectDispatchContext(
     threadSpec: { scope: "none" },
     isForum: false,
     historyLimit: 0,
-    groupHistories: new Map(),
     skillFilter: undefined,
     route: {
       accountId: "default",

@@ -2,7 +2,10 @@ import {
   createChannelPartialDeliveryError,
   isChannelPartialDeliveryError,
 } from "openclaw/plugin-sdk/channel-inbound";
-import type { OutboundPayloadPlan } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  collectReplyMediaEntries,
+  type OutboundPayloadPlan,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { normalizeMessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
 import {
   isFastModeAutoProgressPayload,
@@ -25,10 +28,12 @@ import {
   isQueuedAnswerBlock,
   prepareAnswerLaneForText,
   prepareAnswerLaneForToolProgress,
+  resetLaneState,
   rotateAnswerLaneAfterToolProgress,
   rotateAnswerLaneForNewMessage,
   splitTextIntoLaneSegments,
   takeQueuedAnswerBlockRotation,
+  waitForDraftEvents,
 } from "./bot-message-dispatch-draft.js";
 import {
   applyTextToPayload,
@@ -209,15 +214,84 @@ async function settleTerminalNoVisibleDelivery(
 
 function trackBlockMedia(
   turn: Turn,
-  delivered: boolean,
-  kind: string,
   payload: ReplyPayload,
+  acceptedMediaUrls: readonly string[],
 ): void {
-  if (delivered && kind === "block" && payload.mediaUrls?.length) {
-    for (const url of payload.mediaUrls) {
-      turn.sentBlockMediaUrls.add(url);
+  for (const { url, sourceUrls } of collectReplyMediaEntries(payload, acceptedMediaUrls)) {
+    turn.sentBlockMediaUrls.add(url);
+    for (const source of sourceUrls ?? []) {
+      turn.sentBlockMediaUrls.add(source);
     }
   }
+}
+
+async function adoptProgressContinuation(
+  turn: Turn,
+  payload: ReplyPayload,
+  info: Parameters<NonNullable<Deliver>>[1],
+): Promise<boolean> {
+  if (
+    info.kind !== "final" ||
+    payload.isError === true ||
+    typeof info.adoptProgressContinuation !== "function"
+  ) {
+    return false;
+  }
+  const adopt = info.adoptProgressContinuation;
+  await waitForDraftEvents(turn);
+  const stream = turn.answerLane.stream;
+  if (!stream || turn.answerLane.finalized || turn.isSuperseded()) {
+    return false;
+  }
+  if (
+    !turn.progressCompositor.isVisible &&
+    !turn.progressCompositor.hasStarted &&
+    (turn.progressCompositor.hasStatusHeadline ||
+      turn.progressCompositor.hasPlanProgress ||
+      turn.progressCompositor.getSnapshot().lines.length > 0)
+  ) {
+    info.assertPlatformSendAuthorized?.();
+    await turn.progressCompositor.start();
+  }
+  if (!turn.progressCompositor.isVisible || turn.isSuperseded()) {
+    return false;
+  }
+  turn.progressCompositor.cancel();
+  info.assertPlatformSendAuthorized?.();
+  await stream.flush();
+  const messageId = stream.messageId();
+  const text = stream.lastDeliveredText();
+  // Only a confirmed provider receipt can transfer custody, never staged draft intent.
+  if (
+    typeof messageId !== "number" ||
+    !Number.isFinite(messageId) ||
+    !text ||
+    turn.isSuperseded()
+  ) {
+    return false;
+  }
+  info.assertPlatformSendAuthorized?.();
+  const adopted = await adopt({
+    channel: "telegram",
+    accountId: turn.context.route.accountId,
+    to: String(turn.context.chatId),
+    threadId: turn.context.threadSpec.id,
+    messageId: String(messageId),
+    text,
+    snapshot: turn.progressCompositor.getSnapshot(),
+  });
+  if (!adopted) {
+    return false;
+  }
+  // Core now owns the visible card. Remove the old transport before any awaited
+  // retirement so late callbacks and unconditional cleanup cannot delete it.
+  turn.answerLane.stream = undefined;
+  turn.progressContinuationAdopted = true;
+  resetLaneState(turn, turn.answerLane);
+  resetReasoningStepState(turn);
+  turn.deliveryState.markDelivered();
+  await stream.discard();
+  return true;
 }
 
 export function formatTelegramGroupThreadReply(
@@ -273,6 +347,10 @@ async function deliverReplyWithNormalization(
   }
   const controls = resolvePayloadTelegramControls(turn, deduped);
   const effectivePayload = controls.payload;
+  const onMediaAccepted =
+    info.kind === "block"
+      ? (mediaUrls: readonly string[]) => trackBlockMedia(turn, effectivePayload, mediaUrls)
+      : undefined;
   if (
     shouldSuppressLocalTelegramExecApprovalPrompt({
       cfg: turn.cfg,
@@ -284,6 +362,18 @@ async function deliverReplyWithNormalization(
     return await settleTerminalNoVisibleDelivery(turn, info);
   }
   const telegramButtons = controls.buttons;
+  const reply = resolveSendableOutboundReplyParts(effectivePayload);
+  if (
+    !reply.hasMedia &&
+    telegramButtons === undefined &&
+    effectivePayload.interactive === undefined &&
+    effectivePayload.presentation === undefined &&
+    effectivePayload.channelData?.askUser === undefined &&
+    !hasExecApprovalPayload(effectivePayload) &&
+    (await adoptProgressContinuation(turn, incomingPayload, info))
+  ) {
+    return toTelegramReplyDeliveryResult(true);
+  }
   const lanePayload =
     info.kind === "block" &&
     typeof payload.text === "string" &&
@@ -296,7 +386,6 @@ async function deliverReplyWithNormalization(
       : effectivePayload;
   const split = splitTextIntoLaneSegments(turn, { text: lanePayload.text }, payload.isReasoning);
   const segments = split.segments;
-  const reply = resolveSendableOutboundReplyParts(effectivePayload);
   if (info.kind === "final" && (reply.text.length > 0 || reply.hasMedia)) {
     // Mark final delivery before any queued draft drain; late tool progress must stay suppressed.
     markFinalStarted(turn);
@@ -464,6 +553,7 @@ async function deliverReplyWithNormalization(
             onPlatformSendDispatch: info.onPlatformSendDispatch,
             assertPlatformSendAuthorized: info.assertPlatformSendAuthorized,
             bindPendingFinalDelivery: info.bindPendingFinalDelivery,
+            onMediaAccepted,
           });
     const finalizedPreview =
       segment.lane === "answer" &&
@@ -502,7 +592,6 @@ async function deliverReplyWithNormalization(
     if (finalization && turn.bufferedFinalSettlement) {
       turn.bufferedFinalSettlement.visibleReplySent ||= blockDelivered;
     }
-    trackBlockMedia(turn, blockDelivered, info.kind, effectivePayload);
     return toTelegramReplyDeliveryResult(blockDelivered, finalization);
   }
 
@@ -521,12 +610,12 @@ async function deliverReplyWithNormalization(
         onPlatformSendDispatch: info.onPlatformSendDispatch,
         assertPlatformSendAuthorized: info.assertPlatformSendAuthorized,
         bindPendingFinalDelivery: info.bindPendingFinalDelivery,
+        onMediaAccepted,
       });
     }
     if (info.kind === "final" && delivered) {
       markFinalDelivered(turn);
     }
-    trackBlockMedia(turn, delivered, info.kind, effectivePayload);
     return toTelegramReplyDeliveryResult(delivered);
   }
 
@@ -544,11 +633,11 @@ async function deliverReplyWithNormalization(
     onPlatformSendDispatch: info.onPlatformSendDispatch,
     assertPlatformSendAuthorized: info.assertPlatformSendAuthorized,
     bindPendingFinalDelivery: info.bindPendingFinalDelivery,
+    onMediaAccepted,
   });
   if (info.kind === "final" && delivered) {
     markFinalDelivered(turn);
   }
-  trackBlockMedia(turn, delivered, info.kind, effectivePayload);
   return toTelegramReplyDeliveryResult(delivered);
 }
 

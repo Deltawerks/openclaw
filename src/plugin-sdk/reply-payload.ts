@@ -20,6 +20,7 @@ export type { MediaPayload } from "../channels/plugins/media-payload.js";
 export { buildMediaPayload } from "../channels/plugins/media-payload.js";
 /** Plugin-facing reply payload without core-only trusted local media internals. */
 export type ReplyPayload = Omit<InternalReplyPayload, "trustedLocalMedia">;
+
 export type AskUserQuestionOptionIndices = ReadonlyMap<string, ReadonlyMap<string, number>>;
 
 /** Read bounded Gateway-owned option ordering for one native ask_user question. */

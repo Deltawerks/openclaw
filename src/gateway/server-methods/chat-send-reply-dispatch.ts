@@ -15,10 +15,6 @@ import {
   recordAssistantManagedMediaUrls,
   type PrepareAssistantTranscriptMessage,
 } from "../../config/sessions/transcript-assistant-delivery.js";
-import {
-  appendLocalMediaParentRoots,
-  getAgentScopedMediaLocalRoots,
-} from "../../media/local-roots.js";
 import { splitMediaFromOutput } from "../../media/parse.js";
 import { createChannelMessageReplyPipeline } from "../../plugin-sdk/channel-outbound.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
@@ -33,7 +29,6 @@ import { attachManagedOutgoingMediaToMessage } from "../managed-image-attachment
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 import {
-  buildAssistantReplyContentFromInputs,
   combineNonStreamingReplyParts,
   extractAssistantDisplayText,
   hasAssistantDisplayMediaContent,
@@ -42,7 +37,11 @@ import {
   sanitizeAssistantDisplayText,
 } from "./chat-assistant-content.js";
 import { isBtwReplyPayload, isSourceReplyTranscriptMirrorPayload } from "./chat-broadcast.js";
-import { normalizeWebchatReplyMediaPathsForDisplay } from "./chat-reply-media.js";
+import {
+  captureWebchatReplyMediaScope,
+  prepareWebchatReplyMediaForDisplay,
+  type WebchatReplyMediaRequesterContext,
+} from "./chat-reply-media.js";
 import {
   readChatSendReplyPayload,
   replaceChatSendReplyPayload,
@@ -61,7 +60,6 @@ import {
   buildTtsSupplementTranscriptMarker,
   stripVisibleTextFromTtsSupplement,
 } from "./chat-tts-markers.js";
-import { buildWebchatAssistantMessageFromReplyPayloads } from "./chat-webchat-media.js";
 import type { GatewayRequestContext } from "./types.js";
 
 export function buildTranscriptReplyTextFromInputs(
@@ -119,6 +117,7 @@ export function buildTranscriptReplyTextFromInputs(
 /** Build delivery options and capture state for the core-owned webchat dispatcher. */
 export function createChatSendReplyDispatch(params: {
   accountId: string | undefined;
+  requesterContext?: WebchatReplyMediaRequesterContext;
   isAgentRunStarted: () => boolean;
   onCommandBlock?: (text: string) => void;
   isRunCurrent?: () => boolean;
@@ -225,45 +224,47 @@ export function createChatSendReplyDispatch(params: {
     const sessionKey = transcript?.sessionKey ?? session.sessionKey;
     const agentId = transcript?.agentId ?? session.agentId;
     const ttsSupplementMarker = buildTtsSupplementTranscriptMarker(payload);
-    const [transcriptPayload] = await normalizeWebchatReplyMediaPathsForDisplay({
+    const mediaScope = captureWebchatReplyMediaScope({
+      requesterContext: params.requesterContext,
       cfg,
       sessionKey,
       agentId,
-      sessionEntry: loadSessionEntry(sessionKey, { ...sessionLoadOptions, agentId }).entry,
+      sessionLoadOptions: { ...sessionLoadOptions, agentId },
       accountId,
-      payloads: [stripVisibleTextFromTtsSupplement(payload)],
+      assertCurrent: () => {
+        params.abortSignal?.throwIfAborted();
+        if (params.isRunCurrent && !params.isRunCurrent()) {
+          throw new Error("Chat media run is no longer current.");
+        }
+      },
     });
-    if (!transcriptPayload) {
-      return;
-    }
-    const transcriptInputs = replaceChatSendReplyPayload(input, transcriptPayload);
     const { storePath: latestStorePath, entry: latestEntry } = loadSessionEntry(sessionKey, {
       ...sessionLoadOptions,
       ...(agentId ? { agentId } : {}),
     });
     const sessionId = latestEntry?.sessionId ?? backingSessionId ?? clientRunId;
-    const mediaLocalRoots = appendLocalMediaParentRoots(
-      getAgentScopedMediaLocalRoots(cfg, agentId),
-      latestStorePath ? [latestStorePath] : undefined,
-    );
-    const mediaMessage = await buildWebchatAssistantMessageFromReplyPayloads([transcriptPayload], {
-      localRoots: mediaLocalRoots,
+    const {
+      payloads: [transcriptPayload],
+      inputs: transcriptInputs,
+      mediaMessage,
+      assistantContent,
+      persistedAssistantContent,
+    } = await prepareWebchatReplyMediaForDisplay({
+      scope: mediaScope,
+      storePath: latestStorePath,
+      inputs: replaceChatSendReplyPayload(input, stripVisibleTextFromTtsSupplement(payload)),
+      abortSignal: params.abortSignal,
+      includeSensitiveMedia: payload.sensitiveMedia !== true,
       onLocalAudioAccessDenied: (err) => {
         logGateway.warn(`webchat audio embedding denied local path: ${formatForLog(err)}`);
       },
+      onManagedMediaPrepareError: (message) => {
+        logGateway.warn(`webchat media embedding skipped attachment: ${message}`);
+      },
     });
-    const { assistantContent, persistedAssistantContent } =
-      await buildAssistantReplyContentFromInputs({
-        sessionKey,
-        agentId,
-        inputs: transcriptInputs,
-        transcriptMediaMessage: mediaMessage,
-        managedMediaLocalRoots: mediaLocalRoots,
-        includeSensitiveMedia: transcriptPayload.sensitiveMedia !== true,
-        onManagedMediaPrepareError: (message) => {
-          logGateway.warn(`webchat media embedding skipped attachment: ${message}`);
-        },
-      });
+    if (!transcriptPayload) {
+      return;
+    }
     const transcriptPayloadMetadata = getReplyPayloadMetadata(transcriptPayload);
     const mediaFailures = transcriptPayloadMetadata?.assistantMediaFailures ?? [];
     const mediaNormalizationFailed = mediaFailures.length > 0;
@@ -484,10 +485,7 @@ export function createChatSendReplyDispatch(params: {
       case "tool":
         // TTS tool media becomes a final payload so downstream audio extraction sees it.
         if (isMediaBearingPayload(payload)) {
-          const mediaPayload =
-            input.kind === "prepared"
-              ? copyReplyPayloadMetadata(payload, { ...payload, text: undefined })
-              : { ...payload, text: undefined };
+          const mediaPayload = copyReplyPayloadMetadata(payload, { ...payload, text: undefined });
           deliveredReplies.push(
             ...replaceChatSendReplyPayload(input, mediaPayload).map((mediaInput) => ({
               input: mediaInput,
@@ -530,6 +528,7 @@ export function createChatSendReplyDispatch(params: {
     return await admission.run(async () => {
       preparingTranscript = true;
       const commentaryMedia = observeChatSendCommentaryMedia({
+        requesterContext: params.requesterContext,
         session,
         accountId,
         getRunId: () => agentRunId,

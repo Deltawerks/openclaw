@@ -2,12 +2,17 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
   setReplyPayloadMetadata,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
 import type { ReplyDispatchOperation } from "../../auto-reply/reply/reply-dispatcher.types.js";
-import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
+import { createReplyToModeFilterForChannel } from "../../auto-reply/reply/reply-threading.js";
+import {
+  createOutboundPayloadPlan,
+  createStructuredOutboundPayloadPlan,
+} from "../../infra/outbound/payloads.js";
 import { collectReplyMediaEntries } from "../../infra/outbound/reply-media-entries.js";
 import {
   selectChatSendFinalReplyInputs,
@@ -29,6 +34,28 @@ function selectRawReplies(params: {
 }
 
 describe("selectChatSendFinalReplyInputs", () => {
+  it("keeps consumed reply policy when raw duplicate replies are folded", () => {
+    const filter = createReplyToModeFilterForChannel("first", "telegram");
+    filter({ text: "First", replyToId: "source" });
+    const later = filter({ text: "Later", replyToId: "source", replyToCurrent: true });
+    const modified = copyReplyPayloadMetadata(later, {
+      ...later,
+      replyToId: "later-target",
+      mediaUrl: "https://example.invalid/document.txt",
+    });
+    const selected = selectRawReplies({
+      deliveredReplies: [
+        { kind: "block", payload: modified },
+        { kind: "final", payload: modified },
+      ],
+      foldCommandBlocks: true,
+      suppressReplies: false,
+    });
+    const plans = createOutboundPayloadPlan(selected);
+    expect(plans).toHaveLength(1);
+    expect(plans[0]?.payload.replyToId).toBeUndefined();
+    expect(plans[0]?.payload.replyToCurrent).toBe(false);
+  });
   it.each(["raw", "prepared"] as const)(
     "keeps a sensitive prepared final from exposing matching %s block media",
     (blockKind) => {
@@ -60,11 +87,9 @@ describe("selectChatSendFinalReplyInputs", () => {
         true,
         true,
       ]);
-      if (blockKind === "prepared") {
-        expect(
-          getReplyPayloadMetadata(readChatSendReplyPayload(inputs[0]!))?.assistantMessageIndex,
-        ).toBe(1);
-      }
+      expect(
+        getReplyPayloadMetadata(readChatSendReplyPayload(inputs[0]!))?.assistantMessageIndex,
+      ).toBe(1);
       expect(blockPayload).not.toHaveProperty("sensitiveMedia");
     },
   );

@@ -1,6 +1,9 @@
 // Outbound payload planning normalizes reply payloads into sendable text,
 // media, presentation, interactive, and mirror projections.
-import { copyReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
+import {
+  applyReplyPayloadTargetPolicy,
+  copyReplyPayloadMetadata,
+} from "../../auto-reply/reply-payload.js";
 import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
 import {
   formatBtwTextForExternalDelivery,
@@ -191,28 +194,30 @@ function normalizeRawOutboundPayload(
     strippedText === (parsed.text ?? "") ? parsed : parseReplyDirectives(strippedText);
   const parsedText = strippedParsed.text ?? "";
   const suppressedText = strippedParsed.isSilent || isSuppressedRelayStatusText(parsedText);
-  const normalizedPayload: ReplyPayload = copyReplyPayloadMetadata(payload, {
-    ...payload,
-    text:
-      formatBtwTextForExternalDelivery({ ...payload, text: suppressedText ? "" : parsedText }) ??
-      "",
-    mediaUrls,
-    mediaUrl: explicitMediaUrl,
-    ...(payload.attachments
-      ? {
-          attachments: collectReplyMediaEntries(
-            payload.mediaUrls === undefined && payload.mediaUrl === undefined
-              ? { ...payload, mediaUrls: parsed.mediaUrls }
-              : payload,
-            mediaUrls,
-          ).map(({ attachment }) => attachment ?? {}),
-        }
-      : {}),
-    replyToId: payload.replyToId ?? parsed.replyToId,
-    replyToTag: payload.replyToTag || parsed.replyToTag,
-    replyToCurrent: payload.replyToCurrent || parsed.replyToCurrent,
-    audioAsVoice: Boolean(payload.audioAsVoice || parsed.audioAsVoice),
-  });
+  const normalizedPayload: ReplyPayload = applyReplyPayloadTargetPolicy(
+    copyReplyPayloadMetadata(payload, {
+      ...payload,
+      text:
+        formatBtwTextForExternalDelivery({ ...payload, text: suppressedText ? "" : parsedText }) ??
+        "",
+      mediaUrls,
+      mediaUrl: explicitMediaUrl,
+      ...(payload.attachments
+        ? {
+            attachments: collectReplyMediaEntries(
+              payload.mediaUrls === undefined && payload.mediaUrl === undefined
+                ? { ...payload, mediaUrls: parsed.mediaUrls }
+                : payload,
+              mediaUrls,
+            ).map(({ attachment }) => attachment ?? {}),
+          }
+        : {}),
+      replyToId: payload.replyToId ?? parsed.replyToId,
+      replyToTag: payload.replyToTag || parsed.replyToTag,
+      replyToCurrent: payload.replyToCurrent || parsed.replyToCurrent,
+      audioAsVoice: Boolean(payload.audioAsVoice || parsed.audioAsVoice),
+    }),
+  );
   return suppressedText && !hasReplyPayloadContent(normalizedPayload) ? null : normalizedPayload;
 }
 
@@ -231,13 +236,15 @@ function createStructuredOutboundPayloadPlanEntry(
     mediaUrls.push(trimmed);
     attachments?.push(attachment ?? {});
   }
-  const normalizedPayload = copyReplyPayloadMetadata(payload, {
-    ...payload,
-    text: payload.text ?? "",
-    mediaUrls: mediaUrls.length ? mediaUrls : undefined,
-    mediaUrl: mediaUrls.length > 1 ? undefined : payload.mediaUrl,
-    ...(attachments ? { attachments } : {}),
-  });
+  const normalizedPayload = applyReplyPayloadTargetPolicy(
+    copyReplyPayloadMetadata(payload, {
+      ...payload,
+      text: payload.text ?? "",
+      mediaUrls: mediaUrls.length ? mediaUrls : undefined,
+      mediaUrl: mediaUrls.length > 1 ? undefined : payload.mediaUrl,
+      ...(attachments ? { attachments } : {}),
+    }),
+  );
   if (!isRenderablePayload(normalizedPayload)) {
     return null;
   }

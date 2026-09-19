@@ -204,7 +204,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +3: typed feature contracts, backend registration, and native Control UI hosting.
       // +1: public provider-owned asynchronous embedding batch contract.
       // +1: runtime-neutral WebSocket client/server adapter for bundled and external plugins.
-      154,
+      // +1: approved host-owned workspace access runtime entrypoint.
+      // +1: passive docked link-reader contracts.
+      156,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -381,7 +383,10 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +1: preserve opaque host reply metadata through Telegram recovery text clones.
       // +1: canonical media/attachment associations for recovered-final filtering.
-      4490,
+      // +4: approved workspace access exports; later stack exports belong to their consumers.
+      // +6: passive link-reader descriptor, metadata, document, preview, and request types.
+      // +1: preserve accepted modifier media selection during transcript recovery.
+      4501,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -526,7 +531,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +1: preserve opaque host reply metadata through Telegram recovery text clones.
       // +1: canonical media/attachment associations for recovered-final filtering.
-      2653,
+      // +3: approved workspace access callables; later stack exports belong to their consumers.
+      // +1: preserve accepted modifier media selection during transcript recovery.
+      2657,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

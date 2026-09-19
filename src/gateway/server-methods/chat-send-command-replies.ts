@@ -45,11 +45,11 @@ function replyMediaDedupeKeys(payload: ReplyPayload): string[] {
 
 function canonicalizeReplyMedia(payload: ReplyPayload): ReplyPayload {
   const mediaUrls = replyMediaUrls(payload);
-  return {
+  return copyReplyPayloadMetadata(payload, {
     ...payload,
     mediaUrl: undefined,
     mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
-  };
+  });
 }
 
 function mergeDefinedReplySemantics(target: ReplyPayload, source: ReplyPayload): ReplyPayload {
@@ -57,8 +57,9 @@ function mergeDefinedReplySemantics(target: ReplyPayload, source: ReplyPayload):
   const sourceReplyToId =
     sanitizeReplyDirectiveId(source.replyToId) ??
     sanitizeReplyDirectiveId(sourceInlineDirectives?.replyToExplicitId);
-  return {
-    ...mergeMediaReplySemantics(target, source, sourceInlineDirectives),
+  const mergedMedia = mergeMediaReplySemantics(target, source, sourceInlineDirectives);
+  return copyReplyPayloadMetadata(mergedMedia, {
+    ...mergedMedia,
     ...(source.presentation !== undefined ? { presentation: source.presentation } : {}),
     ...(source.delivery !== undefined ? { delivery: source.delivery } : {}),
     ...(source.interactive !== undefined ? { interactive: source.interactive } : {}),
@@ -73,7 +74,7 @@ function mergeDefinedReplySemantics(target: ReplyPayload, source: ReplyPayload):
     ...(source.ttsSupplement !== undefined ? { ttsSupplement: source.ttsSupplement } : {}),
     ...(source.isError === true || target.isError === true ? { isError: true } : {}),
     ...(source.channelData !== undefined ? { channelData: source.channelData } : {}),
-  };
+  });
 }
 
 function mergeMediaReplySemantics(
@@ -105,7 +106,7 @@ function mergeMediaReplySemantics(
       return merged;
     });
   }
-  return {
+  return copyReplyPayloadMetadata(target, {
     ...target,
     ...(attachments ? { attachments } : {}),
     ...(source.trustedLocalMedia === true || target.trustedLocalMedia === true
@@ -119,7 +120,7 @@ function mergeMediaReplySemantics(
     target.audioAsVoice === true
       ? { audioAsVoice: true }
       : {}),
-  };
+  });
 }
 
 function hasMergeableReplySemantics(payload: ReplyPayload): boolean {
@@ -203,9 +204,7 @@ export function selectChatSendFinalReplyInputs(params: {
         const sensitivePayload = { ...payload, sensitiveMedia: true };
         return replaceChatSendReplyPayload(
           entry.input,
-          entry.input.kind === "prepared"
-            ? copyReplyPayloadMetadata(payload, sensitivePayload)
-            : sensitivePayload,
+          copyReplyPayloadMetadata(payload, sensitivePayload),
         ).map((input) => ({ kind: entry.kind, input }));
       },
     );
@@ -275,11 +274,11 @@ export function selectChatSendFinalReplyInputs(params: {
             ...entry,
             input: {
               kind: "raw" as const,
-              payload: {
+              payload: copyReplyPayloadMetadata(payload, {
                 ...payload,
                 mediaUrl: undefined,
                 mediaUrls: remainingFinalMediaUrls.length > 0 ? remainingFinalMediaUrls : undefined,
-              },
+              }),
             },
           },
         ];
