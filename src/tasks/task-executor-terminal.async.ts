@@ -1,6 +1,6 @@
 import type { CreatedDetachedTaskRun } from "./detached-task-runtime-contract.js";
-import type { CoreTaskCreation } from "./task-executor-create.async.js";
 import { settleTaskRecordTransitionAsync } from "./task-executor-transition.async.js";
+import type { CoreTaskCreation } from "./task-executor.types.js";
 import { captureTaskPersistenceReceipt, cloneTaskRecord } from "./task-registry-records.js";
 import { getTasksByRunScope, prepareTaskRegistryProjectionAsync } from "./task-registry-state.js";
 import type { TaskRecord } from "./task-registry.types.js";

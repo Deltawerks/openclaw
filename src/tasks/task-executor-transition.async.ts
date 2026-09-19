@@ -1,9 +1,9 @@
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import type { CoreTaskCreation } from "./task-executor-create.async.js";
 import {
   finishTaskMutation,
   retainTaskMutationFlowEffects,
 } from "./task-executor-mutation-effects.async.js";
+import type { CoreTaskCreation } from "./task-executor.types.js";
 import type { TaskInitialWorkerCommand } from "./task-initial-worker.types.js";
 import { clearTaskActivity, flushTaskActivity } from "./task-registry-activity.js";
 import {

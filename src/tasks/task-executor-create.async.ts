@@ -13,6 +13,7 @@ import {
 } from "./task-executor-mutation-effects.async.js";
 import { finalizeActiveTaskRun } from "./task-executor-terminal.async.js";
 import { settleTaskRecordTransitionAsync } from "./task-executor-transition.async.js";
+import type { CoreTaskCreation } from "./task-executor.types.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
 import {
@@ -36,13 +37,6 @@ import type { TaskRecord } from "./task-registry.types.js";
 
 const log = createSubsystemLogger("tasks/executor");
 type FlowStore = ReturnType<typeof getTaskFlowRegistryStore>;
-export type CoreTaskCreation = {
-  task: TaskRecord;
-  context: OpenClawStateWorkerContext;
-  store: TaskRegistryStore;
-  flowStore: FlowStore;
-  assertStores: () => void;
-};
 
 type CreatedTaskRunReceipt = {
   task: TaskRecord;
