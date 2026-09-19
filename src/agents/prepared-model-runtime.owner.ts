@@ -20,6 +20,10 @@ import {
   PreparedModelRuntimePublicationSupersededError,
 } from "./prepared-model-runtime.errors.js";
 import {
+  capturePreparedModelRuntimeGeneration,
+  retirePreparedModelRuntimeGeneration,
+} from "./prepared-model-runtime.lifecycle.js";
+import {
   publishPreparedPluginGeneration,
   releasePreparedPluginPublication,
   discardPreparedPluginGeneration,
@@ -31,7 +35,6 @@ import type {
   PreparedModelRuntimeInput,
   PreparedModelRuntimeOwner,
   PreparedModelRuntimePluginGeneration,
-  PreparedModelRuntimeReplacement,
   PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.types.js";
 
@@ -409,19 +412,6 @@ export function hasSameLifecycleInput(
   );
 }
 
-export function createPreparedModelRuntimeReplacement(): PreparedModelRuntimeReplacement {
-  let resolve!: () => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  // Readers await the original promise. This handler only prevents an unobserved rejected gate
-  // when a reload fails before any request reaches the stale generation.
-  void promise.catch(() => undefined);
-  return { gateId: Symbol("prepared-model-runtime-replacement"), promise, resolve, reject };
-}
-
 export async function publishPreparedModelRuntimeOwnerBatch(params: {
   entries: Array<{
     owner: PreparedModelRuntimeOwner;
@@ -444,6 +434,7 @@ export async function publishPreparedModelRuntimeOwnerBatch(params: {
     const input = owner.input;
     owner.environmentFingerprint = effectiveEnvironmentFingerprint(input);
     owner.generation += 1;
+    retirePreparedModelRuntimeGeneration(owner);
     owner.authCaptureStarted = false;
     owner.needsRefresh = true;
     owner.refreshError = undefined;
@@ -468,6 +459,7 @@ export async function publishPreparedModelRuntimeOwnerBatch(params: {
       inspectRegistry:
         owner.provenance === "run" || (owner.provenance === "ephemeral" && input.readOnly === true),
       isGenerationCurrent,
+      retirementSignal: capturePreparedModelRuntimeGeneration(owner),
       isBuildCurrent: params.isBuildCurrent ?? isCurrent,
       onBeforeAuthCapture: () => {
         if (owner.generation === generation) {
@@ -575,6 +567,7 @@ export async function publishPreparedModelRuntimeOwnerBatch(params: {
                 const previous = params.owners.get(candidate.key);
                 params.owners.set(candidate.key, candidate.owner);
                 if (previous && previous !== candidate.owner) {
+                  retirePreparedModelRuntimeGeneration(previous);
                   releasePreparedPluginPublication(previous);
                 }
                 candidate.markRegistered();
@@ -660,6 +653,7 @@ export async function publishModelRuntimeSnapshot(
   const key = ownerKey(input);
   const owner = prepareModelRuntimeOwner(input, provenance, catalogMode, existing);
   owner.generation += 1;
+  retirePreparedModelRuntimeGeneration(owner);
   owner.authCaptureStarted = false;
   owner.needsRefresh = true;
   owner.refreshError = undefined;
@@ -674,6 +668,7 @@ export async function publishModelRuntimeSnapshot(
         catalogOwner: owner.catalogOwner,
         inventoryOwner: owner,
         isGenerationCurrent,
+        retirementSignal: capturePreparedModelRuntimeGeneration(owner),
         isBuildCurrent: isGenerationCurrent,
         onBeforeAuthCapture: () => {
           if (owner.generation === generation) {
@@ -701,6 +696,7 @@ export async function publishModelRuntimeSnapshot(
   const previous = owners.get(key);
   owners.set(key, owner);
   if (previous && previous !== owner) {
+    retirePreparedModelRuntimeGeneration(previous);
     releasePreparedPluginPublication(previous);
   }
   let built: PreparedModelRuntimeBuildResult | undefined;

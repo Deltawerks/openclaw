@@ -492,6 +492,7 @@ describe("prepared build candidate lifetime", () => {
     const candidate = {
       input,
       catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
+      retirementSignal: new AbortController().signal,
       ...(generation === undefined ? {} : { isGenerationCurrent: () => generation }),
       ...(build === undefined ? {} : { isBuildCurrent: () => build }),
     };
@@ -522,18 +523,21 @@ describe("prepared build candidate lifetime", () => {
         readOnly: true,
       };
       let current = checkpoint === "after";
+      const retirement = new AbortController();
       const prepareWorkspace = runtimeFacts.prepareWorkspaceBuildGroup;
       const preparation = vi
         .spyOn(runtimeFacts, "prepareWorkspaceBuildGroup")
         .mockImplementationOnce(async (...args) => {
           const prepared = await prepareWorkspace(...args);
           current = false;
+          retirement.abort();
           return prepared;
         });
       const candidate = {
         input,
         catalogOwner: preparePublishedModelCatalogOwnerIdentity(input),
         isGenerationCurrent: () => current,
+        retirementSignal: retirement.signal,
         isBuildCurrent: () => current,
       };
       const build = startSerializedSnapshotBuildBatch([candidate], new Map(), 1_000, "static");
