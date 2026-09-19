@@ -227,6 +227,7 @@ async function prepareSimpleCompletionModelCore(
     params.agentDir,
     params.cfg,
     {
+      assertCurrent,
       modelIdSource: params.modelIdSource,
       ...(params.agentId ? { agentId: params.agentId } : {}),
       ...(params.allowBundledStaticCatalogFallback !== undefined
@@ -335,11 +336,11 @@ async function prepareSimpleCompletionModelCore(
         forceResolve,
         resolveModel: ({ config, authProfileId, authProfileMode }) =>
           modelResolver(initialModel.provider, initialModel.id, params.agentDir, config, {
+            assertCurrent,
             modelIdSource: "selected",
             ...(params.agentId ? { agentId: params.agentId } : {}),
             skipAgentDiscovery: true,
             allowBundledStaticCatalogFallback: true,
-            preferBundledStaticCatalogTransport: true,
             authProfileId,
             authProfileMode,
           }),

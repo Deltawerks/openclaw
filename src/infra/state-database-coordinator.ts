@@ -1,12 +1,9 @@
 // Coordinates Gateway presence and shared-state lifecycle operations outside removable state.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { MessagePort } from "node:worker_threads";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
-import { sha256HexPrefixCore } from "./crypto-digest.js";
 import {
   createSqliteLifecycleAggregateError,
   ensurePrivateSqliteCoordinatorDirectory,
@@ -17,12 +14,27 @@ import {
   tryAcquireSharedSqliteCoordinator,
 } from "./sqlite-coordinator.js";
 import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
+import { prepareSingleFlightSqliteSnapshot } from "./sqlite-snapshot-single-flight.js";
 import {
   attachCoordinatorDelegate,
   attachLifecycleCoordinatorDelegate,
   createCoordinatorDelegate,
   acquireDelegatedLifecycleCoordinator,
 } from "./state-database-coordinator-delegate.js";
+import {
+  StateDatabaseCoordinatorContentionError,
+  StateSchemaMutationConflictError,
+} from "./state-database-coordinator-errors.js";
+import {
+  resolveLifecycleCoordinatorBase,
+  buildLifecycleCoordinatorPath,
+  resolveLifecycleCoordinatorPath,
+  type CoordinatorFamily,
+} from "./state-database-coordinator-paths.js";
+export {
+  StateDatabaseCoordinatorContentionError,
+  StateSchemaMutationConflictError,
+} from "./state-database-coordinator-errors.js";
 
 type HeldCoordinator = {
   coordinator: SqliteCoordinatorLease;
@@ -37,7 +49,7 @@ type SourceReadScope = {
   mutation?: boolean;
   assertCurrent: () => void;
   pin: () => { release: () => void };
-  snapshot?: () => Promise<PreparedSqliteReadOnlyLocation>;
+  snapshot?: (signal?: AbortSignal) => Promise<PreparedSqliteReadOnlyLocation>;
   snapshots?: Promise<unknown>[];
 };
 export type StateDatabaseCoordinatorRuntime = Readonly<{
@@ -61,7 +73,6 @@ const {
   >(),
 }));
 
-type CoordinatorFamily = "gateway-lifecycle" | "state-lifecycle" | "state-handles";
 type CoordinatorOptions = {
   databasePath: string;
   coordinatorPath?: string;
@@ -77,37 +88,6 @@ type StateDatabaseCoordinatorLease = {
   readonly closed: boolean;
   release: () => void;
 };
-
-export const StateDatabaseCoordinatorContentionError = resolveGlobalSingleton(
-  Symbol.for("openclaw.stateDatabaseCoordinatorContentionError"),
-  () =>
-    class CoordinatorContentionError extends SqliteCoordinatorError {
-      constructor(readonly family: CoordinatorFamily) {
-        super(`another OpenClaw process owns ${family}`);
-        this.name = "StateDatabaseCoordinatorContentionError";
-      }
-    },
-);
-export type StateDatabaseCoordinatorContentionError = InstanceType<
-  typeof StateDatabaseCoordinatorContentionError
->;
-
-export const StateSchemaMutationConflictError = resolveGlobalSingleton(
-  Symbol.for("openclaw.stateSchemaMutationConflictError"),
-  () =>
-    class SchemaMutationConflictError extends SqliteCoordinatorError {
-      constructor(databasePath: string, cause: unknown) {
-        super(
-          `OpenClaw refused shared state schema mutation at ${databasePath} because another Gateway owns that state directory. Stop that Gateway or perform the update through its managed restart path, then retry.`,
-          cause,
-        );
-        this.name = "StateSchemaMutationConflictError";
-      }
-    },
-);
-export type StateSchemaMutationConflictError = InstanceType<
-  typeof StateSchemaMutationConflictError
->;
 
 export function resolveStateLifecycleRuntimeDirectory(): string {
   const captured = coordinatorRuntimeDirectories.getStore();
@@ -134,52 +114,6 @@ export function withStateDatabaseCoordinatorRuntimeDirectory<T>(
   const captured =
     typeof runtime === "string" ? { directory: runtime, keepAlive: false } : { ...runtime };
   return coordinatorRuntimeDirectories.run(captured, operation);
-}
-
-function resolveCoordinatorIdentityPath(pathname: string): string {
-  const normalized = path.resolve(pathname);
-  try {
-    // Live paths need one native lookup, not JavaScript realpath's per-component probes.
-    const resolved = path.resolve(realpathSync.native(normalized));
-    // Windows native realpath corrects casing; the shipped lock hash preserves input casing.
-    if (process.platform !== "win32" || resolved === normalized) {
-      return resolved;
-    }
-  } catch {
-    // Missing paths and failed lookups retain the existing ancestor resolution.
-  }
-  return resolvePathViaExistingAncestorSync(normalized);
-}
-
-function resolveLifecycleCoordinatorBase(params: {
-  databasePath: string;
-  runtimeDirectory: string;
-  uid: number | undefined;
-}) {
-  const canonicalDatabasePath = resolveCoordinatorIdentityPath(params.databasePath);
-  const canonicalRuntimeDirectory = resolveCoordinatorIdentityPath(params.runtimeDirectory);
-  // The predecessor state-local coordinator shipped only in v2026.8.1-beta.2.
-  // Keep one current stable runtime path; beta-only peers are not upgrade-compatible.
-  const suffix =
-    params.uid === undefined ? "openclaw-state-locks" : `openclaw-state-locks-${params.uid}`;
-  return {
-    directory: path.join(canonicalRuntimeDirectory, suffix),
-    databaseHash: sha256HexPrefixCore(canonicalDatabasePath, 8),
-  };
-}
-
-function buildLifecycleCoordinatorPath(
-  family: CoordinatorFamily,
-  base: ReturnType<typeof resolveLifecycleCoordinatorBase>,
-): string {
-  return path.join(base.directory, `${family}.${base.databaseHash}.lock.sqlite`);
-}
-
-function resolveLifecycleCoordinatorPath(
-  family: CoordinatorFamily,
-  params: Parameters<typeof resolveLifecycleCoordinatorBase>[0],
-): string {
-  return buildLifecycleCoordinatorPath(family, resolveLifecycleCoordinatorBase(params));
 }
 
 export function resolveStateDatabaseCoordinatorPath(params: {
@@ -343,8 +277,18 @@ export function tryAcquireGatewayLifecycleCleanupCoordinator(
   return tryAcquireExclusiveSqliteCoordinator(pathname, { busyTimeoutMs: 0 });
 }
 
+/** True only while this process retains the native Gateway-role coordinator. */
+export function hasGatewayLifecycleCoordinator(
+  params: Pick<CoordinatorOptions, "databasePath" | "runtimeDirectory" | "uid">,
+): boolean {
+  return (heldCoordinators.get(resolveGatewaySchemaFencePath(params))?.gatewayOwners ?? 0) > 0;
+}
+
 /** The broker owns this pin until backend close acknowledges or worker exit joins. */
 export function tryCreateGatewaySchemaFenceDelegate(params: GatewaySchemaFenceDelegateParams) {
+  if (heldCoordinators.size === 0) {
+    return undefined;
+  }
   const coordinatorPath = resolveGatewaySchemaFencePath(params);
   const owner = heldCoordinators.get(coordinatorPath);
   if (!owner || owner.gatewayOwners === 0) {
@@ -413,6 +357,9 @@ export async function attachGatewaySchemaFenceDelegate(
 export function tryCreateStateLifecycleDelegate(
   params: Pick<GatewaySchemaFenceDelegateParams, "databasePath" | "actorId">,
 ) {
+  if (heldCoordinators.size === 0) {
+    return undefined;
+  }
   const coordinatorPath = resolveStateDatabaseCoordinatorPath({
     databasePath: params.databasePath,
     runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
@@ -556,6 +503,9 @@ export function acquireStateDatabaseHandleLease(params: CoordinatorOptions) {
     sourceScope.assertCurrent();
     return sourceScope.pin();
   }
+  if (heldCoordinators.has(pathname)) {
+    throw new StateDatabaseCoordinatorContentionError("state-handles");
+  }
   ensurePrivateSqliteCoordinatorDirectory(path.dirname(pathname), "state-handles coordinator");
   const coordinator = tryAcquireSharedSqliteCoordinator(pathname, {
     busyTimeoutMs: params.busyTimeoutMs,
@@ -611,7 +561,10 @@ export function acquireStateDatabaseHandleExclusion(params: CoordinatorOptions) 
     async runWithCanonicalMutation<T>(
       assertAuthority: () => void,
       operation: () => Promise<T>,
-      snapshot: (assertCurrent: () => void) => Promise<PreparedSqliteReadOnlyLocation>,
+      snapshot: (
+        assertCurrent: () => void,
+        signal?: AbortSignal,
+      ) => Promise<PreparedSqliteReadOnlyLocation>,
     ): Promise<T> {
       const retained = pin();
       const snapshots: Promise<unknown>[] = [];
@@ -627,13 +580,13 @@ export function acquireStateDatabaseHandleExclusion(params: CoordinatorOptions) 
       };
       const scopes = new Map(canonicalWriteScopes.getStore());
       scopes.set(coordinator.path, scope);
-      scope.snapshot = () =>
+      scope.snapshot = (signal) =>
         snapshot(() => {
           if (!scope.active) {
             throw new SqliteCoordinatorError("SQLite mutation inspection scope is closed");
           }
           scope.assertCurrent();
-        });
+        }, signal);
       try {
         scope.assertCurrent();
         const result = await canonicalWriteScopes.run(scopes, operation);
@@ -710,13 +663,17 @@ export function acquireStateDatabaseHandleExclusion(params: CoordinatorOptions) 
   };
 }
 
-/** Only a live process-local exclusion owner may copy its already-drained source. */
-export function hasStateDatabaseSourceExclusion(databasePath: string): boolean {
-  const pathname = resolveLifecycleCoordinatorPath("state-handles", {
+function resolveSourceScopePath(databasePath: string): string {
+  return resolveLifecycleCoordinatorPath("state-handles", {
     databasePath,
     runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
     uid: typeof process.getuid === "function" ? process.getuid() : undefined,
   });
+}
+
+/** Only a live process-local exclusion owner may copy its already-drained source. */
+export function hasStateDatabaseSourceExclusion(databasePath: string): boolean {
+  const pathname = resolveSourceScopePath(databasePath);
   const scope = sourceReadScopes.getStore()?.get(pathname);
   if (!scope?.active) {
     return false;
@@ -725,15 +682,30 @@ export function hasStateDatabaseSourceExclusion(databasePath: string): boolean {
   return true;
 }
 
+/** Capture this exact excluded read interval before asynchronous preparation. */
+export function prepareStateDatabaseSourceExclusion(
+  databasePath: string,
+): (() => void) | undefined {
+  const pathname = resolveSourceScopePath(databasePath);
+  const scope = sourceReadScopes.getStore()?.get(pathname);
+  if (!scope) {
+    return undefined;
+  }
+  const assertCurrent = () => {
+    if (!scope.active || sourceReadScopes.getStore()?.get(pathname) !== scope) {
+      throw new SqliteCoordinatorError("SQLite excluded read scope is closed or no longer current");
+    }
+    scope.assertCurrent();
+  };
+  assertCurrent();
+  return assertCurrent;
+}
+
 /** Capture the exact task-local mutation interval, never just its physical owner. */
 export function prepareStateDatabaseCanonicalMutation(
   databasePath: string,
 ): (() => void) | undefined {
-  const pathname = resolveLifecycleCoordinatorPath("state-handles", {
-    databasePath,
-    runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
-    uid: typeof process.getuid === "function" ? process.getuid() : undefined,
-  });
+  const pathname = resolveSourceScopePath(databasePath);
   const scope = canonicalWriteScopes.getStore()?.get(pathname);
   if (!scope?.mutation) {
     return undefined;
@@ -752,12 +724,9 @@ export function prepareStateDatabaseCanonicalMutation(
 
 /** The mutation owner alone supplies private snapshots while its native source
  * may still be open. This never authorizes a child process or a source reopen. */
-export function prepareStateDatabaseMutationSnapshot(databasePath: string) {
-  const pathname = resolveLifecycleCoordinatorPath("state-handles", {
-    databasePath,
-    runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
-    uid: typeof process.getuid === "function" ? process.getuid() : undefined,
-  });
+export function prepareStateDatabaseMutationSnapshot(databasePath: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const pathname = resolveSourceScopePath(databasePath);
   const scope = canonicalWriteScopes.getStore()?.get(pathname);
   if (!scope?.mutation) {
     return undefined;
@@ -766,8 +735,15 @@ export function prepareStateDatabaseMutationSnapshot(databasePath: string) {
     throw new SqliteCoordinatorError("SQLite mutation inspection scope is closed");
   }
   scope.assertCurrent();
-  const pending = scope.snapshot();
-  scope.snapshots.push(pending);
+  const pending = prepareSingleFlightSqliteSnapshot(
+    databasePath,
+    "canonical-mutation",
+    (flightSignal) => scope.snapshot!(flightSignal),
+    signal,
+    {
+      trackProducer: (producer) => scope.snapshots!.push(producer),
+    },
+  );
   void pending.catch(() => undefined);
   return pending;
 }

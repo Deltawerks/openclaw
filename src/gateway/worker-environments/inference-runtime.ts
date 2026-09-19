@@ -5,7 +5,6 @@ import type {
   WorkerInferenceContext,
   WorkerInferenceEventParams,
   WorkerInferenceStartParams,
-  WorkerInferenceTerminalOutcome,
 } from "../../../packages/gateway-protocol/src/schema/worker-inference.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { resolveSessionAuthSelection } from "../../agents/auth-profiles/session-override.js";
@@ -38,6 +37,8 @@ import { prepareSimpleCompletionModel } from "../../agents/simple-completion-run
 import { normalizeUsage, hasObservedModelUsage } from "../../agents/usage.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { emitAgentEventForRunContext } from "../../infra/agent-events.js";
+import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { emitTrustedDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { resolveDiagnosticModelContentCapturePolicy } from "../../infra/diagnostic-llm-content.js";
 import {
@@ -60,12 +61,14 @@ import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generati
 import { estimateUsageCost, resolveModelCostConfig } from "../../utils/usage-format.js";
 import { WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE } from "../../worker/transcript-message.js";
 import {
+  ERROR_MESSAGES,
+  inferenceError,
   projectWorkerInferenceTerminalMessage,
   type WorkerInferenceModelIdentity,
 } from "./inference-terminal-message.js";
 import { createWorkerToolCallStream } from "./inference-tool-call-stream.js";
 import { resolveWorkerSessionTarget, type ResolvedWorkerSessionTarget } from "./session-target.js";
-import { boundedWorkerError } from "./worker-error.js";
+import { boundedWorkerError, formatWorkerInferenceError } from "./worker-error.js";
 
 type WorkerInferenceStreamEvent = WorkerInferenceEventParams["event"];
 export type WorkerInferenceExecutor = import("./inference.js").WorkerInferenceExecutor;
@@ -104,31 +107,6 @@ type WorkerInferenceRuntimeDependencies = {
   createTrace: typeof createDiagnosticTraceContextFromActiveScope;
   recordUsage: (params: WorkerInferenceUsageParams) => void;
 };
-
-const ERROR_MESSAGES = {
-  "model-not-approved": "Model is not approved for this agent.",
-  "invalid-context": "Inference context is invalid.",
-  "epoch-mismatch": "Worker run epoch does not match.",
-  "session-not-attached": "Worker session is not attached.",
-  "provider-error": "Model provider request failed.",
-  cancelled: "Inference request was cancelled.",
-} as const satisfies Record<
-  Extract<WorkerInferenceTerminalOutcome, { type: "error" }>["reason"],
-  string
->;
-
-function inferenceError(
-  reason: Extract<WorkerInferenceTerminalOutcome, { type: "error" }>["reason"],
-  usage?: Usage,
-  message: string = ERROR_MESSAGES[reason],
-): WorkerInferenceTerminalOutcome {
-  return {
-    type: "error",
-    reason,
-    message,
-    ...(usage ? { usage: structuredClone(usage) } : {}),
-  };
-}
 
 function copyTool(tool: NonNullable<WorkerInferenceContext["tools"]>[number]): Tool | undefined {
   if (!isRecord(tool.parameters) || tool.parameters.type !== "object") {
@@ -380,7 +358,7 @@ async function resolveApprovedModel(params: {
       cfg: lifecycleConfig,
       catalog,
       defaultProvider: defaultModel.provider,
-      defaultModel: `${defaultModel.provider}/${defaultModel.model}`,
+      defaultModel,
       agentId: target.agentId,
       manifestPlugins: manifestSnapshot,
       ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
@@ -500,6 +478,7 @@ export function createWorkerInferenceExecutor(
     if (!target) {
       return inferenceError("session-not-attached");
     }
+    const runContext = getAgentRunContext(request.runId);
     const context = buildContext(request.context);
     if (!context) {
       return inferenceError("invalid-context");
@@ -641,6 +620,8 @@ export function createWorkerInferenceExecutor(
 
       const providerAbort = new AbortController();
       const providerSignal = AbortSignal.any([signal, providerAbort.signal]);
+      let currentMessage: AssistantMessage | undefined;
+      let publishedModel: string | undefined;
       try {
         const events = await stream(
           model,
@@ -652,6 +633,30 @@ export function createWorkerInferenceExecutor(
           }),
         );
         for await (const event of events) {
+          if (event.type !== "error") {
+            // Lean text deltas retain the provider's latest mutable checkpoint.
+            currentMessage =
+              event.type === "done" ? event.message : (event.partial ?? currentMessage);
+            const executingModel = currentMessage?.responseModel ?? modelIdentity.model;
+            if (
+              currentMessage &&
+              executingModel !== publishedModel &&
+              runContext?.sessionId === request.sessionId &&
+              runContext.sessionKey === target.sessionKey &&
+              (runContext.agentId === undefined || runContext.agentId === target.agentId) &&
+              executionIsCurrent()
+            ) {
+              emitAgentEventForRunContext(
+                {
+                  runId: request.runId,
+                  stream: "lifecycle",
+                  data: { phase: "model", provider: modelIdentity.provider, model: executingModel },
+                },
+                runContext,
+              );
+              publishedModel = executingModel;
+            }
+          }
           if (event.type === "done") {
             recordUsage(event.message.usage);
             if (signal.aborted || !params.isCurrent()) {
@@ -702,6 +707,14 @@ export function createWorkerInferenceExecutor(
             return inferenceError(
               event.reason === "aborted" ? "cancelled" : "provider-error",
               event.error.usage,
+              event.reason === "aborted"
+                ? undefined
+                : formatWorkerInferenceError({
+                    message: event.error.errorMessage ?? ERROR_MESSAGES["provider-error"],
+                    errorCode: event.error.errorCode,
+                    errorType: event.error.errorType,
+                    errorBody: event.error.errorBody,
+                  }),
             );
           }
           if (signal.aborted || !params.isCurrent()) {
@@ -739,8 +752,12 @@ export function createWorkerInferenceExecutor(
           }
         }
         return inferenceError(signal.aborted ? "cancelled" : "provider-error");
-      } catch {
-        return inferenceError(signal.aborted ? "cancelled" : "provider-error");
+      } catch (error) {
+        return inferenceError(
+          signal.aborted ? "cancelled" : "provider-error",
+          undefined,
+          signal.aborted ? undefined : formatWorkerInferenceError(error),
+        );
       } finally {
         providerAbort.abort();
       }

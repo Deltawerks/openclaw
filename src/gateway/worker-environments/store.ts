@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeSortedUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import type { Insertable, Selectable, Updateable } from "kysely";
 import {
@@ -16,7 +14,6 @@ import {
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
 import type {
-  WorkerDesktopApp,
   WorkerDesktopEndpoint,
   WorkerProfile,
   WorkerSshEndpoint,
@@ -35,6 +32,7 @@ import {
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import type { WorkerCredentialRecord } from "./credential.js";
+import { normalizeWorkerDesktopEndpoint } from "./desktop-endpoint.js";
 import type {
   PreparedEnvironmentPlacementBinding,
   WorkerEnvironmentBootstrapReceipt,
@@ -54,8 +52,10 @@ import {
   workerEnvironmentStateRequiresLease,
   type WorkerEnvironmentState,
 } from "./state.js";
+import { createWorkerEnvironmentStoreWriter } from "./store-write.js";
 import { pruneExpiredTerminalWorkerEnvironments } from "./terminal-environment-retention.js";
 
+export { normalizeWorkerDesktopEndpoint } from "./desktop-endpoint.js";
 export type {
   PreparedEnvironmentPlacementBinding,
   PreparedEnvironmentSelection,
@@ -96,7 +96,7 @@ type WorkerDb = Pick<
   | "worker_transcript_commit_heads"
 >;
 type Row = Selectable<WorkerEnvironments>;
-type RowWithFallbackPort = Row & { ssh_fallback_port: number | null };
+type RowWithFallbackPorts = Row & { ssh_fallback_ports_json: string };
 type RowUpdate = Updateable<WorkerEnvironments>;
 type SshFallbackPortInsert = Insertable<WorkerEnvironmentSshFallbackPorts>;
 type CredentialRow = Selectable<WorkerEnvironmentCredentials>;
@@ -130,7 +130,6 @@ const TERMINAL_STATES: WorkerEnvironmentState[] = ["destroyed", "failed", "orpha
 const WORKER_BUNDLE_HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const MAX_HOST_KEY_LENGTH = 16_384;
 const MAX_SSH_FALLBACK_PORTS = 10;
-const MAX_WORKER_DESKTOP_APPS = 8;
 const ensuredWorkerEnvironmentDatabases = new WeakSet<DatabaseSync>();
 const WORKER_ENVIRONMENT_SSH_FALLBACK_PORTS_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS worker_environment_ssh_fallback_ports (
@@ -305,74 +304,6 @@ export function normalizeWorkerSshEndpoint(value: Ssh): Ssh {
     keyRef: { ...value.keyRef },
   };
 }
-export function normalizeWorkerDesktopEndpoint(
-  value: WorkerDesktopEndpoint,
-): WorkerDesktopEndpoint {
-  if (!isRecord(value) || value.protocol !== "rfb") {
-    throw new Error('Worker environment desktop protocol must be "rfb"');
-  }
-  if (!Number.isSafeInteger(value.port) || value.port < 1 || value.port > 65_535) {
-    throw new Error("Worker environment desktop port must be an integer from 1 through 65535");
-  }
-  const passwordFilePath = value.passwordFilePath;
-  if (
-    passwordFilePath !== undefined &&
-    (typeof passwordFilePath !== "string" || !isAbsolute(passwordFilePath))
-  ) {
-    throw new Error("Worker environment desktop password file path must be absolute");
-  }
-  if (value.apps !== undefined && !Array.isArray(value.apps)) {
-    throw new Error("Worker environment desktop apps must be an array");
-  }
-  if ((value.apps?.length ?? 0) > MAX_WORKER_DESKTOP_APPS) {
-    throw new Error(`Worker environment desktop apps cannot exceed ${MAX_WORKER_DESKTOP_APPS}`);
-  }
-  const seenAppIds = new Set<WorkerDesktopApp["id"]>();
-  const apps = (value.apps ?? []).map((app): WorkerDesktopApp => {
-    if (!isRecord(app) || (app.id !== "browser" && app.id !== "terminal")) {
-      throw new Error('Worker environment desktop app id must be "browser" or "terminal"');
-    }
-    if (seenAppIds.has(app.id)) {
-      throw new Error(`Worker environment desktop app id ${app.id} must be unique`);
-    }
-    seenAppIds.add(app.id);
-    if (typeof app.executablePath !== "string" || !isAbsolute(app.executablePath)) {
-      throw new Error("Worker environment desktop app executable path must be absolute");
-    }
-    if (app.id === "terminal") {
-      if (Object.keys(app).some((key) => key !== "id" && key !== "executablePath")) {
-        throw new Error("Worker environment terminal desktop app contains unknown fields");
-      }
-      return { id: "terminal", executablePath: app.executablePath };
-    }
-    if (
-      Object.keys(app).some((key) => key !== "id" && key !== "executablePath" && key !== "cdpPort")
-    ) {
-      throw new Error("Worker environment browser desktop app contains unknown fields");
-    }
-    if (
-      typeof app.cdpPort !== "number" ||
-      !Number.isSafeInteger(app.cdpPort) ||
-      app.cdpPort < 1 ||
-      app.cdpPort > 65_535
-    ) {
-      throw new Error(
-        "Worker environment browser CDP port must be an integer from 1 through 65535",
-      );
-    }
-    return {
-      id: "browser",
-      executablePath: app.executablePath,
-      cdpPort: app.cdpPort,
-    };
-  });
-  return {
-    protocol: "rfb",
-    port: value.port,
-    ...(passwordFilePath === undefined ? {} : { passwordFilePath }),
-    ...(value.apps === undefined ? {} : { apps }),
-  };
-}
 function endpointFrom(row: Row, fallbackPorts: readonly number[]): Ssh | null {
   const {
     ssh_host: host,
@@ -536,37 +467,30 @@ const query = (db: DatabaseSync) => getNodeSqliteKysely<WorkerDb>(db);
 function environmentRows(db: DatabaseSync) {
   return query(db)
     .selectFrom("worker_environments")
-    .leftJoin(
-      "worker_environment_ssh_fallback_ports",
-      "worker_environment_ssh_fallback_ports.environment_id",
-      "worker_environments.environment_id",
-    )
     .selectAll("worker_environments")
-    .select("worker_environment_ssh_fallback_ports.port as ssh_fallback_port");
+    .select((eb) =>
+      eb
+        .selectFrom("worker_environment_ssh_fallback_ports")
+        .select(({ fn }) =>
+          fn.agg<string>("json_group_array", ["port"]).orderBy("position").as("ports"),
+        )
+        .whereRef(
+          "worker_environment_ssh_fallback_ports.environment_id",
+          "=",
+          "worker_environments.environment_id",
+        )
+        .$asScalar()
+        .as("ssh_fallback_ports_json"),
+    );
 }
-function recordsFromRows(rows: readonly RowWithFallbackPort[]): WorkerEnvironmentRecord[] {
-  const grouped = new Map<string, { ports: number[]; row: Row }>();
-  for (const row of rows) {
-    const current = grouped.get(row.environment_id);
-    if (current) {
-      if (row.ssh_fallback_port !== null) {
-        current.ports.push(row.ssh_fallback_port);
-      }
-      continue;
-    }
-    grouped.set(row.environment_id, {
-      ports: row.ssh_fallback_port === null ? [] : [row.ssh_fallback_port],
-      row,
-    });
-  }
-  return Array.from(grouped.values(), ({ row, ports }) => fromRow(row, ports));
+function recordsFromRows(rows: readonly RowWithFallbackPorts[]): WorkerEnvironmentRecord[] {
+  // SAFETY: SQLite aggregates the numeric port column; endpointFrom validates the decoded ports.
+  return rows.map((row) => fromRow(row, JSON.parse(row.ssh_fallback_ports_json) as number[]));
 }
 function find(db: DatabaseSync, environmentId: string) {
   const rows = executeSqliteQuerySync(
     db,
-    environmentRows(db)
-      .where("worker_environments.environment_id", "=", environmentId)
-      .orderBy("worker_environment_ssh_fallback_ports.position"),
+    environmentRows(db).where("worker_environments.environment_id", "=", environmentId),
   ).rows;
   return recordsFromRows(rows)[0];
 }
@@ -743,8 +667,7 @@ function listRows(db: DatabaseSync, reconcile: boolean): WorkerEnvironmentRecord
     db,
     ordered
       .orderBy("worker_environments.created_at_ms")
-      .orderBy("worker_environments.environment_id")
-      .orderBy("worker_environment_ssh_fallback_ports.position"),
+      .orderBy("worker_environments.environment_id"),
   ).rows;
   return recordsFromRows(rows);
 }
@@ -818,14 +741,7 @@ export function createWorkerEnvironmentStore(
   const path = database.path;
   const now = options.now ?? Date.now;
   const read = () => openOpenClawStateDatabase({ path }).db;
-  let inventoryVersion = 0;
-  const write = <T>(operation: (db: DatabaseSync) => T): T => {
-    const result = runOpenClawStateWriteTransaction(({ db }) => operation(db), { path });
-    // Device pairing's nodeDeviceId patch deliberately stays outside this version:
-    // it changes no identity/epoch/state input. Runner availability owns its own fence.
-    inventoryVersion += 1;
-    return result;
-  };
+  const { write, inventoryVersion } = createWorkerEnvironmentStoreWriter(path);
   write((db) => reconcileAttachedSessionOwners(db, now()));
   // Listeners observe permanent credential revocations that must fence live transfers.
   // Rotation-style revocations (device reconcile re-mints) intentionally do not notify.
@@ -929,7 +845,7 @@ export function createWorkerEnvironmentStore(
       return write((db) => createIntent(db, input));
     },
     get: (environmentId: string) => find(read(), required(environmentId, "id")),
-    inventoryVersion: () => inventoryVersion,
+    inventoryVersion,
     hasNodeEnrollmentOwner(nodeId: string): boolean {
       const db = read();
       // Pairing can bind the node without changing inventoryVersion. Cleanup states

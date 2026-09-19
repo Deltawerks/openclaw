@@ -1217,7 +1217,7 @@ openclaw-session-discussion {
   display: block;
   flex: 1 1 auto;
   width: 100%;
-  min-height: 360px;
+  min-height: 0;
   border: 0;
   background: var(--bg);
 }
@@ -1254,6 +1254,15 @@ openclaw-session-discussion {
   min-width: max-content;
   padding: 8px 0;
   caret-color: var(--text);
+}
+
+/* Word wrap: the editor wraps long lines at the panel width instead of scrolling. */
+.sidebar-file-view--wrap .cm-content {
+  min-width: 0;
+}
+
+.sidebar-file-view__wrap[aria-pressed="true"] {
+  color: var(--accent);
 }
 
 .sidebar-file-view .cm-line {
@@ -1375,6 +1384,13 @@ openclaw-session-discussion {
   display: grid;
   width: 100%;
   min-height: 0;
+
+  &:has(.chat-html-preview:not([hidden])) {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-width: 0;
+  }
 }
 
 .sidebar-attachment-preview__markdown {

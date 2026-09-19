@@ -1,5 +1,5 @@
 import type { GatewaySessionRow } from "../api/types.ts";
-import type { ChatAttachment, ChatQueueItem } from "../lib/chat/chat-types.ts";
+import type { ChatAttachment } from "../lib/chat/chat-types.ts";
 import { formatUiError } from "../lib/format-error.ts";
 import {
   createGatewayConnectionLifecycle,
@@ -11,6 +11,7 @@ import {
   listSessionPlacementRecoveries,
   readSessionPlacementRecovery,
   type SessionPlacementRecovery,
+  type SessionPlacementStartMode,
   type SessionPlacementPendingRecovery,
   type SessionPlacementPausedRecovery,
   pauseSessionPlacementRecovery,
@@ -21,8 +22,9 @@ import {
   type SessionPlacementDraftAdvanceResult,
 } from "../lib/sessions/session-placement-submit.ts";
 import { generateUUID } from "../lib/uuid.ts";
-import { restoreChatApiAttachments } from "../pages/chat/attachment-api.ts";
+import { restoreChatApiAttachments } from "../pages/chat/attachment-restoration.ts";
 import { buildInitialChatSubmission } from "../pages/chat/user-message-content.ts";
+import { buildPlacementStartupInitialTurn } from "./session-placement-initial-turn.ts";
 import {
   capturePlacementStartupConnection,
   type ApplicationPlacementStartupRuntime,
@@ -65,30 +67,6 @@ type PlacementStartupEntry = {
   readonly scope: GatewayConnectionScope;
   readonly retainsConnection: () => boolean;
 };
-
-function initialTurn(entry: PlacementStartupEntry): ChatQueueItem {
-  const recovery = entry.work.recovery;
-  return {
-    id: recovery.messageId,
-    text: recovery.message,
-    ...(recovery.mentions?.length ? { mentions: recovery.mentions } : {}),
-    attachments: entry.attachments,
-    createdAt: entry.createdAt,
-    sessionKey: recovery.sessionKey,
-    agentId: recovery.agentId,
-    sendRunId: recovery.messageId,
-    sendAttempts: 1,
-    sendState:
-      entry.work.kind === "checking"
-        ? "unconfirmed"
-        : recovery.phase === "paused"
-          ? recovery.reason === "unconfirmed"
-            ? "unconfirmed"
-            : "failed"
-          : "sending",
-    ...(recovery.phase === "paused" ? { sendError: recovery.error } : {}),
-  };
-}
 
 export default function createApplicationPlacementStartupRuntime(
   params: ApplicationPlacementStartupDependencies,
@@ -192,7 +170,7 @@ export default function createApplicationPlacementStartupRuntime(
   const run = (
     entry: PlacementStartupEntry,
     recovery: SessionPlacementRecovery,
-    recovering: boolean,
+    mode: SessionPlacementStartMode,
   ) => {
     let currentRecovery = recovery;
     void advanceSessionPlacementDraft({
@@ -200,7 +178,7 @@ export default function createApplicationPlacementStartupRuntime(
       recovery: currentRecovery,
       persistRecovery: entry.persistRecovery,
       cleanupOnCancellation: () => !entry.persistRecovery && entry.work.kind !== "paused",
-      recovering,
+      mode,
       isLifecycleCurrent: () => lifecycleCurrent(entry),
       ownsRecovery: () => ownsRecovery(entry),
       clearRecovery: () =>
@@ -290,7 +268,8 @@ export default function createApplicationPlacementStartupRuntime(
             },
       owner,
       // Status reads must not rescan payloads or mint new attachment identities.
-      attachments: restoreChatApiAttachments(input.recovery.attachments),
+      attachments:
+        input.displayAttachments ?? restoreChatApiAttachments(input.recovery.attachments),
       persistRecovery: input.persistRecovery,
       createdAt:
         existing?.owner.messageId === owner.messageId ? existing.createdAt : input.createdAt,
@@ -300,7 +279,7 @@ export default function createApplicationPlacementStartupRuntime(
     entries.set(owner.sessionKey, entry);
     publish();
     if (input.recovery.phase !== "paused") {
-      run(entry, input.recovery, input.recovering);
+      run(entry, input.recovery, input.mode);
     }
   };
 
@@ -326,7 +305,7 @@ export default function createApplicationPlacementStartupRuntime(
         start({
           recovery: entry.work.recovery,
           persistRecovery: entry.persistRecovery,
-          recovering: true,
+          mode: "recover",
           createdAt: entry.createdAt,
         });
       }
@@ -335,7 +314,7 @@ export default function createApplicationPlacementStartupRuntime(
       params.gateway.connection.gatewayUrl,
       snapshot.client.recoveryScope,
     )) {
-      start({ recovery, persistRecovery: true, recovering: true, createdAt: Date.now() });
+      start({ recovery, persistRecovery: true, mode: "recover", createdAt: Date.now() });
     }
   };
 
@@ -370,7 +349,12 @@ export default function createApplicationPlacementStartupRuntime(
         targetKind: entry.work.recovery.target.kind,
         phase,
         startedAt: entry.createdAt,
-        initialTurn: initialTurn(entry),
+        initialTurn: buildPlacementStartupInitialTurn({
+          recovery: entry.work.recovery,
+          attachments: entry.attachments,
+          createdAt: entry.createdAt,
+          checking: entry.work.kind === "checking",
+        }),
         ...(entry.work.kind !== "running"
           ? {
               ...(entry.work.recovery.phase === "paused"
@@ -404,7 +388,7 @@ export default function createApplicationPlacementStartupRuntime(
       start({
         recovery,
         persistRecovery: entry.persistRecovery,
-        recovering: true,
+        mode: "recover",
         createdAt: entry.createdAt,
       });
     },
@@ -416,7 +400,7 @@ export default function createApplicationPlacementStartupRuntime(
       if (entry.work.recovery.reason === "unconfirmed") {
         entry.work = { kind: "checking", recovery: entry.work.recovery };
         publish();
-        run(entry, entry.work.recovery, true);
+        run(entry, entry.work.recovery, "recover");
         return;
       }
       const { reason, error: _error, ...submission } = entry.work.recovery;
@@ -437,7 +421,7 @@ export default function createApplicationPlacementStartupRuntime(
       start({
         recovery,
         persistRecovery: entry.persistRecovery,
-        recovering: false,
+        mode: "retry",
         createdAt: entry.createdAt,
       });
     },

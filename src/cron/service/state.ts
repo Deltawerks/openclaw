@@ -165,7 +165,7 @@ export type CronServiceDeps = {
     sessionKey?: string;
     agentId?: string;
   }) => DeliveryContext | undefined;
-  /** Runs timer and startup work inside the owning Gateway's detached scope. */
+  /** Binds the Gateway for complete scheduled operations, including admission and settlement. */
   runSchedulerOwned?: <T>(run: () => Promise<T>) => Promise<T>;
   requestHeartbeat: (opts: HeartbeatWakeRequest) => void;
   /** Waits for the terminal result of a cron-owned coalesced heartbeat wake. */
@@ -298,6 +298,7 @@ type QueuedCronRunReservation = {
   markerAtMs: number;
   runReceipt: CronRunReceiptHandle;
   preserveWhenDisabled: boolean;
+  onExit?: boolean;
   activationPreviousLastError?: { value: string | undefined };
 };
 
@@ -333,8 +334,6 @@ export type CronServiceState = {
    * until the runtime can quarantine and sanitize the active store.
    */
   warnedInvalidPersistedJobKeys: Set<string>;
-  /** Availability is rechecked every tick; this set only bounds skip diagnostics. */
-  reportedUnavailableReaperAgentIds: Set<string>;
   pendingQuarantineConfigJobs: QuarantinedCronConfigJob[];
   lastQuarantineFailureWarnKey: string | null;
   storeLoadedAtMs: number | null;
@@ -364,7 +363,6 @@ export function createCronServiceState(deps: CronServiceDeps): CronServiceState 
     op: Promise.resolve(),
     warnedDisabled: false,
     warnedInvalidPersistedJobKeys: new Set<string>(),
-    reportedUnavailableReaperAgentIds: new Set<string>(),
     pendingQuarantineConfigJobs: [],
     lastQuarantineFailureWarnKey: null,
     storeLoadedAtMs: null,
@@ -465,7 +463,8 @@ export type CronAddOptions = {
 export type CronUpdateInput = CronJobPatch;
 /** Authenticated caller provenance used only when a tool policy is explicitly adopted. */
 export type CronUpdateOptions = {
-  scheduledToolPolicy?: CronScheduledToolPolicy;
+  /** Null forbids policy adoption; undefined retains in-process operator defaults. */
+  scheduledToolPolicy?: CronScheduledToolPolicy | null;
   toolsAllowProvenance?: CronToolsAllowProvenance;
   /** Restrict-only exec pin from the signed creator-turn identity. */
   toolsAllowExecTarget?: CronToolsAllowExecTarget;

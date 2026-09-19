@@ -8,7 +8,7 @@ import type {
 } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { UiSettings } from "../../app/settings.ts";
-import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../components/image-lightbox.types.ts";
 import type {
   ChatComposerMemoryFallback,
   ChatGuardianNotice,
@@ -47,6 +47,7 @@ export type ChatPageHost = ChatHost &
   PullRequestRefreshHost &
   SessionWorkspaceHost &
   BackgroundTasksHost & {
+    reviewQueuedMessageEdit?: () => void;
     chatMetadataIsPresented?: () => boolean;
     chatSubmissions: ApplicationContext["chatSubmissions"];
     password: string;

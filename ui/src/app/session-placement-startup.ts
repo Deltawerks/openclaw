@@ -1,5 +1,5 @@
 import { t } from "../i18n/index.ts";
-import type { ChatQueueItem } from "../lib/chat/chat-types.ts";
+import type { ChatAttachment, ChatQueueItem } from "../lib/chat/chat-types.ts";
 import { formatUiError } from "../lib/format-error.ts";
 import type { SessionCapability } from "../lib/sessions/index.ts";
 import {
@@ -8,12 +8,15 @@ import {
 } from "../lib/sessions/session-placement-recovery-storage-key.ts";
 import type {
   SessionPlacementRecovery,
+  SessionPlacementStartMode,
   SessionPlacementTarget,
 } from "../lib/sessions/session-placement-recovery.ts";
 import { showToast } from "../lib/toast.ts";
+import { restoreChatApiAttachments } from "../pages/chat/attachment-restoration.ts";
 import type { ApplicationChatSubmissions } from "./chat-submissions.ts";
 import { registerControlUiReloadGuard } from "./document-reload-guard.ts";
 import type { ApplicationGateway } from "./gateway.ts";
+import { buildPlacementStartupInitialTurn } from "./session-placement-initial-turn.ts";
 import {
   isStaleChunkImportError,
   reloadControlUiDocument,
@@ -44,8 +47,9 @@ export type ApplicationPlacementStartupStatus = {
 type PlacementStartupInput = {
   readonly recovery: SessionPlacementRecovery;
   readonly persistRecovery: boolean;
-  readonly recovering: boolean;
+  readonly mode: SessionPlacementStartMode;
   readonly createdAt: number;
+  readonly displayAttachments?: ChatAttachment[];
 };
 
 export type ApplicationPlacementStartupDependencies = {
@@ -97,7 +101,10 @@ export function createApplicationPlacementStartup(
     import("./session-placement-startup.runtime.ts"),
 ): ApplicationPlacementStartup {
   type PendingInput = { input: PlacementStartupInput; persisted: boolean };
-  const preRuntimeEntries = new Map<string, () => PendingInput | undefined>();
+  type PreparedPendingInput = PendingInput & {
+    input: PlacementStartupInput & { displayAttachments: ChatAttachment[] };
+  };
+  const preRuntimeEntries = new Map<string, () => PreparedPendingInput | undefined>();
   const { gateway } = dependencies;
   let disposed = false;
   let runtime: ApplicationPlacementStartupRuntime | undefined;
@@ -154,18 +161,18 @@ export function createApplicationPlacementStartup(
   );
 
   const resumeRecovery = (pending?: PendingInput, retry = false) => {
-    const input = pending?.input;
     if (disposed) {
       return;
     }
     stopGateway ??= gateway.subscribe(() => resumeRecovery());
-    if ((input || retry) && runtimeLoad?.error) {
+    if ((pending || retry) && runtimeLoad?.error) {
       runtimeLoad = undefined;
-      if (!input) {
+      if (!pending) {
         publish();
       }
     }
-    if (input) {
+    if (pending) {
+      const { input } = pending;
       if (runtime) {
         runtime.start(input);
         return;
@@ -173,7 +180,15 @@ export function createApplicationPlacementStartup(
       const sessionKey = input.recovery.sessionKey;
       preRuntimeEntries.delete(sessionKey);
       const current = capturePlacementStartupConnection(gateway, input.recovery);
-      preRuntimeEntries.set(sessionKey, () => (current() ? pending : undefined));
+      const prepared: PreparedPendingInput = {
+        ...pending,
+        input: {
+          ...input,
+          displayAttachments:
+            input.displayAttachments ?? restoreChatApiAttachments(input.recovery.attachments),
+        },
+      };
+      preRuntimeEntries.set(sessionKey, () => (current() ? prepared : undefined));
       // Each start adds at most one entry, so one oldest-entry deletion maintains the bound.
       if (preRuntimeEntries.size > 32) {
         preRuntimeEntries.delete(preRuntimeEntries.keys().next().value!);
@@ -199,7 +214,7 @@ export function createApplicationPlacementStartup(
       }
       return;
     }
-    if (client && !input) {
+    if (client && !pending) {
       // Keys hold admission until runtime validation, even if import finishes offline.
       // They carry neither payload content nor execution permission.
       if (!pendingStoredRecovery?.current()) {
@@ -261,13 +276,24 @@ export function createApplicationPlacementStartup(
       }
       const error = runtimeLoad?.error;
       const reloadBlocked = isStaleChunkImportError(error) && !canReload();
+      const displayError = reloadBlocked ? t("newSession.placementReloadBlocked") : error?.message;
       return readyClient()
         ? {
             sessionKey,
             ...pending,
             phase: error ? "failed" : "pending",
-            error: reloadBlocked ? t("newSession.placementReloadBlocked") : error?.message,
+            error: displayError,
             retryable: Boolean(error) && !reloadBlocked,
+            ...(input
+              ? {
+                  initialTurn: buildPlacementStartupInitialTurn({
+                    recovery: input.recovery,
+                    attachments: input.displayAttachments,
+                    createdAt: input.createdAt,
+                    error: displayError,
+                  }),
+                }
+              : {}),
             ...(reloadBlocked ? { discardAndReload: captureDiscardAndReload() } : {}),
           }
         : null;
@@ -311,8 +337,9 @@ export function createApplicationPlacementStartup(
         input: {
           recovery: paused,
           persistRecovery: pending?.persistRecovery ?? true,
-          recovering: true,
+          mode: "recover",
           createdAt: pending?.createdAt ?? Date.now(),
+          displayAttachments: pending?.displayAttachments,
         },
         persisted,
       });

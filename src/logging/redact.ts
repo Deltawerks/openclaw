@@ -25,6 +25,7 @@ import {
   type RedactionOrigins,
 } from "./redact-json.js";
 import {
+  getIndexedCaptureStart,
   iterateRedactMatches,
   parseRedactPatternSource,
   readRedactMatch,
@@ -147,29 +148,29 @@ const DEFAULT_REDACT_PREFILTER_SOURCES: string[] = [
   // URL userinfo and connection-string password slots (`scheme://user:pass@host`).
   String.raw`:\/\/[^\/\s:@]*:[^\s@]+@`,
   // Vendor token prefixes and webhook hosts, ordered like DEFAULT_REDACT_PATTERNS.
-  String.raw`sk-|gh[opsur]_|github_pat_|glpat-|gloas-|gldt-|glcbt-|glptt-|glft-|glimt-|glagent-|glwt-|glsoat-|glffct-|glrt-|glrtr-|GR1348941|_gitlab_session=|xox[baprs]-|xapp-|hooks\.slack\.com|discord|gsk_|AIza|ya29\.|1\/\/0|eyJ|pplx-|fal_|fc-|bb_live_|gAAAA|[sr]k_(?:live|test)_|\bSG\.|npm_|pypi-|do[opr]_v1_|dp\.(?:ct|pt|sa|st|scim|audit)\.|dckr_|bkua_|CCIPAT_|sbp_|dapi[0-9a-f]|dd[pw]_|glsa_|nfp_|CFPAT-|ATCTT3|ATATT|ATBB|BBDC-|HRKU-|pat-(?:eu|na)1-|apify_api_|FlyV1|fio-u-|tvly-|exa_|syt_|retaindb_|mem0_|brv_|xai-|fw-|fw_|fpk_`,
+  String.raw`sk-|gh[opsur]_|github_pat_|glpat-|gloas-|gldt-|glcbt-|glptt-|glft-|glimt-|glagent-|glwt-|glsoat-|glffct-|glrt-|glrtr-|GR1348941|_gitlab_session=|xox[baprs]-|xapp-|hooks\.slack\.com|discord|gsk_|AIza|ya29\.|1\/\/0|eyJ|pplx-|fal_|fc-|bb_live_|gAAAA|[sr]k_(?:live|test)_|SG\.|npm_|pypi-|do[opr]_v1_|dp\.(?:ct|pt|sa|st|scim|audit)\.|dckr_|bkua_|CCIPAT_|sbp_|dapi[0-9a-f]|dd[pw]_|glsa_|nfp_|CFPAT-|ATCTT3|ATATT|ATBB|BBDC-|HRKU-|pat-(?:eu|na)1-|apify_api_|FlyV1|fio-u-|tvly-|exa_|syt_|retaindb_|mem0_|brv_|xai-|fw-|fw_|fpk_`,
   String.raw`(?:^|[^A-Za-z0-9_])(?:am_|sk_)`,
   String.raw`A[KS]IA[A-Z0-9]|AKID|LTAI|hf_|api_org_|r8_`,
   String.raw`\bbot\d{6,}:|\b\d{6,}:[A-Za-z0-9_-]{20,}`,
   // Obfuscated form/URL keys: percent escapes can rewrite any key letter, while plus or
   // invisible splices break the literal key-name triggers above mid-word. After a splice the
   // tail may mix further splices with key characters (e.g. an interior plus a trailing
-  // filler), but at least one key character must follow a splice so bare `+=` or line-leading
+  // filler). Require a key character before or after a splice so bare `+=` or line-leading
   // `===` separators do not trip the fast path.
-  String.raw`%[0-9A-Fa-f]{2}[A-Za-z0-9_%.-]*=`,
+  String.raw`%[0-9A-Fa-f]{2}[${FORM_BODY_KEY_INVISIBLE_CHARS}+A-Za-z0-9_%.-]*=`,
   // Search at the required assignment separator, not at every invisible character.
   // Look behind it to retain the same obfuscated-key language without rescanning blank runs.
-  String.raw`=(?<=(?:\+|[${FORM_BODY_KEY_INVISIBLE_CHARS}])(?:[${FORM_BODY_KEY_INVISIBLE_CHARS}+]*[A-Za-z0-9_%.-])+[${FORM_BODY_KEY_INVISIBLE_CHARS}+]*=)`,
+  String.raw`=(?<=(?:\+|[${FORM_BODY_KEY_INVISIBLE_CHARS}])(?:[${FORM_BODY_KEY_INVISIBLE_CHARS}+]*[A-Za-z0-9_%.-])+[${FORM_BODY_KEY_INVISIBLE_CHARS}+]*=)|=(?<=[A-Za-z0-9_%.-][${FORM_BODY_KEY_INVISIBLE_CHARS}+]+=)`,
 ];
 const DEFAULT_REDACT_PREFILTER_RE = new RegExp(
   `(?:${DEFAULT_REDACT_PREFILTER_SOURCES.join("|")})`,
   "iu",
 );
 
-// Whole decoded fields also admit prefixes whose boundaries differ under Unicode case folding.
+// Whole-context rules admit prefixes whose boundaries differ under Unicode case folding.
 // Keep the shared text probe unchanged: its chunked matching has separate boundary semantics.
-const DECODED_REDACT_EXTRA_TRIGGERS_RE =
-  /JWT|SG\.|Bearer\s+|am_|sk_|(?<!\d)\d{6,}:[A-Za-z0-9_-]{20,}/i;
+const FULL_CONTEXT_REDACT_EXTRA_TRIGGERS_RE =
+  /JWT|Bearer\s+|am_|sk_|(?<!\d)\d{6,}:[A-Za-z0-9_-]{20,}/i;
 
 type RedactOptions = {
   mode?: RedactSensitiveMode;
@@ -622,47 +623,16 @@ type SecretCaptureSelection = {
 };
 
 function selectSecretCapture(match: string, groups: string[]): SecretCaptureSelection {
-  const tokens = groups
-    .map((value, index) => ({ index, value }))
-    .filter(({ value }) => typeof value === "string" && value.length > 0);
-  const selected = (tokens.length > 1 ? tokens[tokens.length - 1] : tokens[0]) ?? {
-    index: -1,
-    value: match,
-  };
-  return {
-    ...selected,
-    captureCount: tokens.length,
-  };
-}
-
-function getIndexedCaptureStart(
-  pattern: ResolvedRedactPattern,
-  input: string,
-  match: string,
-  matchOffset: number,
-  captureIndex: number,
-): number | null {
-  if (!(pattern instanceof RegExp) || matchOffset < 0 || !input) {
-    return null;
-  }
-  try {
-    const flags = pattern.flags.includes("d") ? pattern.flags : `${pattern.flags}d`;
-    const indexedPattern = new RegExp(pattern.source, flags);
-    indexedPattern.lastIndex = matchOffset;
-    const indexedMatch = indexedPattern.exec(input) as
-      | (RegExpExecArray & { indices?: Array<[number, number] | undefined> })
-      | null;
-    const captureIndices = indexedMatch?.indices?.[captureIndex + 1];
-    if (!indexedMatch || indexedMatch.index !== matchOffset || indexedMatch[0] !== match) {
-      return null;
+  const selected = { index: -1, value: match, captureCount: 0 };
+  for (let index = 0; index < groups.length; index++) {
+    const value = groups[index];
+    if (typeof value === "string" && value.length > 0) {
+      selected.index = index;
+      selected.value = value;
+      selected.captureCount++;
     }
-    if (!captureIndices) {
-      return null;
-    }
-    return captureIndices[0] - matchOffset;
-  } catch {
-    return null;
   }
+  return selected;
 }
 
 function getSecretCaptureStart(
@@ -679,15 +649,15 @@ function getSecretCaptureStart(
     matchOffset,
     selected.index,
   );
+  if (indexedTokenStart !== null) {
+    return indexedTokenStart;
+  }
   const preferFirstCapture =
     pattern instanceof RegExp &&
     selected.captureCount === 1 &&
     selected.index >= 0 &&
     hasBackreferenceToGroup(pattern, selected.index + 1);
-  return (
-    indexedTokenStart ??
-    (preferFirstCapture ? match.indexOf(selected.value) : match.lastIndexOf(selected.value))
-  );
+  return preferFirstCapture ? match.indexOf(selected.value) : match.lastIndexOf(selected.value);
 }
 
 function getRedactionEdit(
@@ -810,6 +780,10 @@ export function redactText(
 
 function couldMatchDefaultRedactPatterns(text: string): boolean {
   return DEFAULT_REDACT_PREFILTER_RE.test(text) || AWS_SECRET_ACCESS_KEY_MATCHER.couldMatch(text);
+}
+
+function couldMatchDefaultFullContextPatterns(text: string): boolean {
+  return couldMatchDefaultRedactPatterns(text) || FULL_CONTEXT_REDACT_EXTRA_TRIGGERS_RE.test(text);
 }
 
 function markPatternMatchRedaction(
@@ -1325,10 +1299,10 @@ function getTextRecordEdits(
 
 function getLegacyFieldRecordEdits(
   field: RedactionField,
-  original: string,
+  value: string,
   beforeConversion = false,
 ): RedactionEdit[] {
-  const { key, value, path, objectPath } = field;
+  const { key, value: original, path, objectPath } = field;
   if (field.isKey || !field.origin.structured || !field.string) {
     return [];
   }
@@ -1457,10 +1431,7 @@ function prepareFileToJsonReceivers(
           );
         }
       }
-      return applyRedactionEdits(
-        current,
-        getLegacyFieldRecordEdits({ ...field, value: current }, value, true),
-      );
+      return applyRedactionEdits(current, getLegacyFieldRecordEdits(field, current, true));
     }
     if (value === null || typeof value !== "object") {
       return decode &&
@@ -1501,15 +1472,18 @@ function prepareFileToJsonReceivers(
   return { record: visit(record, "", [], true, false), decoded };
 }
 
+type LogRecordRedactionOptions = {
+  format?: "file" | "console";
+  deriveMessage?: (record: Record<string, unknown>) => RedactionMessage | undefined;
+  decodedOptions?: ResolvedRedactOptions;
+};
+
 /** Converts native values once and applies configured and structural protection before output. */
-export function redactLogRecordForTransport(
+function redactLogRecord<Result>(
   record: Record<string, unknown>,
-  options: {
-    format?: "file" | "console";
-    deriveMessage?: (record: Record<string, unknown>) => RedactionMessage | undefined;
-    decodedOptions?: ResolvedRedactOptions;
-  } = {},
-): Record<string, unknown> {
+  options: LogRecordRedactionOptions,
+  finish: (redacted: string, canonical: string | undefined) => Result,
+): Result {
   const finishMeasurement = startRedactionMeasurement("log-record");
   let outcome: "ok" | "error" = "error";
   let inputChars: number | undefined;
@@ -1595,11 +1569,22 @@ export function redactLogRecordForTransport(
     }
     const serialized = message ? JSON.stringify(materialized) : json;
     const decodedPatterns = options.decodedOptions?.patterns ?? resolved.patterns;
-    const result: Record<string, unknown> = JSON.parse(
+    const result = finish(
       redactJsonRecord(
         serialized,
         origins,
-        [decodedPatterns, [...preparationPatterns, ...resolved.patterns]],
+        [
+          [{ patterns: decodedPatterns }],
+          [
+            { patterns: preparationPatterns },
+            {
+              patterns: resolved.patterns,
+              ...(resolved.patterns === defaultResolvedPatterns
+                ? { couldMatch: couldMatchDefaultFullContextPatterns }
+                : {}),
+            },
+          ],
+        ],
         (match, pattern, project) => getRedactionEdit(match, pattern, undefined, project),
         options.format === "console" ? () => [] : getLegacyFieldRecordEdits,
         (field) => getFieldRecordEdits(field, resolved.mode),
@@ -1611,16 +1596,34 @@ export function redactLogRecordForTransport(
               field.origin.primitiveMask ||
               isPublicShareIdPath(field.path)) ||
           (decodedPatterns === defaultResolvedPatterns &&
-            !couldMatchDefaultRedactPatterns(currentValue) &&
-            !DECODED_REDACT_EXTRA_TRIGGERS_RE.test(currentValue)),
+            !couldMatchDefaultFullContextPatterns(currentValue)),
         message,
       ),
+      // Native conversion can preserve proxy key order; only the materialized tree is canonical.
+      message ? serialized : undefined,
     );
     outcome = "ok";
     return result;
   } finally {
     finishMeasurement?.(outcome, inputChars);
   }
+}
+
+export function redactLogRecordForTransport(
+  record: Record<string, unknown>,
+  options: LogRecordRedactionOptions = {},
+): Record<string, unknown> {
+  return redactLogRecord(record, options, (redacted) => JSON.parse(redacted));
+}
+
+export function serializeRedactedFileLogRecord(
+  record: Record<string, unknown>,
+  options: Omit<LogRecordRedactionOptions, "format"> = {},
+): string {
+  return redactLogRecord(record, options, (redacted, canonical) =>
+    // Key edits can collide or reorder integer keys; edited UTF-16 may need escaping.
+    redacted === canonical ? redacted : JSON.stringify(JSON.parse(redacted)),
+  );
 }
 
 export function redactModelVisibleSecrets<T>(value: T): T {
@@ -1643,7 +1646,7 @@ export function redactSensitiveLines(
   return redactJsonRecord(
     lines.join("\n"),
     { value: { structured: false, primitiveMask: false }, children: new Map() },
-    [[], [...preparationPatterns, ...resolved.patterns]],
+    [[], [{ patterns: [...preparationPatterns, ...resolved.patterns] }]],
     (match, pattern, project) => getRedactionEdit(match, pattern, undefined, project),
     () => [],
     () => [],
