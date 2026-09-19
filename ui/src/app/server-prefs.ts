@@ -7,7 +7,11 @@ import type { ConfigPatchAck } from "../lib/config/config-gateway-operations.ts"
 import type { RuntimeConfigCapability } from "../lib/config/runtime-config-capability.ts";
 import type { ApplicationGatewaySnapshot } from "./gateway.ts";
 import { hasOperatorWriteAccess } from "./operator-access.ts";
-import { requestServerUiPrefReset, resetServerUiPrefIntent } from "./server-prefs-intent.ts";
+import {
+  requestServerUiPrefReset,
+  resetServerUiPrefIntent,
+  selectThemeSettings,
+} from "./server-prefs-intent.ts";
 import {
   loadProfileAppearancePrefs,
   rememberProfileAppearanceIdentity,
@@ -261,6 +265,10 @@ export function resetServerUiPref<K extends ResettableServerUiPrefKey>(
   profileId?: string | null,
 ): UiSettings {
   const specification = SYNCED_PREFS[key];
+  const applyReset = (patch: Partial<UiSettings>) =>
+    key === "theme" && patch.theme !== undefined
+      ? selectThemeSettings(patch.theme)
+      : patchSettings(patch);
   // Disconnected clients retain their last known profile for local cancellation.
   const activeProfile = isAppearancePref(key)
     ? (profileId ?? resolveProfileAppearanceProfileId(scope))
@@ -277,14 +285,21 @@ export function resetServerUiPref<K extends ResettableServerUiPrefKey>(
     if (!write) {
       throw new Error(`Server UI preference cannot restore a retained local value: ${key}`);
     }
-    cancelPendingKeys(effectiveScope, [key]);
+    const patch = write(state.resetValue);
+    const keys: SyncedPrefKey[] =
+      key === "theme" && patch.theme !== loadSettings().theme
+        ? [key, "accent", "fontUi", "fontChat"]
+        : [key];
+    cancelPendingKeys(effectiveScope, keys);
     // Edits made after disconnect lose the profile and queue in the Gateway scope.
     if (effectiveScope !== scope) {
-      cancelPendingKeys(scope, [key]);
+      cancelPendingKeys(scope, keys);
     }
-    updateRetainedLocalKeys(effectiveScope, [key], false);
-    requestServerUiPrefReset(key, "device-local");
-    return patchSettings(write(state.resetValue));
+    updateRetainedLocalKeys(effectiveScope, keys, false);
+    for (const resetKey of keys) {
+      requestServerUiPrefReset(resetKey, "device-local");
+    }
+    return applyReset(patch);
   }
   requestServerUiPrefReset(key, "server");
   // The resolved state owns the reset target, including the Gateway fallback
@@ -295,10 +310,10 @@ export function resetServerUiPref<K extends ResettableServerUiPrefKey>(
       | ((value: SyncedPrefValue<K> | undefined) => Partial<UiSettings>)
       | undefined;
     if (write) {
-      return patchSettings(write(state.resetValue));
+      return applyReset(write(state.resetValue));
     }
   }
-  return patchSettings(reset(loadSettings()));
+  return applyReset(reset(loadSettings()));
 }
 export function applyServerUiPrefs(
   configObject: unknown,

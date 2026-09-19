@@ -149,7 +149,12 @@ describe("server pref extraction", () => {
 
     const beforeReset = loadSettings();
     const afterReset = resetServerUiPref("theme", state);
-    expect(changedServerUiPrefs(beforeReset, afterReset)).toEqual({ theme: null });
+    expect(changedServerUiPrefs(beforeReset, afterReset)).toEqual({
+      theme: null,
+      accent: "theme",
+      fontUi: null,
+      fontChat: null,
+    });
   });
 });
 

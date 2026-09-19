@@ -170,7 +170,12 @@ describe("ConfigPage synced preference provenance", () => {
     page.resetSyncedAppearancePref("theme");
 
     expect(page.settings.theme).toBe("dash");
-    expect(changedServerUiPrefs(beforeReset, page.settings)).toEqual({ theme: null });
+    expect(changedServerUiPrefs(beforeReset, page.settings)).toEqual({
+      theme: null,
+      accent: "theme",
+      fontUi: null,
+      fontChat: null,
+    });
   });
 
   it.each([

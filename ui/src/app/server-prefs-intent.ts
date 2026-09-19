@@ -10,6 +10,7 @@ import type { ThemeName } from "./theme.ts";
 
 const requestedServerUiPrefResets = new Set<SyncedPrefKey>();
 const requestedDeviceLocalPrefResets = new Set<SyncedPrefKey>();
+const requestedUiPrefWrites = new Set<SyncedPrefKey>();
 
 export function requestServerUiPrefReset(
   key: SyncedPrefKey,
@@ -23,23 +24,26 @@ export function requestServerUiPrefReset(
 export function resetServerUiPrefIntent(): void {
   requestedServerUiPrefResets.clear();
   requestedDeviceLocalPrefResets.clear();
+  requestedUiPrefWrites.clear();
 }
 
 /** Synced-key delta between two local settings snapshots, for the push path. */
 export function changedServerUiPrefs(previous: UiSettings, next: UiSettings): ServerUiPrefs | null {
   const prefs: ServerUiPrefs = {};
   for (const key of SYNCED_PREF_KEYS) {
+    const explicitWrite = requestedUiPrefWrites.delete(key);
+    const serverReset = requestedServerUiPrefResets.delete(key);
     if (requestedDeviceLocalPrefResets.delete(key)) {
       continue;
     }
-    if (requestedServerUiPrefResets.delete(key)) {
+    if (serverReset) {
       prefs[key] = null;
       continue;
     }
     const specification = SYNCED_PREFS[key];
     const previousValue = specification.local(previous);
     const nextValue = specification.local(next);
-    if (prefValuesEqual(previousValue, nextValue)) {
+    if (!explicitWrite && prefValuesEqual(previousValue, nextValue)) {
       continue;
     }
     if (nextValue === undefined) {
@@ -64,6 +68,9 @@ export function selectThemeSettings(
   }
   // Clear even unresolved profile values: a missing boot mirror is not evidence
   // that the server has no font override. Send these with the theme in one batch.
+  // Carry the whole selection intent even if another tab already mirrors this
+  // marker, so a read-only selection can cancel every older queued design edit.
+  requestedUiPrefWrites.add("accent");
   requestedServerUiPrefResets.add("fontUi");
   requestedServerUiPrefResets.add("fontChat");
   return patchSettings({

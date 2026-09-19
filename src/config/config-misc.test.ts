@@ -1,5 +1,6 @@
 // Covers miscellaneous config schema defaults and validation cases.
 import { describe, expect, it } from "vitest";
+import { configAccentCases } from "./config-accent.test-support.js";
 import {
   getConfigValueAtPath,
   parseConfigPath,
@@ -519,6 +520,12 @@ describe("ui.seamColor", () => {
   it("rejects invalid hex length", () => {
     const res = validateConfigObject({ ui: { seamColor: "#FF4500FF" } });
     expect(res.ok).toBe(false);
+  });
+});
+
+describe("ui.prefs.accent", () => {
+  it.each(configAccentCases)("validates %s", (_label, accent, valid) => {
+    expect(validateConfigObject({ ui: { prefs: { accent } } }).ok).toBe(valid);
   });
 });
 

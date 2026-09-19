@@ -401,8 +401,15 @@ describe("profile-bound appearance preferences", () => {
         return { status: "ok", entries };
       }
       expect(method).toBe("users.prefs.set");
-      expect(params).toEqual({ entries: { [preferenceKey]: null } });
-      entries = {};
+      expect(params).toEqual({
+        entries: {
+          [preferenceKey]: null,
+          ...(key === "theme"
+            ? { "ui.accent": "theme", "ui.fontUi": null, "ui.fontChat": null }
+            : {}),
+        },
+      });
+      entries = key === "theme" ? { "ui.accent": "theme" } : {};
       return { status: "ok" };
     });
     const writer = createServerPrefsWriter(request, scope, true, { ok: true }, false);
@@ -416,7 +423,10 @@ describe("profile-bound appearance preferences", () => {
     const next = resetServerUiPref(key, state, scope, profileId);
     expect(next[key]).toBe(fallback);
     const delta = changedServerUiPrefs(previous, next);
-    expect(delta).toEqual({ [key]: null });
+    expect(delta).toEqual({
+      [key]: null,
+      ...(key === "theme" ? { accent: "theme", fontUi: null, fontChat: null } : {}),
+    });
     const committed = vi.fn();
     pushServerUiPrefs(writer, delta!, { profileId, canWrite: true, afterCommit: committed });
     await waitForFast(() => expect(committed).toHaveBeenCalledOnce());
@@ -426,7 +436,7 @@ describe("profile-bound appearance preferences", () => {
     delayed.resolve({ status: "ok", entries: savedEntries });
     await pending;
     expect(loadSettings()[key]).toBe(fallback);
-    expect(entries).toEqual({});
+    expect(entries).toEqual(key === "theme" ? { "ui.accent": "theme" } : {});
 
     resetServerUiPrefsSync();
     const reloaded = createServerPrefsWriter(request, scope);
@@ -521,12 +531,21 @@ describe("profile-bound appearance preferences", () => {
       const state = resolveServerUiPrefState(config, key, scope, previous, { profileId });
       const next = resetServerUiPref(key, state, scope, profileId);
       expect(next[key]).toBe(resetValue);
-      expect(changedServerUiPrefs(previous, next)).toEqual({ [key]: null });
+      const delta = changedServerUiPrefs(previous, next);
+      expect(delta).toEqual({
+        [key]: null,
+        ...(key === "theme" ? { accent: "theme", fontUi: null, fontChat: null } : {}),
+      });
       const afterCommit = vi.fn();
-      pushServerUiPrefs(writer, { [key]: null }, { profileId, canWrite: true, afterCommit });
+      pushServerUiPrefs(writer, delta!, { profileId, canWrite: true, afterCommit });
       await waitForFast(() => expect(afterCommit).toHaveBeenCalledOnce());
       expect(request).toHaveBeenLastCalledWith("users.prefs.set", {
-        entries: { [preferenceKey]: null },
+        entries: {
+          [preferenceKey]: null,
+          ...(key === "theme"
+            ? { "ui.accent": "theme", "ui.fontUi": null, "ui.fontChat": null }
+            : {}),
+        },
       });
       expect(
         resolveServerUiPrefState(config, key, scope, loadSettings(), { profileId }),

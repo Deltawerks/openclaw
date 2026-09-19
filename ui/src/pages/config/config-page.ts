@@ -866,8 +866,7 @@ export class ConfigPage extends OpenClawLightDomElement {
     context?: Parameters<typeof startThemeTransition>[0]["context"],
   ) {
     const preference = this.currentSyncedPref("theme");
-    const reset =
-      preference.overridden && theme === preference.resetValue && theme === this.settings.theme;
+    const reset = preference.overridden && theme === preference.resetValue;
     this.customThemeImportOwner.recordActivation(reset ? null : theme);
     startThemeTransition({
       currentTheme: resolveTheme(this.settings.theme, this.settings.themeMode),
