@@ -1,5 +1,6 @@
 import type { AuthProfileRowRead, UserModelAuthProfile } from "../agents/auth-profiles/types.js";
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
+import type { AuditEventListQuery, AuditEventListPage } from "../audit/audit-event-types.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
@@ -40,6 +41,7 @@ import type {
 } from "../sessions/session-state-events.kernel.js";
 import type { SessionUpstreamLink } from "../sessions/session-upstream-links.kernel.js";
 import type { DeviceAuthEntry } from "../shared/device-auth.js";
+import type { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
 import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
 import type { TaskRegistryWorkerOperations } from "../tasks/task-registry.worker-contract.js";
 import type { TranscriptReadOperations } from "../transcripts/store-worker-contract.js";
@@ -47,6 +49,7 @@ import type { AgentProvenance } from "./agent-provenance.types.js";
 import type { PreparedBackupRunRecord } from "./backup-run-records.kernel.js";
 import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
+import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
 export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
@@ -55,6 +58,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   HostedCatalogSnapshotWorkerOperations &
   PluginStateWorkerOperations &
   UserPreferenceWorkerOperations &
+  UserProfileWorkerOperations &
   CronStoreWorkerOperations &
   CronStoreSaveWorkerOperations &
   FleetRegistryWriteOperations &
@@ -62,6 +66,14 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
   TaskRegistryWorkerOperations & {
+    "skillUploads.commit": {
+      input: Parameters<typeof commitSkillUploadInDatabase>[0];
+      output: ReturnType<typeof commitSkillUploadInDatabase>;
+    };
+    "audit.events.list": {
+      input: AuditEventListQuery;
+      output: AuditEventListPage;
+    };
     "deviceAuth.list": { input: { deviceId: string }; output: DeviceAuthEntry[] };
     "deviceAuth.read": {
       input: Parameters<typeof deviceAuth.readDeviceAuthTokenObservationFromDatabase>[1] & {
