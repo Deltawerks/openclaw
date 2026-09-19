@@ -22,6 +22,7 @@ import {
 import { renderUpdateRunReport } from "../../infra/update-run-report.js";
 import { defaultRuntime } from "../../runtime.js";
 import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
+import { registerCurrentCoreRuntimeRefreshTests } from "./update-command-post-update-runtime-refresh.test-support.js";
 import { finishUpdate, type FinishUpdateParams } from "./update-command-post-update.js";
 import { taskRecovery } from "./update-command-post-update.test-support.js";
 import { repairUpdateService } from "./update-command-repair-service.js";
@@ -340,79 +341,7 @@ describe("post-activation repair after rollback refusal or failure", () => {
     },
   );
 
-  it.each([
-    { mode: "refresh", changed: false, activate: true },
-    { mode: "refresh", changed: true, activate: true },
-    { mode: "healthy", changed: false, activate: false },
-    { mode: "no-restart", changed: false, activate: false },
-    { mode: "not-running", changed: false, activate: false },
-    { mode: "absent", changed: false, activate: false },
-  ] as const)(
-    "activates current-core runtime refresh exactly once ($mode, changed=$changed)",
-    async ({ mode, changed, activate }) => {
-      const params = fixture();
-      params.coreAlreadyCurrent = true;
-      params.mutationStarted = false;
-      params.result.status = "skipped";
-      params.result.reason = "already-current";
-      params.result.before = params.result.after;
-      params.serviceRuntimeRefreshRequired = mode !== "healthy";
-      params.packageUpdateNodeRunner = "/supported-node/bin/node";
-      params.shouldRestart = mode !== "no-restart";
-      params.preManagedServiceStop!.stopped = false;
-      params.preManagedServiceStop!.running = mode !== "not-running" && mode !== "absent";
-      if (mode === "absent") {
-        params.preManagedServiceStop!.serviceUpdateVerdict = { kind: "absent" };
-      }
-      const order: string[] = [];
-      mocks.readService.mockResolvedValue({
-        installed: true,
-        loadState: { status: "loaded" },
-        running: true,
-        runtime: { status: "running", pid: 4321 },
-        env: params.ownedManagedUpdateEnv!,
-        command: {
-          programArguments: [process.execPath, "/candidate/dist/entry.js", "gateway"],
-          environment: Object.fromEntries(
-            Object.entries(params.ownedManagedUpdateEnv!).filter(
-              (entry): entry is [string, string] => entry[1] !== undefined,
-            ),
-          ),
-        },
-      });
-      mocks.revalidate.mockImplementation(async () => {
-        order.push("inspect");
-        return {
-          kind: "owned",
-          root: "/candidate",
-          fingerprint: "fixture",
-          refreshDefinition: true,
-        };
-      });
-      mocks.converge.mockImplementation(async (input: { result: FinishUpdateParams["result"] }) => {
-        order.push("converge");
-        return {
-          resultWithPostUpdate: {
-            ...input.result,
-            postUpdate: { plugins: { status: "ok", changed } },
-          },
-          postUpdateConfigSnapshot: params.configSnapshot,
-        };
-      });
-      mocks.restart.mockImplementation(async () => {
-        order.push("restart");
-        return "ok";
-      });
-      mocks.healthy = true;
-      await finishUpdate(params);
-      expect(mocks.restart).toHaveBeenCalledTimes(activate ? 1 : 0);
-      if (activate) {
-        expect(order).toEqual(["inspect", "converge", "inspect", "restart"]);
-        expect(mocks.restart.mock.calls[0]?.[0].refreshServiceEnv).toBe(true);
-        expect(mocks.restart.mock.calls[0]?.[0].nodeRunner).toBe("/supported-node/bin/node");
-      }
-    },
-  );
+  registerCurrentCoreRuntimeRefreshTests(fixture, mocks);
 
   it("terminalizes a failed final native read after current-core plugin parking", async () => {
     const params = fixture();

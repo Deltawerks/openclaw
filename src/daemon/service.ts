@@ -1,10 +1,6 @@
 /** Platform service registry and shared gateway service start/repair logic. */
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { assertGatewayServiceMutationAllowed } from "../infra/gateway-supervision.js";
-import { parseTcpPort, parseTcpPortFromArgs } from "../infra/tcp-port.js";
 import { assertFutureConfigActionAllowed } from "./future-config-guard.js";
 import {
   installLaunchAgent,
@@ -39,7 +35,6 @@ import {
 } from "./schtasks.js";
 import { mergeGatewayServiceEnv } from "./service-env-merge.js";
 import { ServiceInspectionError } from "./service-inspection-error.js";
-import { resolveServiceEntrypoint } from "./service-layout.js";
 import {
   withGatewayServiceOperationLock,
   withSystemdServiceReadBinding,
@@ -49,6 +44,7 @@ import {
   createServiceRuntimeInspectionFailure,
   type GatewayServiceRuntime,
 } from "./service-runtime.js";
+import { collectGatewayServiceStartRepairIssues } from "./service-start-repair.js";
 import type {
   GatewayServiceCommandConfig,
   GatewayServiceCommandInspection,
@@ -81,6 +77,7 @@ import {
   stopSystemdService,
   uninstallSystemdService,
 } from "./systemd.js";
+export { formatGatewayServiceStartRepairIssues } from "./service-start-repair.js";
 export type {
   GatewayServiceCommandConfig,
   GatewayServiceInstallArgs,
@@ -139,67 +136,6 @@ type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
   validateEnvBeforeStatusRead?: (env: GatewayServiceEnv) => void;
 };
 
-const TEMP_PROGRAM_ROOTS = [os.tmpdir(), "/tmp", "/private/tmp", "/var/tmp"].map((entry) =>
-  path.resolve(entry),
-);
-function pathIsSameOrChild(candidate: string, parent: string): boolean {
-  return candidate === parent || candidate.startsWith(`${parent}${path.sep}`);
-}
-
-function isTemporaryProgramPath(value: string | undefined): boolean {
-  if (!value || !path.isAbsolute(value)) {
-    return false;
-  }
-  const resolved = path.resolve(value);
-  return TEMP_PROGRAM_ROOTS.some((root) => pathIsSameOrChild(resolved, root));
-}
-
-function isMissingProgramPath(value: string | undefined): boolean {
-  if (!value || !path.isAbsolute(value)) {
-    return false;
-  }
-  return !fs.existsSync(value);
-}
-
-function collectGatewayServiceStartRepairIssues(
-  state: GatewayServiceState,
-  expectedPort?: number,
-): GatewayServiceStartRepairIssue[] {
-  const command = state.command;
-  if (state.loadState.status !== "loaded" || !command) {
-    return [];
-  }
-  const issues: GatewayServiceStartRepairIssue[] = [];
-  const servicePort =
-    parseTcpPortFromArgs(command.programArguments) ??
-    parseTcpPort(command.environment?.OPENCLAW_GATEWAY_PORT ?? "");
-  if (expectedPort !== undefined && servicePort !== null && servicePort !== expectedPort) {
-    issues.push({
-      code: "port-mismatch",
-      message: `service port ${servicePort} does not match current gateway config port ${expectedPort}`,
-    });
-  }
-  for (const candidate of new Set([
-    command.programArguments[0],
-    resolveServiceEntrypoint(command),
-  ])) {
-    if (isTemporaryProgramPath(candidate)) {
-      issues.push({
-        code: "temporary-program",
-        message: `service command points at a temporary path: ${candidate}`,
-      });
-      continue;
-    }
-    if (isMissingProgramPath(candidate)) {
-      issues.push({
-        code: "missing-program",
-        message: `service command points at a missing path: ${candidate}`,
-      });
-    }
-  }
-  return issues;
-}
-
 /** Reads the installed service and reports definition drift that must be repaired before launch. */
 export async function inspectGatewayServiceStartRepair(
   service: GatewayService,
@@ -208,12 +144,6 @@ export async function inspectGatewayServiceStartRepair(
 ): Promise<{ state: GatewayServiceState; issues: GatewayServiceStartRepairIssue[] }> {
   const state = await readGatewayServiceState(service, args);
   return { state, issues: collectGatewayServiceStartRepairIssues(state, expectedPort) };
-}
-
-export function formatGatewayServiceStartRepairIssues(
-  issues: GatewayServiceStartRepairIssue[],
-): string {
-  return issues.map((issue) => issue.message).join("; ");
 }
 
 export async function readGatewayServiceLoadState(

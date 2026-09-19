@@ -109,6 +109,7 @@ function reportPackageRuntimeSelection(
 export async function preparePackageUpdateRuntime(params: {
   root: string;
   managedServiceRoot?: string;
+  managedServiceNodeRunner?: string;
   managedService?: PreManagedServiceStop;
   packageUpdateNodeRunner?: string;
   packageInstallEnv?: NodeJS.ProcessEnv;
@@ -122,7 +123,10 @@ export async function preparePackageUpdateRuntime(params: {
   channel?: import("../../infra/update-channels.js").UpdateChannel;
   requestedChannel?: import("../../infra/update-channels.js").UpdateChannel | null;
 }) {
-  const managedServiceNodeRunner = params.managedService?.serviceNodeRunner;
+  // Discovery can retain the service runner before schema inspection has a service context.
+  // Its absence there must not turn a no-restart or foreign service into a provisionable runtime.
+  const managedServiceNodeRunner =
+    params.managedService?.serviceNodeRunner ?? params.managedServiceNodeRunner;
   const canRefreshManagedServiceNode =
     params.shouldRestart &&
     params.managedService?.serviceUpdateVerdict?.kind === "owned" &&

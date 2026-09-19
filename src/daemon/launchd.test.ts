@@ -10,6 +10,16 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { GATEWAY_SERVICE_KIND, GATEWAY_SERVICE_MARKER } from "./constants.js";
 import type { ExecResult } from "./exec-file.js";
 import {
+  capturePassThroughOutput,
+  createDefaultLaunchdEnv,
+  createLaunchdEnvWithGatewayPort,
+  createTestLaunchAgentPlist,
+  launchAgentFixture,
+  defaultLaunchAgentFixture,
+  launchAgentControlFixture,
+  defaultProgramArguments,
+} from "./launchd-install.test-support.js";
+import {
   LAUNCH_AGENT_ENV_WRAPPER_SHELL,
   LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS,
 } from "./launchd-plist.js";
@@ -129,8 +139,6 @@ const formatPortDiagnostics = vi.hoisted(() => vi.fn(() => ["Port 18789 is alrea
 const resolveGatewayServiceProbeHosts = vi.hoisted(() =>
   vi.fn<(_params?: unknown) => Promise<readonly string[]>>(async () => ["127.0.0.1"]),
 );
-const defaultProgramArguments = ["node", "-e", "process.exit(0)"];
-
 function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean): number {
   let count = 0;
   for (const item of items) {
@@ -146,26 +154,6 @@ function readPlistProgramArgumentStrings(plist: string): string[] {
   return Array.from((match?.[1] ?? "").matchAll(/<string>([\s\S]*?)<\/string>/gi)).map(
     (item) => item[1] ?? "",
   );
-}
-
-function createDefaultLaunchdEnv(): Record<string, string | undefined> {
-  return {
-    HOME: "/Users/test",
-    OPENCLAW_PROFILE: "default",
-  };
-}
-
-function createLaunchdEnvWithGatewayPort(port: string): Record<string, string | undefined> {
-  return { ...createDefaultLaunchdEnv(), OPENCLAW_GATEWAY_PORT: port };
-}
-
-function capturePassThroughOutput(
-  append: (text: string) => void,
-  encoding?: BufferEncoding,
-): PassThrough {
-  const stdout = new PassThrough();
-  stdout.on("data", (chunk: Buffer) => append(chunk.toString(encoding)));
-  return stdout;
 }
 
 function setLegacyGatewayLaunchAgentPlist(plistPath: string, extraLines: string[]): void {
@@ -206,40 +194,6 @@ async function installLaunchAgent(
   return await installLaunchAgentImpl(args);
 }
 
-function createTestLaunchAgentPlist(params: {
-  label: string;
-  programArguments: string[];
-  environment?: Record<string, string>;
-}): string {
-  const argsXml = params.programArguments.map((arg) => `      <string>${arg}</string>`).join("\n");
-  const envXml = params.environment
-    ? [
-        "    <key>EnvironmentVariables</key>",
-        "    <dict>",
-        ...Object.entries(params.environment).flatMap(([key, value]) => [
-          `      <key>${key}</key>`,
-          `      <string>${value}</string>`,
-        ]),
-        "    </dict>",
-      ].join("\n")
-    : "";
-  return [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<plist version="1.0">',
-    "  <dict>",
-    "    <key>Label</key>",
-    `    <string>${params.label}</string>`,
-    "    <key>ProgramArguments</key>",
-    "    <array>",
-    argsXml,
-    "    </array>",
-    envXml,
-    "  </dict>",
-    "</plist>",
-    "",
-  ].join("\n");
-}
-
 function setLaunchAgentPlist(
   env: Record<string, string | undefined>,
   label: string,
@@ -250,37 +204,6 @@ function setLaunchAgentPlist(
     `${env.HOME}/Library/LaunchAgents/${label}.plist`,
     createTestLaunchAgentPlist({ label, programArguments, environment }),
   );
-}
-
-type LaunchAgentInstallFixture = Parameters<typeof installLaunchAgentImpl>[0];
-type LaunchAgentInstallOverrides = Omit<
-  LaunchAgentInstallFixture,
-  "env" | "stdout" | "programArguments"
->;
-
-function launchAgentFixture(
-  env: LaunchAgentInstallFixture["env"],
-  programArguments: string[],
-  overrides: LaunchAgentInstallOverrides = {},
-): LaunchAgentInstallFixture {
-  return { env, stdout: new PassThrough(), programArguments, ...overrides };
-}
-
-function defaultLaunchAgentFixture(
-  env: LaunchAgentInstallFixture["env"],
-  overrides: LaunchAgentInstallOverrides = {},
-): LaunchAgentInstallFixture {
-  return launchAgentFixture(env, defaultProgramArguments, overrides);
-}
-
-type LaunchAgentControlFixture = Parameters<typeof stopLaunchAgent>[0] &
-  Parameters<typeof uninstallLaunchAgent>[0];
-
-function launchAgentControlFixture(
-  env: LaunchAgentControlFixture["env"],
-  overrides: Omit<LaunchAgentControlFixture, "env" | "stdout"> = {},
-): LaunchAgentControlFixture {
-  return { env, stdout: new PassThrough(), ...overrides };
 }
 
 async function runStopLaunchAgentWithFakeTimers(args: Parameters<typeof stopLaunchAgent>[0]) {

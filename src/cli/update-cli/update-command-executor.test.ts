@@ -28,6 +28,7 @@ import { runUtf8CommandWithTimeout } from "../../process/exec.js";
 import * as pidAlive from "../../shared/pid-alive.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
+import { registerExecutorRootOwnershipTests } from "./update-command-executor-roots.test-support.js";
 import {
   captureUpdateCommandExecutorAuthority,
   releaseUpdateCommandPreflightForHandoff,
@@ -138,81 +139,7 @@ describe("live update executor", () => {
     expect(createManagedHandoffLeaseStore().read(root)).toEqual({ kind: "absent" });
   });
 
-  it.each(["package", "service", "neither"] as const)(
-    "admits both roots before parent mutation and preserves an unrelated owner: %s busy",
-    async (busy) => {
-      const serviceRoot = path.join(root, "service-A");
-      const siblingRoot = path.join(root, "unrelated-C");
-      fs.mkdirSync(serviceRoot);
-      fs.mkdirSync(siblingRoot);
-      const store = createManagedHandoffLeaseStore();
-      const sibling = store.acquire(siblingRoot, "unrelated", { kind: "update" });
-      assert(sibling.kind === "acquired");
-      const busyRoot = busy === "package" ? root : serviceRoot;
-      const incumbent =
-        busy === "neither"
-          ? undefined
-          : store.acquire(busyRoot, "other-profile", { kind: "update" });
-      if (incumbent) {
-        assert(incumbent.kind === "acquired");
-      }
-      let mutated = false;
-      const work = withUpdateCommandExecutor(randomUUID(), async (executor) => {
-        const fence = await executor.enter(root, { serviceRoot });
-        expect(captureUpdateCommandExecutorAuthority(fence).installKey).toBe(root);
-        for (const admitted of [root, serviceRoot]) {
-          expect(store.acquire(admitted, "contender", { kind: "update" }).kind).toBe("busy");
-        }
-        await expect(executor.enter(root)).rejects.toThrow("installation changed");
-        expect(await executor.enter(root, { serviceRoot })).toBe(fence);
-        fence.assertCurrent();
-        mutated = true;
-      });
-      if (incumbent?.kind === "acquired") {
-        await expect(work).rejects.toThrow("owns");
-        expect(mutated).toBe(false);
-        expect(store.current(incumbent.lease)).toBe(true);
-        expect(store.release(incumbent.lease)).toBe(true);
-      } else {
-        await work;
-        expect(mutated).toBe(true);
-      }
-      expect(store.read(root)).toEqual({ kind: "absent" });
-      expect(store.read(serviceRoot)).toEqual({ kind: "absent" });
-      expect(store.current(sibling.lease)).toBe(true);
-      expect(store.release(sibling.lease)).toBe(true);
-    },
-  );
-
-  it("releases both preflight roots before helper admission and never reactivates them", async () => {
-    const serviceRoot = path.join(root, "service-A");
-    fs.mkdirSync(serviceRoot);
-    const store = createManagedHandoffLeaseStore();
-    await withUpdateCommandExecutor(randomUUID(), async (executor) => {
-      const fence = await executor.enter(root, { serviceRoot, preflight: true });
-      releaseUpdateCommandPreflightForHandoff(fence);
-      expect(fence.assertCurrent).toThrow("no longer current");
-      for (const admitted of [root, serviceRoot]) {
-        expect(store.read(admitted)).toEqual({ kind: "absent" });
-      }
-    });
-  });
-
-  it("invalidates the package fence if its service owner is replaced", async () => {
-    const serviceRoot = path.join(root, "service-A");
-    fs.mkdirSync(serviceRoot);
-    await expect(
-      withUpdateCommandExecutor(randomUUID(), async (executor) => {
-        const fence = await executor.enter(root, { serviceRoot });
-        replaceOwner(serviceRoot);
-        expect(fence.assertCurrent).toThrow("no longer current");
-      }),
-    ).rejects.toThrow();
-    expect(createManagedHandoffLeaseStore().read(serviceRoot)).toMatchObject({
-      kind: "current",
-      lease: { owner: "replacement" },
-    });
-  });
+  registerExecutorRootOwnershipTests(() => ({ root, replaceOwner }));
 
   it("recovery acquires a fresh owner without reactivating the original fence", async () => {
     const store = createManagedHandoffLeaseStore();
