@@ -49,21 +49,25 @@ export function selectMatchingSessionRows<T extends SessionRowScopeTarget>(
     indexes: { byKey, byStore, byAgent },
     scope,
   } = params;
+  const storePaths =
+    !query.key && query.storePath
+      ? (scope?.physicalPaths(query.storePath, query.agentId) ?? [query.storePath])
+      : undefined;
   const candidates = query.key
     ? byKey.get(`${kind}:${query.key}`)
-    : query.storePath
-      ? new Set(
-          (scope?.physicalPaths(query.storePath, query.agentId) ?? [query.storePath]).flatMap(
-            (storePath) => Array.from(byStore.get(storePath) ?? []),
-          ),
-        )
+    : storePaths
+      ? storePaths.length === 1
+        ? byStore.get(storePaths[0]!)
+        : new Set(storePaths.flatMap((storePath) => Array.from(byStore.get(storePath) ?? [])))
       : query.agentId
         ? byAgent.get(query.agentId)
         : rows.keys();
+  if (!candidates) {
+    return [];
+  }
   const matches = createSessionRowScopeMatcher(query, scope);
-  const ids = Array.from(candidates ?? []);
   const selected: T[] = [];
-  for (const id of ids) {
+  for (const id of candidates) {
     const row = rows.get(id);
     if (row !== undefined && matches(row)) {
       selected.push(row);

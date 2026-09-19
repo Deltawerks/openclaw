@@ -10,6 +10,7 @@ import { resetProcessRegistryForTests } from "../agents/bash-process-registry.te
 import * as nativeExecution from "../agents/subagents/registry/subagent-execution-observation.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
+import { claimAgentRunContext, resetAgentRunRegistryForTest } from "../infra/agent-run-registry.js";
 import { createSubagentTaskBackingDetail } from "./task-backing-records.js";
 import { getTaskExecutionObservation } from "./task-execution-observation.js";
 import { clearTaskActivity, recordTaskActivityEvent } from "./task-registry-activity.js";
@@ -57,6 +58,7 @@ function registerRun(record: TaskRecord, overrides: Partial<SubagentRunRecord> =
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
+  resetAgentRunRegistryForTest();
   for (const id of taskIds) {
     clearTaskActivity(id);
   }
@@ -70,8 +72,28 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("projects fixed task statuses without observing retained native executions", () => {
-  const statuses = ["queued", "succeeded", "failed", "timed_out", "cancelled", "lost"] as const;
+it.each(["agent:main:dashboard:stored", "global"])(
+  "resolves stored CLI task ownership without agentId for %s",
+  (sessionKey) => {
+    const runId = "stored-cli";
+    const record: TaskRecord = {
+      ...task(runId, "running"),
+      runtime: "cli",
+      childSessionKey: sessionKey,
+      detail: undefined,
+    };
+    for (const agentId of ["main", "other"]) {
+      resetAgentRunRegistryForTest();
+      claimAgentRunContext(runId, { sessionKey, agentId }, { trackOwner: true, ownsContext: true });
+      expect(getTaskExecutionObservation(record)).toEqual({
+        state: agentId === "main" ? "running" : "unknown",
+      });
+    }
+  },
+);
+
+it("projects terminal task statuses without observing retained native executions", () => {
+  const statuses = ["succeeded", "failed", "timed_out", "cancelled", "lost"] as const;
   const rows = Array.from({ length: 1_000 }, (_, index) => {
     const status = statuses[index % statuses.length]!;
     const record = task(`fixed-${index}`, status);
@@ -103,8 +125,7 @@ it("projects fixed task statuses without observing retained native executions", 
 
   expect(rows.map(({ record }) => getTaskExecutionObservation(record))).toEqual(
     rows.map(({ record, timestamp }) => ({
-      state:
-        record.status === "lost" ? "unknown" : record.status === "queued" ? "queued" : "finished",
+      state: record.status === "lost" ? "unknown" : "finished",
       ...(timestamp !== undefined ? { lastActivityAt: timestamp } : {}),
     })),
   );
@@ -115,6 +136,11 @@ it("projects fixed task statuses without observing retained native executions", 
 it("keeps running task observations current through generation replacement and deletion", () => {
   const record = task("running-task", "running");
   const original = registerRun(record);
+  claimAgentRunContext(
+    original.runId,
+    { sessionKey: original.childSessionKey },
+    { trackOwner: true, ownsContext: true },
+  );
   recordTaskActivityEvent(record, {
     runId: original.runId,
     seq: 1,
@@ -145,6 +171,11 @@ it("keeps running task observations current through generation replacement and d
 
   successor.pauseReason = undefined;
   successor.execution = { status: "running", startedAt: 30 };
+  claimAgentRunContext(
+    successor.runId,
+    { sessionKey: successor.childSessionKey },
+    { trackOwner: true, ownsContext: true },
+  );
   recordTaskActivityEvent(record, {
     runId: successor.runId,
     seq: 1,
