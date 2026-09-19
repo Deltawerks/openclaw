@@ -10,12 +10,14 @@ import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-se
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import { isUpdateGatewayReadinessPending } from "../../infra/update-run-step.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
   classifyUpdateOutcome,
   UPDATE_ACTIVATION_TIMEOUT_REASON,
 } from "../../shared/update-outcome.js";
 import { convergeUpdatePlugins } from "./update-command-convergence.js";
+import { verifyUpdateFailureRecovery } from "./update-command-failure-recovery.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { retireStandaloneGitWrapper } from "./update-command-git.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
@@ -27,6 +29,7 @@ import { repairUpdateService } from "./update-command-repair-service.js";
 import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import {
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
+  isVerifiedUpdateRollback,
   UpdateCommandFailure,
   resolveAutomaticUpdateTriage,
   recordUpdateResultNextAction,
@@ -42,7 +45,6 @@ import {
   GatewayServiceUpdateOwnershipError,
 } from "./update-command-service-plan.js";
 import {
-  recordFailedUpdateGatewayState,
   maybeRestartService,
   maybeRestartServiceAfterFailedMutableUpdate,
   maybeResumeWindowsTaskAutoStartAfterPackageUpdate,
@@ -56,8 +58,6 @@ import {
   publishUpdateCommandTerminalResult,
   resolveSettledUpdateCommandResult,
 } from "./update-command-terminal.js";
-
-export type { FinishUpdateParams } from "./update-command-finish-types.js";
 
 export async function finishUpdate(
   params: FinishUpdateParams,
@@ -274,18 +274,7 @@ export async function finishUpdate(
     );
     assertCurrent();
     let restoreFailure = initialRestoreFailure;
-    const finalResult = completedResult({
-      ...result,
-      ...(result.status === "error" && !recoverService && !rolledBack
-        ? {
-            recovery:
-              result.recovery?.serviceRestartSafe === false ||
-              result.recovery?.packageRollbackVerified
-                ? result.recovery
-                : { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-          }
-        : {}),
-    });
+    let finalResult = completedResult(result);
     pendingResult = finalResult;
     pendingNotify = notify;
     if (!restoreFailure) {
@@ -332,13 +321,6 @@ export async function finishUpdate(
         stderrTail: formatErrorMessage(restoreFailure.cause),
       });
     }
-    assertCurrent();
-    if (finalResult.status === "error" && !rolledBack && currentServiceStop()?.stopped) {
-      await recordFailedUpdateGatewayState(
-        params.opts.run,
-        currentServiceStop()?.serviceEnv ?? process.env,
-      );
-    }
     recordNextAction(finalResult);
     if (notify && recoverService) {
       pendingNotify = false;
@@ -381,7 +363,21 @@ export async function finishUpdate(
     assertCurrent();
     const cleanupFailure = await recordUpdatePackageCompletion(params, finalResult, assertCurrent);
     assertCurrent();
-    pendingResult = completedResult(cleanupFailure?.result ?? finalResult);
+    if (finalResult.status === "error" || cleanupFailure) {
+      finalResult = await verifyUpdateFailureRecovery({
+        result: cleanupFailure?.result ?? finalResult,
+        root: params.root,
+        opts: params.opts,
+        env: currentServiceStop()?.serviceEnv ?? params.ownedManagedUpdateEnv,
+        timeoutMs: params.updateStepTimeoutMs,
+        serviceStopped: !rolledBack && currentServiceStop()?.stopped,
+        assertCurrent,
+      });
+      assertCurrent();
+      triageAllowed &&= !isUpdateGatewayReadinessPending(finalResult);
+      rolledBack &&= isVerifiedUpdateRollback(finalResult);
+    }
+    pendingResult = completedResult(finalResult);
     const reportedResult = deferredTerminal ? pendingResult : await publishFinalResult();
     if (cleanupFailure) {
       const { detail } = cleanupFailure;
@@ -698,7 +694,11 @@ export async function finishUpdate(
 
     return await reportResult(resultWithPostUpdate);
   } catch (error) {
-    if (error instanceof UpdateCommandFailure || error instanceof UpdateServiceLoadBoundaryError) {
+    if (
+      error instanceof UpdateCommandFailure ||
+      error instanceof UpdateServiceLoadBoundaryError ||
+      hasCommandProcessCleanupError(error)
+    ) {
       // Staging may already have changed files. Keep intent/material for fenced reconciliation.
       throw error;
     }
