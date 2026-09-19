@@ -4,7 +4,6 @@ import type { ConnectionBootstrapCoordinator } from "../../app/connection-bootst
 import { formatUiError } from "../format-error.ts";
 import { createGatewayConnectionLifecycle } from "../gateway-connection-lifecycle.ts";
 import type { SessionCreateOutcome } from "./create.ts";
-import type { SessionChangedResult, SessionReconcileOptions } from "./reconcile.ts";
 import { subscribeAgentSelection, type SessionAgentSelection } from "./session-agent-selection.ts";
 import type { SessionCapability, SessionGateway, SessionState } from "./session-capability.ts";
 import { createSessionDeletions } from "./session-deletions.ts";
@@ -388,46 +387,6 @@ export function createSessionCapability(
     );
   };
 
-  const reconcileChanged = (
-    payload: unknown,
-    options?: SessionReconcileOptions,
-  ): SessionChangedResult => {
-    const eventObservation = roster.captureEvent(payload);
-    const {
-      reconciled: base,
-      claimChanged,
-      notifyManaged,
-    } = reconcileChangedEvent(payload, options, eventObservation);
-    const result = decorateRows(base.result);
-    const reconciled =
-      result === base.result
-        ? base
-        : {
-            ...base,
-            result,
-            row: base.row ? result?.sessions.find((row) => row.key === base.row?.key) : undefined,
-          };
-    let primaryPublished = false;
-    if (
-      claimChanged ||
-      (reconciled.applied && (reconciled.result !== state.result || reconciled.deletedKey))
-    ) {
-      publishReconciledState({
-        ...state,
-        result: reconciled.result,
-        agentId: options?.resultAgentId?.trim()
-          ? normalizeAgentId(options.resultAgentId)
-          : state.agentId,
-      });
-      primaryPublished = true;
-    }
-    notifyManaged?.(primaryPublished);
-    if (eventObservation.scope && !connection.isCurrent(eventObservation.scope)) {
-      return { applied: false, result: state.result };
-    }
-    return reconciled;
-  };
-
   const reconcileRunTerminal = (terminal: SessionRunTerminal): boolean => {
     const event = roster.captureEvent(terminal);
     if (event.scope && !connection.isCurrent(event.scope)) {
@@ -566,16 +525,18 @@ export function createSessionCapability(
     } | null;
     // Recaps are opt-in Activity data; shared session queries never include them.
     if (event.event === "sessions.changed" && payload?.reason === "activity-summary") {
+      roster.captureEvent(event.payload).deliver(event);
       return;
     }
     const canApplySnapshot = roster.canApplyPrimarySnapshot(event.payload);
     const eventObservation = roster.captureEvent(event.payload);
     const swarmChanged = swarmActivity.observe(event.payload);
-    const { eventInfo, reconciled, claimChanged, notifyManaged } = reconcileChangedEvent(
-      event.payload,
-      { resultAgentId: state.agentId, archivedFilter: roster.lastOptions().archivedFilter },
-      eventObservation,
-    );
+    const { eventInfo, reconciled, claimChanged, notifyManaged, notifyEvent } =
+      reconcileChangedEvent(
+        event.payload,
+        { resultAgentId: state.agentId, archivedFilter: roster.lastOptions().archivedFilter },
+        eventObservation,
+      );
     if (eventObservation.scope && !connection.isCurrent(eventObservation.scope)) {
       return;
     }
@@ -590,6 +551,9 @@ export function createSessionCapability(
       claimChanged ||
       swarmChanged ||
       (eventInfo?.archived !== null && !isTerminalMessage) ||
+      (!isTerminalMessage &&
+        reconciled.applied &&
+        (reconciled.result !== state.result || reconciled.deletedKey)) ||
       primarySnapshotApplied
     ) {
       const result = decorateRows(reconciled.result);
@@ -609,6 +573,7 @@ export function createSessionCapability(
       void background(groups.load, () => groups.load());
     }
     if (event.event === "session.message" && !runEnded) {
+      notifyEvent(event);
       return;
     }
     roster.scheduleEvent({
@@ -619,6 +584,7 @@ export function createSessionCapability(
       primarySnapshotApplied,
       event: event.payload,
     });
+    notifyEvent(event);
   });
 
   return {
@@ -654,7 +620,6 @@ export function createSessionCapability(
     observeRow,
     inheritRow: roster.inheritRow,
     projectRows: roster.projectRows,
-    reconcileChanged,
     reconcileRunTerminal,
     refresh: roster.refresh,
     invalidate: roster.scheduleEvent,

@@ -263,6 +263,20 @@ export function createSessionReconciliation(host: Host) {
       (!observation &&
         sourceCanonicalListRevision !== undefined &&
         host.canonicalListRevision() > sourceCanonicalListRevision);
+    const projectReadRow = (accepted: GatewaySessionRow, donor?: GatewaySessionRow) => {
+      const select = row && observation?.observe(row, historyAgentId);
+      const inherited = host.roster.inheritRow(accepted, row, donor);
+      const projected = projectRowFields(
+        observation
+          ? host.permissions.reconcileRow(inherited, observation.revision, historyAgentId)
+          : inherited,
+        historyAgentId,
+      );
+      if (row && select) {
+        host.mutations.observePendingFields(row, select(projected, pendingFields), historyAgentId);
+      }
+      return projected;
+    };
     let observedKey: string | undefined;
     const normalized = reconcileSessionHistory(
       state.result,
@@ -279,24 +293,7 @@ export function createSessionReconciliation(host: Host) {
               state.resultCached === true &&
               (Boolean(observation) || host.roster.rowRevision(row) > 0) &&
               host.roster.rowRevision(existing) === 0,
-            project: (accepted, donor) => {
-              const select = observation?.observe(row, historyAgentId);
-              const inherited = host.roster.inheritRow(accepted, row, donor);
-              const projected = projectRowFields(
-                observation
-                  ? host.permissions.reconcileRow(inherited, observation.revision, historyAgentId)
-                  : inherited,
-                historyAgentId,
-              );
-              if (select) {
-                host.mutations.observePendingFields(
-                  row,
-                  select(projected, pendingFields),
-                  historyAgentId,
-                );
-              }
-              return projected;
-            },
+            project: projectReadRow,
           }
         : undefined,
     );
@@ -304,9 +301,25 @@ export function createSessionReconciliation(host: Host) {
     const accepted =
       observedKey &&
       result?.sessions.find((candidate) => areUiSessionKeysEquivalent(candidate.key, observedKey));
-    const notify = accepted ? observation?.stage(accepted, historyAgentId) : undefined;
-    if (accepted) {
-      host.githubPublication.observeRows([accepted], historyAgentId);
+    // A pane can hold another agent's global descriptor outside the primary roster.
+    // Its read still uses the observation captured before I/O and never grants list membership.
+    const observed =
+      accepted ||
+      (row && observation && rowIsCurrent
+        ? reconcileSessionRow(
+            row,
+            host.roster.currentRow(row, historyAgentId),
+            {
+              resultAgentId: historyAgentId,
+              selectedGlobalAgentId: historyAgentId,
+              archivedFilter: "all",
+            },
+            { project: projectReadRow },
+          ).admittedRow
+        : undefined);
+    const notify = observed ? observation?.stage(observed, historyAgentId) : undefined;
+    if (observed) {
+      host.githubPublication.observeRows([observed], historyAgentId);
     }
     const agentId = options?.resultAgentId?.trim()
       ? normalizeAgentId(options.resultAgentId)
@@ -335,6 +348,7 @@ export function createSessionReconciliation(host: Host) {
     const owned = { key: target.key.trim(), agentId: normalizeAgentId(target.agentId) };
     const registration = roster.registerRow(owned, listener, {
       onInvalidate: options?.onInvalidate,
+      onEvent: options?.onEvent,
       isValid: (sessionId) => deletions.acceptsGeneration(owned.key, sessionId, owned.agentId),
       decorate: (row) =>
         deletions.deletionState(row.key, owned.agentId, row.sessionId)
@@ -362,6 +376,12 @@ export function createSessionReconciliation(host: Host) {
     return {
       get row() {
         return registration.current();
+      },
+      get sessionId() {
+        return registration.sessionId();
+      },
+      get hasObserved() {
+        return registration.hasObserved();
       },
       isCurrent: registration.isCurrent,
       dispose: registration.dispose,
@@ -451,28 +471,30 @@ export function createSessionReconciliation(host: Host) {
       thinkingClaims,
     } = host;
     const state = host.readState();
+    const eventInfo = readSessionChangedEvent(payload);
     const eventIsCurrent = () =>
-      !eventObservation.scope || connection.isCurrent(eventObservation.scope);
+      (!eventObservation.scope || connection.isCurrent(eventObservation.scope)) &&
+      (!eventInfo ||
+        deletions.acceptsGeneration(
+          eventInfo.key,
+          eventInfo.sessionId,
+          eventInfo.agentId ?? state.agentId,
+        ));
     const staleEvent = () => {
       const reconciled: SessionChangedResult = { applied: false, result: host.readState().result };
-      return { eventInfo: null, reconciled, claimChanged: false, notifyManaged: undefined };
+      return {
+        eventInfo: null,
+        reconciled,
+        claimChanged: false,
+        notifyManaged: undefined,
+        notifyEvent: () => {},
+      };
     };
     if (!eventIsCurrent()) {
       return staleEvent();
     }
     const previous = state.result;
-    const eventInfo = readSessionChangedEvent(payload);
     const invalidationReason = normalizeOptionalString(asNullableRecord(payload)?.reason);
-    if (
-      eventInfo &&
-      !deletions.acceptsGeneration(
-        eventInfo.key,
-        eventInfo.sessionId,
-        eventInfo.agentId ?? state.agentId,
-      )
-    ) {
-      return staleEvent();
-    }
     githubPublication.observeEvent(payload);
     const selectedSessionKey = host.snapshot().sessionKey?.trim();
     const archivesSelectedSession =
@@ -497,6 +519,7 @@ export function createSessionReconciliation(host: Host) {
     let acceptedResult:
       | Pick<SessionChangedResult, "applied" | "key" | "row" | "deletedKey">
       | undefined;
+    let admittedRosterResult: Omit<SessionChangedResult, "result"> | undefined;
     // Planning shares held rows; each merge still reads their current field receipts.
     const projection = roster.prepareProjection();
     const projectEventFields = (
@@ -537,6 +560,10 @@ export function createSessionReconciliation(host: Host) {
           projectEventFields(row, previousRow, fields, eventInfo?.agentId ?? ownerAgentId),
       );
       roster.inherit(result.result, current, undefined, ownerAgentId);
+      if (!admittedRosterResult && result.admittedRow) {
+        const { result: _result, ...facts } = result;
+        admittedRosterResult = facts;
+      }
       const removed =
         current && result.result && result.result.sessions.length < current.sessions.length;
       if (result.admittedRow || removed) {
@@ -578,7 +605,12 @@ export function createSessionReconciliation(host: Host) {
           return { row: entry.row };
         }
         if (!entry.row) {
-          return { row: null, invalidateRevision: eventObservation.revision };
+          // A roster can admit this frame while the descriptor's first read is pending.
+          return {
+            row: null,
+            eventResult: admittedRosterResult,
+            invalidateRevision: eventObservation.revision,
+          };
         }
         if (eventInfo.sessionId && eventInfo.sessionId !== entry.row.sessionId) {
           return { row: entry.row };
@@ -600,11 +632,13 @@ export function createSessionReconciliation(host: Host) {
         }
         return {
           row: reduced.row ?? null,
+          eventResult: reduced,
           ...(!reduced.deletedKey ? { invalidateRevision: eventObservation.revision } : {}),
         };
       },
       false,
       managedAdmissions,
+      eventObservation.deliver,
     );
     const notifyManaged = (primaryPublished = false) =>
       staged.notify(
@@ -626,7 +660,18 @@ export function createSessionReconciliation(host: Host) {
     if (!eventIsCurrent()) {
       return staleEvent();
     }
-    return { eventInfo, reconciled, claimChanged, notifyManaged };
+    return {
+      eventInfo,
+      reconciled,
+      claimChanged,
+      notifyManaged,
+      notifyEvent: (event: Parameters<typeof staged.notifyEvent>[0]) => {
+        // Shared publication can replace the incarnation before pane delivery.
+        if (eventIsCurrent()) {
+          staged.notifyEvent(event, eventObservation.revision);
+        }
+      },
+    };
   };
 
   return {

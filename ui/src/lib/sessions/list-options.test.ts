@@ -281,10 +281,12 @@ describe("session list replacement options", () => {
       );
     });
     snapshot.client = { request } as unknown as GatewayBrowserClient;
+    const { gateway, emitEvent } = createGatewayHarness(snapshot.client);
     const sessions = createTestSessionCapability({
-      snapshot,
-      subscribe: () => () => undefined,
-      subscribeEvents: () => () => undefined,
+      ...gateway,
+      get snapshot() {
+        return snapshot;
+      },
     });
 
     await sessions.refresh({ agentId: "main", force: true });
@@ -299,15 +301,19 @@ describe("session list replacement options", () => {
       archivedAt: 20,
     });
 
-    sessions.reconcileChanged({
-      sessionKey: key,
-      key,
-      kind: "direct",
-      sessionId: "archived-session",
-      updatedAt: 50,
-      archived: false,
-      archivedAt: null,
-      reason: "update",
+    emitEvent({
+      type: "event",
+      event: "sessions.changed",
+      payload: {
+        sessionKey: key,
+        key,
+        kind: "direct",
+        sessionId: "archived-session",
+        updatedAt: 50,
+        archived: false,
+        archivedAt: null,
+        reason: "update",
+      },
     });
     expect(sessions.state.result?.sessions.find((row) => row.key === key)?.archived).toBe(false);
     sessions.dispose();
@@ -447,8 +453,8 @@ describe("session list replacement options", () => {
       await sessions.refresh({ agentId: "main", force: true });
       expect(sessions.state.result?.sessions).toEqual([offered]);
 
-      // The same payload retains its first receipt across capability consumers.
-      sessions.reconcileChanged(archived);
+      // A replay retains the original receipt even when its clock equals the restore.
+      emitEvent({ type: "event", event: "sessions.changed", payload: archived });
       expect(sessions.state.result?.sessions).toEqual([offered]);
       expect(sessions.state.result?.count).toBe(1);
       expect(sessions.archiveVisibility(original.key)).toBeUndefined();

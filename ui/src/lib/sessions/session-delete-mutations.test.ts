@@ -520,7 +520,11 @@ describe("optimistic session deletion", () => {
         };
         assertRemoved();
         for (const target of targets) {
-          h.sessions.reconcileChanged({ sessionKey: target.key, reason: "send", ...target });
+          h.emitEvent({
+            type: "event",
+            event: "sessions.changed",
+            payload: { sessionKey: target.key, reason: "send", ...target },
+          });
           h.emitEvent({
             type: "event",
             event: "session.message",

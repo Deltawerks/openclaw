@@ -20,6 +20,7 @@ import {
   createGatewayBrowserClientFixture,
   createInitializationContext,
   createRenderTestChatPane,
+  createSessionCapabilityFixture,
   createTestChatPane,
 } from "./chat-pane.test-support.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
@@ -474,7 +475,7 @@ describe("chat pane pushed pull request state", () => {
   });
 
   it("clears the pane snapshot when the Gateway source disconnects", () => {
-    const { pane } = createPullRequestPane({} as SessionCapability);
+    const { pane } = createPullRequestPane(createSessionCapabilityFixture());
     pane.sessionPullRequests = [pullRequest(111532, "open")];
     pane.githubRepo = { owner: "openclaw", repo: "openclaw" };
 

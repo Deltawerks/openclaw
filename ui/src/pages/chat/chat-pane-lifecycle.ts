@@ -48,7 +48,7 @@ import {
 } from "./chat-pane-browser-annotation.ts";
 import { SIDEBAR_PANEL_SHORTCUTS } from "./chat-pane-panel-shortcuts.ts";
 import { openPreferredSidebarPanel, releaseAttachmentWorkspaceOwner } from "./chat-pane-rails.ts";
-import { ChatPaneSessionCreation } from "./chat-pane-session-creation.ts";
+import { ChatPaneSessionObservation } from "./chat-pane-session-observation.ts";
 import { ChatPaneSessionPanelToggleController } from "./chat-pane-session-panel-toggle.ts";
 import {
   CHAT_COMPOSER_TEXTAREA_SELECTOR,
@@ -86,7 +86,7 @@ import {
 } from "./session-message-cache.ts";
 import { closeSlot, isSidebarSlotVisible } from "./sidebar-layout.ts";
 
-export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
+export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
   private readonly sessionPanelToggles = new ChatPaneSessionPanelToggleController({
     current: () => {
       const state = this.state;
@@ -415,6 +415,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
       }
     }
     chatState.attach(pageState);
+    chatState.addCleanup(() => this.retireSessionObservation());
     chatState.addCleanup(
       this.context.agentIdentity.subscribe(() => void pageState.loadAssistantIdentity()),
     );
@@ -491,6 +492,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
       this.context.agentSelection.subscribe((next) => {
         const previousAgentId = this.state?.assistantAgentId;
         applySelectedChatAgent(this.state, this.agentId ?? next.selectedId);
+        this.synchronizeSessionObservation();
         const agentChanged = this.state?.assistantAgentId !== previousAgentId;
         if (agentChanged) {
           this.swarmHydrator?.dispose();
@@ -515,6 +517,9 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     chatState.addCleanup(() => sessionPullRequests.unwatch(this));
     chatState.addCleanup(
       this.context.gateway.subscribeEvents((event) => {
+        if (event.event === "sessions.changed" || event.event === "session.message") {
+          return;
+        }
         const state = this.state;
         if (event.event === "presence") {
           const hadMultipleIdentities = this.hasMultipleIdentities();
@@ -545,9 +550,6 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
           }
           if (event.event === "session.typing" && event.payload) {
             this.handleSessionTypingEvent(event.payload as SessionTypingEvent);
-          }
-          if (event.event === "session.message") {
-            this.clearTypingActorForSessionMessage(event.payload);
           }
           handlePageGatewayEvent(state, event, () => this.presented);
         }
@@ -602,6 +604,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
         if (nextAgentId) {
           applyChatAgentOwnerTransition(this.state, nextAgentId);
         }
+        this.synchronizeSessionObservation();
         // A pane routed straight onto the created session never runs the switch
         // path, so its one-shot handoffs would expire unclaimed: the rejected turn
         // would vanish instead of offering a retry, and the accepted prompt would

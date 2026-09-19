@@ -9,7 +9,6 @@ import {
   reconcileRosterPresentationMetadata,
 } from "./reconcile.ts";
 import type {
-  SessionConnectionScope,
   SessionGateway,
   SessionListOptions,
   SessionListScope,
@@ -17,6 +16,7 @@ import type {
   SessionRefreshOptions,
   SessionState,
 } from "./session-capability.ts";
+import { createSessionEventObservation } from "./session-event-observation.ts";
 import { normalizeAgentId } from "./session-key.ts";
 import {
   canApplySessionListSnapshot,
@@ -60,39 +60,6 @@ type SessionRosterRefreshHost = SessionListRefreshHost & {
 export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
   let gatewayAvailable = isGatewayAvailable(host.snapshot());
   let requestRevision = 0;
-  const eventRevisions = new WeakMap<
-    object,
-    {
-      revision: number;
-      scope: SessionConnectionScope | null;
-      lists: ReadonlySet<ManagedSessionList>;
-    }
-  >();
-  const captureEvent = (payload: unknown) => {
-    if (!payload || typeof payload !== "object") {
-      return { revision: requestRevision, scope: host.connection.capture() };
-    }
-    const previous = eventRevisions.get(payload);
-    if (previous !== undefined) {
-      return previous;
-    }
-    const observation = {
-      revision: ++requestRevision,
-      scope: host.connection.capture(),
-      lists: new Set(
-        [...managedLists.values()]
-          .filter(sessionListEventMatcher(payload))
-          .filter(
-            (entry) =>
-              entry.pending !== null ||
-              entry.snapshot.error !== null ||
-              !canApplySessionListSnapshot(entry.snapshot.result, payload, entry.scope),
-          ),
-      ),
-    };
-    eventRevisions.set(payload, observation);
-    return observation;
-  };
   // A queued foreground replacement owns publication; older loads may only finish for callers.
   let foregroundPublicationGeneration = 0;
   let inFlight: Promise<SessionRefreshAttempt | null> | null = null;
@@ -105,6 +72,13 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
   let pageActive = !observesPageLifecycle || document.visibilityState !== "hidden";
   const managedLists = new Map<string, ManagedSessionList>();
   const observations = createSessionRosterObservations(host, managedLists);
+  const events = createSessionEventObservation({
+    connection: host.connection,
+    lists: managedLists,
+    readRevision: () => requestRevision,
+    nextRevision: () => ++requestRevision,
+    captureDelivery: observations.captureEventDelivery,
+  });
   const retireForegroundRefresh = () => {
     observations.reset();
     foregroundPublicationGeneration += 1;
@@ -565,7 +539,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     projectFields: observations.projectFields,
     prepareProjection: observations.prepareProjection,
     projectRows: observations.projectRows,
-    captureEvent,
+    captureEvent: events.captureEvent,
     primaryList: () => primaryList,
     get requestRevision() {
       return requestRevision;
@@ -683,9 +657,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       options: { agentId?: string | null; primarySnapshotApplied?: boolean; event?: unknown } = {},
     ) {
       const matchesAgent = sessionListAgentMatcher(options.agentId);
-      const event = options.event;
-      const affected =
-        event && typeof event === "object" ? eventRevisions.get(event)?.lists : undefined;
+      const affected = events.affectedLists(options.event);
       // Server events can invalidate a read; accepted row observations are reconciled into it.
       primaryWindows.invalidate(
         (entry) => affected?.has(entry) ?? matchesAgent(entry.scope.agentId),

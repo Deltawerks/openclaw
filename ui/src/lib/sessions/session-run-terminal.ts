@@ -3,11 +3,22 @@ import type { GatewaySessionRow, SessionRunStatus, SessionsListResult } from "..
 import { formatUiExternalText } from "../format-error.ts";
 import { isSessionRunActive } from "../session-run-state.ts";
 import { projectSessionResultRows } from "./reconcile.ts";
+import type {
+  SessionConnectionScope,
+  SessionRowTarget,
+  SessionState,
+} from "./session-capability.ts";
 import {
   areUiSessionKeysEquivalent,
   isUiGlobalSessionKey,
   normalizeAgentId,
+  parseAgentSessionKey,
 } from "./session-key.ts";
+import type { ObservedSessionList } from "./session-list-query.ts";
+import {
+  createSessionWriteObservation,
+  type createSessionRowProvenance,
+} from "./session-row-provenance.ts";
 
 export type SessionRunTerminal = {
   sessionKeys: readonly string[];
@@ -25,7 +36,7 @@ type SessionRunTerminalObservation = {
   observe: (row: GatewaySessionRow, previous: GatewaySessionRow, fields: readonly string[]) => void;
 };
 
-export function createSessionRunTerminalReconciler(
+function createSessionRunTerminalReconciler(
   terminal: SessionRunTerminal,
   observation?: SessionRunTerminalObservation,
 ): (row: GatewaySessionRow) => GatewaySessionRow {
@@ -170,4 +181,72 @@ export function reconcileSessionRunTerminal(
     result,
     result.sessions.map((existing) => reconcileRow(existing)),
   );
+}
+
+type SessionTerminalRosterHost = {
+  readState: () => Pick<SessionState, "result" | "agentId">;
+  prepareProjection: () => {
+    projectFields: (row: GatewaySessionRow, agentId: string | null) => GatewaySessionRow;
+  };
+  provenance: Pick<
+    ReturnType<typeof createSessionRowProvenance>,
+    "owner" | "inheritRow" | "observeFields"
+  >;
+  stage: (
+    scope: SessionConnectionScope | null,
+    projectList: (entry: ObservedSessionList) => SessionsListResult | null,
+    projectRow: (entry: { target: SessionRowTarget; row: GatewaySessionRow | null }) => {
+      row: GatewaySessionRow | null;
+      invalidateRevision?: number;
+    },
+  ) => { changed: boolean; notify: () => void };
+};
+
+export function createSessionRunTerminalStaging(host: SessionTerminalRosterHost) {
+  return (
+    terminal: SessionRunTerminal,
+    event: { scope: SessionConnectionScope | null; revision: number },
+  ): { result: SessionsListResult | null; changed: boolean; notify: () => void } => {
+    const { owner, inheritRow, observeFields } = host.provenance;
+    const { projectFields: project } = host.prepareProjection();
+    const reconcileRow = (agentId: string | null) =>
+      createSessionRunTerminalReconciler(terminal, {
+        agentId: (row) => owner(row, agentId),
+        project: (row) => project(row, agentId),
+        observe: (row, source, fields) => {
+          inheritRow(row, source);
+          // Terminal time is local; only Gateway rows supply the updatedAt clock.
+          observeFields(row, fields, createSessionWriteObservation(event.revision, null), agentId);
+        },
+      });
+    const reconcile = (result: SessionsListResult | null, agentId: string | null) => {
+      if (!result) {
+        return result;
+      }
+      return projectSessionResultRows(result, result.sessions.map(reconcileRow(agentId)));
+    };
+    const state = host.readState();
+    const result = reconcile(state.result, state.agentId);
+    // Compute every owner against the unchanged held rows: consuming an overlap
+    // in one window must not make another reject the same completed run.
+    const staged = host.stage(
+      event.scope,
+      (entry) => reconcile(entry.snapshot.result, entry.snapshot.agentId),
+      (entry) => {
+        const matches = terminal.sessionKeys.some((key) => {
+          const agentId = parseAgentSessionKey(key)?.agentId ?? terminal.agentId;
+          return Boolean(
+            agentId &&
+            areUiSessionKeysEquivalent(key, entry.target.key) &&
+            normalizeAgentId(agentId) === normalizeAgentId(entry.target.agentId),
+          );
+        });
+        return {
+          row: entry.row && matches ? reconcileRow(entry.target.agentId)(entry.row) : entry.row,
+          ...(!entry.row && matches ? { invalidateRevision: event.revision } : {}),
+        };
+      },
+    );
+    return { result, changed: result !== state.result || staged.changed, notify: staged.notify };
+  };
 }
