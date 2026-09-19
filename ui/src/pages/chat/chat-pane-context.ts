@@ -352,14 +352,12 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
       // A reconnect can retain the browser client. Keep async ownership tied
       // to the logical connection, not only the transport object identity.
       this.connectionGeneration += 1;
+      this.retireReplyMessages();
       this.retireHeaderSessionMutations();
       invalidateChatAvatarCache(state);
       state.assistantIdentityRequestVersion += 1;
       retireChatMetadataRequests(state);
       this.taskSuggestionsRequestVersion += 1;
-      this.setTaskSuggestions([]);
-      this.taskSuggestionBusyIds.clear();
-      this.taskSuggestionOperations.clear();
       this.resetSessionSuggestions();
       this.clearTypingActors();
       this.sessionDiscussionStates.clear();
@@ -409,6 +407,7 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
     state.hello = snapshot.hello;
     state.selfUser = snapshot.selfUser ?? null;
     state.assistantAgentId = assistantAgentId;
+    this.reconcileTaskSuggestionConnection(sourceChanged);
     if (wasConnected && !state.connected) {
       // Only the connected->disconnected transition may reshape loading state;
       // repeated disconnected snapshots must stay no-ops for pane ownership.

@@ -95,6 +95,7 @@ export {
   loadExactSessionEntryCandidates,
   loadExactSessionEntryCandidatesReadOnlyBatch,
   loadExactSessionEntryReadOnly,
+  loadSessionEntryByIdReadOnly,
 } from "./session-accessor.sqlite-exact-read.js";
 
 // Public entry API. Async preparation precedes BEGIN; commit revalidates repository snapshots.
@@ -137,8 +138,8 @@ export function loadSessionEntryForAdmission(scope: SessionAccessScope): {
 }
 
 /** Loads one session entry without opening its agent database writable. */
-export function loadSessionEntryReadOnly(scope: SessionAccessScope): SessionEntry | undefined {
-  return resolveSessionEntry(scope, { readOnly: true }).existing;
+export function loadSessionEntryReadOnly(scope: SessionEntryReadScope): SessionEntry | undefined {
+  return resolveSessionEntry(scope, { readOnly: true, projection: scope.projection }).existing;
 }
 
 /** Private prepared reads must reject a different physical owner at the captured path. */

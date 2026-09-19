@@ -17,11 +17,15 @@ Docs-only `main` pushes skip CI. Docker seed and QA Smoke use the same owner-pat
 
 Core-test-only PRs use targeted type checks only when every selected test exists in the checkout. Deleting a core test keeps the full type-check plan, including the existing core stripes on GitHub and hybrid profiles.
 
+Core lint includes `src/**/*.test-support.cjs` in type-aware checks through the bounded `src/tsconfig.json` discovery project. Other source files retain the root TypeScript project; unrelated JavaScript files are not added to this test-support project.
+
 Android native resource preparation uses the Mermaid renderer's filtered dependency install, including optional build tooling. Pnpm retains root dependencies but omits unrelated plugin packages; Gradle still builds the assets and runs the selected native tests and lint. Historical targets keep their compatibility path.
 
 Short hybrid jobs use a [40-row base threshold and 45-row hosted admission limit](/ci/capacity#bounded-hybrid-hosted-offload), with unchanged coverage and Blacksmith fallback when optional work does not fit.
 
 Real-Gateway browser checks use [job budgets matched to their selected runner](/ci/runners#blacksmith-runner-capacity).
+
+In-process Gateway test configs use [exclusive plan admission within existing packed jobs](/ci/capacity#measured-shard-weights).
 
 | Page                                                           | Read it when                                                                                                        |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |

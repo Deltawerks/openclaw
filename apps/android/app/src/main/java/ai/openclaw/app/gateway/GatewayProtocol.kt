@@ -956,6 +956,12 @@ enum class GatewayMethod(
   PluginsSkillsRead("plugins.skills.read"),
   DiagnosticsHeapProfile("diagnostics.heapProfile"),
   DesktopRelease("desktop.release"),
+  McpAuthLogin("mcp.authLogin"),
+  EnvironmentsSessionStatus("environments.session.status"),
+  EnvironmentsSessionCreate("environments.session.create"),
+  EnvironmentsSessionDestroy("environments.session.destroy"),
+  EnvironmentsSessionExec("environments.session.exec"),
+  SessionsSetInvolvement("sessions.setInvolvement"),
 }
 
 enum class GatewayEvent(
