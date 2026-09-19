@@ -59,6 +59,8 @@ describe("tsgo core test shards", () => {
       ["src/commands/oauth-tls-preflight.doctor.test.ts", "commands-doctor"],
       ["src/commands/onboard-agent.test.ts", "commands"],
       ["src/agents/command/session-store.test.ts", "commands"],
+      ["src/cli/program/build-program.test.ts", "commands"],
+      ["src/cli/program/register.agent.test.ts", "commands"],
       ["src/tui/tui-plugin-approvals.test.ts", "commands"],
       ["src/wizard/setup.test.ts", "commands"],
       ["src/cli/cron-cli.test.ts", "services"],
