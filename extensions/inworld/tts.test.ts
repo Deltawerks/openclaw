@@ -188,13 +188,13 @@ describe("inworldTTS", () => {
     });
   });
 
-  it("sends deliveryMode for TTS-2 models", async () => {
+  it("sends deliveryMode for inworld-tts-2", async () => {
     queueResponse(audio("audio"));
-    await synthesize({ modelId: "inworld-tts-2-flash", deliveryMode: "CREATIVE" });
+    await synthesize({ modelId: "inworld-tts-2", deliveryMode: "CREATIVE" });
     const body = lastGuardRequest().init?.body;
     assert(typeof body === "string", "expected request body to be a string");
     const callBody = JSON.parse(body);
-    expect(callBody.modelId).toBe("inworld-tts-2-flash");
+    expect(callBody.modelId).toBe("inworld-tts-2");
     expect(callBody.deliveryMode).toBe("CREATIVE");
   });
 
