@@ -1,0 +1,83 @@
+[
+  {
+    "file": "audio/A-stock.mp3",
+    "bytes": 103680,
+    "sha256": "20a9c6c0d5280a30d9a149229e0b82aacc08ec3c856a61de8574be6c1052fce7",
+    "duration_seconds": 6.48,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  },
+  {
+    "file": "audio/B-candidate-same-settings.mp3",
+    "bytes": 105984,
+    "sha256": "3904d295ea40f791bc94e7d3ba1ecbb3241909acc306c2c5de2dc23f44eb3097",
+    "duration_seconds": 6.624,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  },
+  {
+    "file": "audio/C-config-rate.mp3",
+    "bytes": 76800,
+    "sha256": "498dcee1a1568d7e2e73fb272be92bec37c7f28fd408a099f63e2129e1499ef2",
+    "duration_seconds": 4.8,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  },
+  {
+    "file": "audio/D-legacy-omits-delivery.mp3",
+    "bytes": 125184,
+    "sha256": "82cda1faa6e7b529d7484a6502ec63dacdfab4a9ff4131ed98e3ffd789bfba8b",
+    "duration_seconds": 7.824,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  },
+  {
+    "file": "audio/D-tts2-creative.mp3",
+    "bytes": 146688,
+    "sha256": "fd0cb544f512fbbf3a1b600a436b094cc2a12c68570e9cffbff9baee25b0e1a4",
+    "duration_seconds": 9.168,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  },
+  {
+    "file": "audio/E-talk-0.8.mp3",
+    "bytes": 137472,
+    "sha256": "3b46e53f7344719d91a9c2fffc025386b7f93aaf39c35299c9d72dbc0693ac6d",
+    "duration_seconds": 8.592,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  },
+  {
+    "file": "audio/E-talk-1.0.mp3",
+    "bytes": 113280,
+    "sha256": "51a74fccd370d41a656e4624e7cf3d3d46be6841f6c0234de846d923a243fc94",
+    "duration_seconds": 7.08,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  },
+  {
+    "file": "audio/E-talk-1.4.mp3",
+    "bytes": 77184,
+    "sha256": "c99d07ba1ba1602049c11ba353b5f51b59a30b826f806b2a9785ef1cb522ea17",
+    "duration_seconds": 4.824,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  },
+  {
+    "file": "audio/webchat-returned.mp3",
+    "bytes": 92544,
+    "sha256": "80b91750a26540f3d750bc55fcda151419439465d2a05115482740f985b0c7b7",
+    "duration_seconds": 5.784,
+    "format": "mp3",
+    "decode_exit": 0,
+    "decode_stderr": ""
+  }
+]

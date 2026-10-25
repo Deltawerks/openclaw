@@ -1,0 +1,86 @@
+{
+  "C-directive": {
+    "at": "2026-10-25T05:56:19.218Z",
+    "pid": 3,
+    "event": "inworld-request",
+    "id": "inworld-1792907779188",
+    "url": "https://api.inworld.ai/tts/v1/voice:stream",
+    "text": "OpenClaw is returning this spoken reply through its shipped web chat. The inline directive selects the speaking speed and delivery preset.",
+    "voiceId": "Sarah",
+    "modelId": "inworld-tts-2",
+    "audioConfig": {
+      "audioEncoding": "MP3",
+      "speakingRate": 1.3
+    },
+    "deliveryMode": "STABLE",
+    "http_status": 200
+  },
+  "E-talk": [
+    {
+      "at": "2026-10-25T05:58:16.384Z",
+      "pid": 3,
+      "event": "inworld-request",
+      "id": "inworld-1792907896352",
+      "url": "https://api.inworld.ai/tts/v1/voice:stream",
+      "text": "OpenClaw is speaking this test sentence with the Inworld provider. The same words are used for every comparison.",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-2",
+      "audioConfig": {
+        "audioEncoding": "MP3",
+        "speakingRate": 0.8
+      },
+      "deliveryMode": "CREATIVE",
+      "http_status": 200
+    },
+    {
+      "at": "2026-10-25T05:58:23.474Z",
+      "pid": 3,
+      "event": "inworld-request",
+      "id": "inworld-1792907903446",
+      "url": "https://api.inworld.ai/tts/v1/voice:stream",
+      "text": "OpenClaw is speaking this test sentence with the Inworld provider. The same words are used for every comparison.",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-2",
+      "audioConfig": {
+        "audioEncoding": "MP3",
+        "speakingRate": 1
+      },
+      "deliveryMode": "CREATIVE",
+      "http_status": 200
+    },
+    {
+      "at": "2026-10-25T05:58:30.580Z",
+      "pid": 3,
+      "event": "inworld-request",
+      "id": "inworld-1792907910555",
+      "url": "https://api.inworld.ai/tts/v1/voice:stream",
+      "text": "OpenClaw is speaking this test sentence with the Inworld provider. The same words are used for every comparison.",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-2",
+      "audioConfig": {
+        "audioEncoding": "MP3",
+        "speakingRate": 1.4
+      },
+      "deliveryMode": "CREATIVE",
+      "http_status": 200
+    }
+  ],
+  "other_inworld_requests": [
+    {
+      "at": "2026-10-25T05:56:28.450Z",
+      "pid": 3,
+      "event": "inworld-request",
+      "id": "inworld-1792907788416",
+      "url": "https://api.inworld.ai/tts/v1/voice:stream",
+      "text": "LLM request rejected: unexpected fixture request",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-2",
+      "audioConfig": {
+        "audioEncoding": "MP3",
+        "speakingRate": 0.75
+      },
+      "deliveryMode": "CREATIVE",
+      "http_status": 200
+    }
+  ]
+}

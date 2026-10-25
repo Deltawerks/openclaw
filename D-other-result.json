@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "capability": "tts.convert",
+  "transport": "local",
+  "provider": "inworld",
+  "attempts": [
+    {
+      "provider": "inworld",
+      "outcome": "success",
+      "reasonCode": "success",
+      "personaBinding": "none",
+      "latencyMs": 6111
+    }
+  ],
+  "outputs": [
+    {
+      "path": "/home/node/.openclaw/workspace/853-inworld-proof/D-legacy-omits-delivery.mp3",
+      "format": "mp3",
+      "voiceCompatible": false
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "speakerVoiceId": "Sarah",
+  "modelId": "inworld-tts-1.5-max",
+  "speakingRate": 0.75,
+  "deliveryMode": "CREATIVE",
+  "temperature": 0.8
+}

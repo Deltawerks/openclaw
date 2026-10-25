@@ -1,0 +1,19 @@
+[
+  {
+    "tag": "2026.10.7",
+    "id": "57a7dfd3cf1def1ba26ecfe35ebaca3eb1199014e53cbf022c29ac1336318ff7",
+    "digest": "sha256:c8e82624d59d565afaac118c70b9380693c31bf6ec7b99dab2236c6ee0625b60",
+    "repoDigests": [
+      "ghcr.io/openclaw/openclaw@sha256:c8e82624d59d565afaac118c70b9380693c31bf6ec7b99dab2236c6ee0625b60",
+      "ghcr.io/openclaw/openclaw@sha256:fb26f0841659dc757f23feec9adeab51f11d76779a409db5d22e191b43841afa"
+    ]
+  },
+  {
+    "tag": "main-443e4ce",
+    "id": "a9b5eca3be0e6aac9bde409c9cc1d27850cad35832fc6040cdfd7f9dab66f58d",
+    "digest": "sha256:a4f0f399f104e802e378d1ecae391db00d265adb7e73dc002701a35ffe3bd1ec",
+    "repoDigests": [
+      "ghcr.io/openclaw/openclaw@sha256:a4f0f399f104e802e378d1ecae391db00d265adb7e73dc002701a35ffe3bd1ec"
+    ]
+  }
+]

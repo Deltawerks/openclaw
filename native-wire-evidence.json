@@ -1,0 +1,166 @@
+[
+  {
+    "session_id": "ce837d2c-e8b6-431f-968c-e9a79a17bb37",
+    "ts": 1792907187602,
+    "kind": "request",
+    "direction": "outbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": null,
+    "data_sha256": "0e24ed03cc60403c6af4af52f707c86333020ff46ad8b0ecb0b363abbd1f17e1",
+    "body": {
+      "text": "OpenClaw is speaking this test sentence with the Inworld provider. The same words are used for every comparison.",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-1.5-max",
+      "audioConfig": {
+        "audioEncoding": "MP3"
+      },
+      "temperature": 0.8
+    },
+    "exported_body_sha256": "0e24ed03cc60403c6af4af52f707c86333020ff46ad8b0ecb0b363abbd1f17e1"
+  },
+  {
+    "session_id": "ce837d2c-e8b6-431f-968c-e9a79a17bb37",
+    "ts": 1792907188447,
+    "kind": "response",
+    "direction": "inbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": 200,
+    "data_sha256": "7a074c9a76b9c691516713dbef199e0ef1fdff79955d251f34f41955ab2b7429"
+  },
+  {
+    "session_id": "3a60d4b9-28f1-438a-ae6c-6181e18386c9",
+    "ts": 1792907481974,
+    "kind": "request",
+    "direction": "outbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": null,
+    "data_sha256": "0e24ed03cc60403c6af4af52f707c86333020ff46ad8b0ecb0b363abbd1f17e1",
+    "body": {
+      "text": "OpenClaw is speaking this test sentence with the Inworld provider. The same words are used for every comparison.",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-1.5-max",
+      "audioConfig": {
+        "audioEncoding": "MP3"
+      },
+      "temperature": 0.8
+    },
+    "exported_body_sha256": "0e24ed03cc60403c6af4af52f707c86333020ff46ad8b0ecb0b363abbd1f17e1"
+  },
+  {
+    "session_id": "3a60d4b9-28f1-438a-ae6c-6181e18386c9",
+    "ts": 1792907482800,
+    "kind": "response",
+    "direction": "inbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": 200,
+    "data_sha256": "8e87b332fea836caee506dd8d31f39411e98762c9a9869e1be5432d58c520739"
+  },
+  {
+    "session_id": "61fd0fd9-c49b-4550-8274-32196fee7980",
+    "ts": 1792907635519,
+    "kind": "request",
+    "direction": "outbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": null,
+    "data_sha256": "039421bd672ec14399d499e096144e65ec9ab68a7280bf3f79504469f3530b74",
+    "body": {
+      "text": "OpenClaw is speaking this test sentence with the Inworld provider. The same words are used for every comparison.",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-1.5-max",
+      "audioConfig": {
+        "audioEncoding": "MP3",
+        "speakingRate": 1.25
+      },
+      "temperature": 0.8
+    },
+    "exported_body_sha256": "039421bd672ec14399d499e096144e65ec9ab68a7280bf3f79504469f3530b74"
+  },
+  {
+    "session_id": "61fd0fd9-c49b-4550-8274-32196fee7980",
+    "ts": 1792907636295,
+    "kind": "response",
+    "direction": "inbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": 200,
+    "data_sha256": "4edc94775235a3c8b4ddaec71416bd65205ec74eb4c794e46b13459151eacc51"
+  },
+  {
+    "session_id": "bf696732-d2c3-4c85-b68b-210d83407463",
+    "ts": 1792907844871,
+    "kind": "request",
+    "direction": "outbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": null,
+    "data_sha256": "e5ce5c18ec642c3b7ec883e98a4d99f17c1185ef060978b5e928f0814c1a29ea",
+    "body": {
+      "text": "OpenClaw is speaking this test sentence with the Inworld provider. The same words are used for every comparison.",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-2",
+      "audioConfig": {
+        "audioEncoding": "MP3",
+        "speakingRate": 0.75
+      },
+      "temperature": 0.8,
+      "deliveryMode": "CREATIVE"
+    },
+    "exported_body_sha256": "e5ce5c18ec642c3b7ec883e98a4d99f17c1185ef060978b5e928f0814c1a29ea"
+  },
+  {
+    "session_id": "bf696732-d2c3-4c85-b68b-210d83407463",
+    "ts": 1792907846031,
+    "kind": "response",
+    "direction": "inbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": 200,
+    "data_sha256": "41b8093a278149500cd4ec7133cc5f23a9d3c49c70577a7b9c0e41d125e7f628"
+  },
+  {
+    "session_id": "7b6f72e6-ab4b-4638-bd9c-43042ee05b2d",
+    "ts": 1792907863536,
+    "kind": "request",
+    "direction": "outbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": null,
+    "data_sha256": "0b12fe2c3a72208144aabe0ba30729bb76edcdc4773144fe7e904e29a2194519",
+    "body": {
+      "text": "OpenClaw is speaking this test sentence with the Inworld provider. The same words are used for every comparison.",
+      "voiceId": "Sarah",
+      "modelId": "inworld-tts-1.5-max",
+      "audioConfig": {
+        "audioEncoding": "MP3",
+        "speakingRate": 0.75
+      },
+      "temperature": 0.8
+    },
+    "exported_body_sha256": "0b12fe2c3a72208144aabe0ba30729bb76edcdc4773144fe7e904e29a2194519"
+  },
+  {
+    "session_id": "7b6f72e6-ab4b-4638-bd9c-43042ee05b2d",
+    "ts": 1792907864330,
+    "kind": "response",
+    "direction": "inbound",
+    "method": "POST",
+    "host": "api.inworld.ai",
+    "path": "/tts/v1/voice:stream",
+    "status": 200,
+    "data_sha256": "b4f18ea12c0dba2a9bc65ce30981fdce6ffec8d53f37f859af153e06d6b44604"
+  }
+]

@@ -1,0 +1,26 @@
+{
+  "before": [
+    {
+      "modelId": "inworld-tts-1.5-max",
+      "temperature": 0.8,
+      "voiceId": "Sarah"
+    },
+    {
+      "inworld": {},
+      "provider": "inworld"
+    }
+  ],
+  "after": [
+    {
+      "modelId": "inworld-tts-1.5-max",
+      "speakerVoiceId": "Sarah",
+      "temperature": 0.8
+    },
+    {
+      "inworld": {},
+      "provider": "inworld"
+    }
+  ],
+  "app_owned_voice_field_rename": true,
+  "otherwise_equal": true
+}
